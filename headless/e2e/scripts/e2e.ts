@@ -1,4 +1,5 @@
 import { chromium } from '@playwright/test';
+import { browserEnvironment } from '../support/child.ts';
 import { join } from 'node:path';
 import { loadConfig } from '../support/config.ts';
 import { loadFixtures, assertSessionExceptions } from '../support/fixtures.ts';
@@ -38,7 +39,7 @@ async function main() {
     operator = new Operator(clients, ledger, fixtures);
     let inbox;
     try { inbox = createInbox(config); } catch (e) { results.updateRoot({ id: 'PRQ-INBOX', status: 'PENDING', code: safeFailure(e) }); }
-    browser = await chromium.launch({ headless: true }); driver = new Driver(config, fixtures, browser, operator, inbox);
+    browser = await chromium.launch({ headless: true, env: browserEnvironment() }); driver = new Driver(config, fixtures, browser, operator, inbox);
     try { await syncAppAudit(driver); } catch { results.root({ id: 'PRQ-APP-RESOURCE-AUDIT', status: 'PENDING', code: 'NONSECRET_APP_RESOURCE_AUDIT_REQUIRED' }); }
     for (const id of executionOrder) {
       const row = rows.find(r => r.id === id)!;

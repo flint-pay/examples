@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import { browserEnvironment } from './tests/browser/support/browser-environment.ts';
 
 // Two kinds of browser tests live here and they are different things:
 //
@@ -24,6 +25,7 @@ export default defineConfig({
   reporter: [['list']],
   use: {
     ...devices['Desktop Chrome'],
+    launchOptions: { env: browserEnvironment() },
     trace: 'off',
     screenshot: 'off',
     video: 'off',
