@@ -59,9 +59,9 @@ export const account: Record<string, Scenario> = {
     return ['VERIFIED_GUEST_LINKING_BOTH_ORDERS_FOREIGN_USER_DENIED'];
   },
   'AC-02': async d => {
-    const page = await signed(d); await d.goto(page, d.config.origins.accountA, '/link-purchases'); const after = new Date(); await d.form(page, '/link-purchases/send');
+    const page = await signed(d); await d.goto(page, d.config.origins.accountA, '/link-purchases'); await d.form(page, '/link-purchases/send');
     await d.form(page, '/link-purchases/confirm', { code: '000000' }); await expect(page.getByRole('alert')).toContainText("isn't right");
-    await page.waitForTimeout(31_000); await d.form(page, '/link-purchases/send'); const mail = await d.email('b1', after, 'verification'); await d.form(page, '/link-purchases/confirm', { code: mail.codes[0] });
+    await page.waitForTimeout(31_000); const after = new Date(); await d.form(page, '/link-purchases/send'); const mail = await d.email('b1', after, 'verification'); await d.form(page, '/link-purchases/confirm', { code: mail.codes[0] });
     // Supplied proof IDs come from an independently sanctioned public verification flow.
     // The harness never reads app sessions or a verification code from the database.
     const proofs = await fixture(d, 'guestLinkProofs');
