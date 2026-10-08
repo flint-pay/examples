@@ -4,10 +4,11 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Client,SdkError } from '@flintpay/node';
+import type { CreateCheckoutSessionRequestInput, CreateSubscriptionPlanRequestInput, UpdateSubscriptionRequestInput } from '@flintpay/node';
 import { Ledger } from '../../support/ledger.ts';
 import { Operator, operations } from '../../support/operator.ts';
 import type { VerifiedClients } from '../../support/sdk.ts';
-import type { Fixtures } from '../../support/fixtures.ts';
+import type { Fixtures, PlanStep } from '../../support/fixtures.ts';
 
 const run = '20000101T000000Z-00000000';
 const config = { pins: { A: { merchantId: 'mer_PLACEHOLDER', sandboxId: 'test_PLACEHOLDER_A' }, B: { merchantId: 'mer_PLACEHOLDER', sandboxId: 'test_PLACEHOLDER_B' } } };
@@ -16,6 +17,127 @@ test('every operator method exists in the exact published SDK', () => {
   const client = new Client({ baseUrl: 'https://api.staging.withflintpay.com', apiKey: 'flint_test_PLACEHOLDER' });
   for (const operation of Object.keys(operations)) { const [resource, method] = operation.split('.'); assert.equal(typeof (client as any)[resource]?.[`${method}WithResponse`], 'function', operation); }
 });
+
+function subscriptionPlanStep(quantity: unknown = 1): PlanStep {
+  return { name: 'numeric-plan', sandbox: 'A', operation: 'subscriptionPlans.create', args: [{
+    name: 'Unit subscription', billing_interval: 'monthly', billing_interval_count: 1, currency: 'USD',
+    line_items: [{ variant_id: 'var_UNIT_FAKE', quantity, modifiers: [{ modifier_id: 'mod_UNIT_FAKE', quantity: '1' }] }],
+  }], creates: [{ path: 'subscription_plan_id', type: 'plan', cleanup: 'review', reviewAt: '2000-02-01T00:00:00Z' }], purpose: 'unit-plan' };
+}
+function subscriptionUpdateStep(quantity: unknown = 1): PlanStep {
+  return { name: 'numeric-update', sandbox: 'A', operation: 'subscriptions.update', args: ['sub_UNIT_FAKE', { quantity, expected_version: '1' }], creates: [], purpose: 'unit-update' };
+}
+function subscriptionCheckoutStep(quantity: unknown = 1): PlanStep {
+  return { name: 'numeric-checkout', sandbox: 'A', operation: 'checkoutSessions.create', args: [{ subscription_plan_id: 'plan_UNIT_FAKE', subscription_terms: { quantity } }], creates: [{ path: 'checkout_session.checkout_session_id', type: 'checkout_session', cleanup: 'checkout_session', reviewAt: '2000-02-01T00:00:00Z' }], purpose: 'unit-checkout' };
+}
+async function ownSubscription(ledger: Ledger) {
+  await ledger.record({ resource: 'sub_UNIT_FAKE', type: 'subscription', mode: 'test', sandbox: 'A', merchant: 'mer_PLACEHOLDER', sandboxId: 'test_PLACEHOLDER_A', createdBy: run, purpose: 'unit', cleanup: 'subscription', owner: 'unit', reviewAt: '2000-02-01T00:00:00Z', owned: true });
+}
+test('subscription plan numeric line quantity executes through applyPlan and the durable ledger', async () => setup(async (ledger, dir) => {
+  const input: CreateSubscriptionPlanRequestInput = {
+    name: 'Unit subscription', billing_interval: 'monthly', billing_interval_count: 1, currency: 'USD',
+    line_items: [{ variant_id: 'var_UNIT_FAKE', quantity: 1, modifiers: [{ modifier_id: 'mod_UNIT_FAKE', quantity: '1' }] }],
+  };
+  const step = { ...subscriptionPlanStep(), args: [input] };
+  let calls = 0;
+  const fake = { subscriptionPlans: { createWithResponse: async (body: CreateSubscriptionPlanRequestInput, options: { idempotencyKey: string }) => {
+    calls++; assert.deepEqual(body, input);
+    const durable = new Ledger(join(dir, 'ledger.json'), run); await durable.load();
+    assert.equal(durable.state.actions['A:numeric-plan'].phase, 'unknown');
+    assert.deepEqual(durable.state.actions['A:numeric-plan'].args, [input]);
+    assert.equal(durable.state.actions['A:numeric-plan'].key, options.idempotencyKey);
+    return { body: { data: { subscription_plan_id: 'plan_UNIT_FAKE' } }, meta: { requestId: 'req_UNIT_FAKE' } };
+  } } };
+  const clients = { config, writable: async () => fake } as unknown as VerifiedClients;
+  const operator = new Operator(clients, ledger, {} as Fixtures);
+  operator.validate(step); assert.equal(calls, 0);
+  await operator.applyPlan([step]); assert.equal(calls, 1);
+  const loaded = new Ledger(join(dir, 'ledger.json'), run); await loaded.load();
+  const resumed = new Operator(clients, loaded, {} as Fixtures);
+  assert.deepEqual(await resumed.execute(step), { data: { subscription_plan_id: 'plan_UNIT_FAKE' }, requestId: 'req_UNIT_FAKE' });
+  assert.equal(calls, 1); assert.equal(loaded.state.actions['A:numeric-plan'].phase, 'known');
+  assert.equal(loaded.state.resources.length, 1);
+  assert.equal(loaded.state.resources[0].resource, 'plan_UNIT_FAKE');
+  assert.equal(loaded.state.resources[0].type, 'plan'); assert.equal(loaded.state.resources[0].owned, true);
+  assert.equal(loaded.state.resources[0].creationRequestId, 'req_UNIT_FAKE');
+  await assert.rejects(() => resumed.execute(subscriptionPlanStep(2)), { code: 'IDEMPOTENCY_REQUEST_CHANGED' });
+  assert.equal(calls, 1);
+}));
+test('subscription update numeric quantity retains exact version and run-owned authority through execute', async () => setup(async (ledger, dir) => {
+  const input: UpdateSubscriptionRequestInput = { quantity: 100, expected_version: '1' }, step = subscriptionUpdateStep(100);
+  let calls = 0;
+  const fake = { subscriptions: { updateWithResponse: async (id: string, body: UpdateSubscriptionRequestInput, options: { idempotencyKey: string }) => {
+    calls++; assert.equal(id, 'sub_UNIT_FAKE'); assert.deepEqual(body, input);
+    const durable = new Ledger(join(dir, 'ledger.json'), run); await durable.load();
+    assert.equal(durable.state.actions['A:numeric-update'].phase, 'unknown');
+    assert.deepEqual(durable.state.actions['A:numeric-update'].args, [id, input]);
+    assert.equal(durable.state.actions['A:numeric-update'].key, options.idempotencyKey);
+    return { body: { data: { subscription_id: id, quantity: body.quantity, version: '2' } }, meta: {} };
+  } } };
+  const clients = { config, writable: async () => fake } as unknown as VerifiedClients;
+  const operator = new Operator(clients, ledger, {} as Fixtures);
+  await assert.rejects(() => operator.execute(step), { code: 'RUN_RESOURCE_AUTHORITY_REQUIRED' });
+  assert.equal(calls, 0); assert.deepEqual(ledger.state.actions, {});
+  await ownSubscription(ledger); operator.validate(step);
+  await operator.execute(step);
+  const loaded = new Ledger(join(dir, 'ledger.json'), run); await loaded.load();
+  await new Operator(clients, loaded, {} as Fixtures).execute(step);
+  assert.equal(calls, 1); assert.equal(loaded.state.actions['A:numeric-update'].phase, 'known');
+  assert.deepEqual(loaded.state.actions['A:numeric-update'].args, ['sub_UNIT_FAKE', input]);
+}));
+test('subscription checkout numeric quantity executes with unchanged terms and durable resource tracking', async () => setup(async (ledger, dir) => {
+  const input: CreateCheckoutSessionRequestInput = { subscription_plan_id: 'plan_UNIT_FAKE', subscription_terms: { quantity: 100 } };
+  const step = { ...subscriptionCheckoutStep(100), args: [input] };
+  let calls = 0;
+  const fake = { checkoutSessions: { createWithResponse: async (body: CreateCheckoutSessionRequestInput, options: { idempotencyKey: string }) => {
+    calls++; assert.deepEqual(body, input);
+    const durable = new Ledger(join(dir, 'ledger.json'), run); await durable.load();
+    assert.equal(durable.state.actions['A:numeric-checkout'].phase, 'unknown');
+    assert.deepEqual(durable.state.actions['A:numeric-checkout'].args, [input]);
+    assert.equal(durable.state.actions['A:numeric-checkout'].key, options.idempotencyKey);
+    return { body: { data: { checkout_session: { checkout_session_id: 'cs_UNIT_FAKE' } } }, meta: {} };
+  } } };
+  const clients = { config, writable: async () => fake } as unknown as VerifiedClients;
+  const operator = new Operator(clients, ledger, {} as Fixtures);
+  operator.validate(step); await operator.execute(step);
+  const loaded = new Ledger(join(dir, 'ledger.json'), run); await loaded.load();
+  await new Operator(clients, loaded, {} as Fixtures).execute(step);
+  assert.equal(calls, 1); assert.equal(loaded.state.actions['A:numeric-checkout'].phase, 'known');
+  assert.equal(loaded.state.resources.length, 1);
+  assert.equal(loaded.state.resources[0].resource, 'cs_UNIT_FAKE');
+  assert.equal(loaded.state.resources[0].type, 'checkout_session'); assert.equal(loaded.state.resources[0].owned, true);
+}));
+test('subscription quantities obey their published bounds and reject invalid values before journaling or SDK calls', async () => setup(async ledger => {
+  let calls = 0;
+  const operator = new Operator({ config, writable: async () => { calls++; return {}; } } as unknown as VerifiedClients, ledger, {} as Fixtures);
+  await ownSubscription(ledger);
+  for (const [makeStep, max] of [[subscriptionPlanStep, 9999], [subscriptionUpdateStep, 100], [subscriptionCheckoutStep, 100]] as const) {
+    for (const quantity of [1, max]) operator.validate(makeStep(quantity));
+    const omitted = makeStep();
+    if (omitted.operation === 'subscriptionPlans.create') delete omitted.args[0].line_items[0].quantity;
+    else if (omitted.operation === 'subscriptions.update') delete omitted.args[1].quantity;
+    else delete omitted.args[0].subscription_terms.quantity;
+    operator.validate(omitted);
+    for (const quantity of ['1', '9999', 0, -1, 1.5, max + 1, 2 ** 31 - 1, 2 ** 31, -(2 ** 31) - 1, NaN, Infinity, null, true]) {
+      await assert.rejects(() => operator.execute(makeStep(quantity)), { code: 'EXACT_FIXTURE_INTEGER_REQUIRED' });
+    }
+  }
+  assert.equal(calls, 0); assert.deepEqual(ledger.state.actions, {});
+}));
+test('numeric subscription exceptions do not admit order, modifier, revision or misplaced quantities', async () => setup(async ledger => {
+  const operator = new Operator({ config } as VerifiedClients, ledger, {} as Fixtures);
+  await ownSubscription(ledger);
+  const modifier = subscriptionPlanStep(); modifier.args[0].line_items[0].modifiers[0].quantity = 1;
+  const nested = subscriptionUpdateStep(); nested.args[1].metadata = { quantity: 1 };
+  const misplaced = subscriptionPlanStep(); misplaced.args[0].quantity = 1;
+  const order: PlanStep = { name: 'numeric-order', sandbox: 'A', operation: 'orders.create', args: [{ line_items: [{ name: 'Unit line', quantity: 1, unit_price_money: { amount: '100', currency: 'USD' } }] }], creates: [{ path: 'order_id', type: 'order', cleanup: 'review', reviewAt: '2000-02-01T00:00:00Z' }], purpose: 'unit-order' };
+  const version = subscriptionUpdateStep(); version.args[1].expected_version = 1;
+  const revision = subscriptionPlanStep(); revision.args[0].order_revision = 1;
+  const checkout = subscriptionCheckoutStep(); checkout.args[0].quick_pay_item = { quantity: 1 };
+  for (const step of [modifier, nested, misplaced, order, version, revision, checkout]) assert.throws(() => operator.validate(step), { code: 'EXACT_FIXTURE_INTEGER_REQUIRED' });
+  order.args[0].line_items[0].quantity = '1'; operator.validate(order);
+  assert.deepEqual(ledger.state.actions, {});
+}));
 test('challenge registration returns the current owned session only in memory',async()=>setup(async ledger=>{
  const id='ord_CHALLENGE_PLACEHOLDER',sessionId='cs_CHALLENGE_PLACEHOLDER',origin='http://localhost:4100',url='https://checkout.staging.withflintpay.com/gift-card-challenge/gccf_fixture.token';
  await ledger.record({resource:id,type:'order',mode:'test',sandbox:'A',merchant:'mer_PLACEHOLDER',sandboxId:'test_PLACEHOLDER_A',createdBy:run,purpose:'unit',cleanup:'review',owner:'unit',reviewAt:'2000-02-01T00:00:00Z',owned:true});

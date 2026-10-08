@@ -58,14 +58,19 @@ export class Operator {
     invariant(Array.isArray(step.args) && Array.isArray(step.creates), 'OPERATOR_PLAN_INVALID');
     invariant(operations[step.operation as Operation].creates.every(type => step.creates.some(c => c.type === type)), 'ALL_CREATED_RESOURCES_MUST_BE_TRACKED');
     invariant(step.creates.every(c => c.cleanup && Number.isFinite(Date.parse(c.reviewAt))), 'RESOURCE_DISPOSITION_REQUIRED');
-    const exact = (value: any) => {
+    const exact = (value: any, path: (string | number)[]) => {
       if (!value || typeof value !== 'object') return;
       if ('amount' in value && 'currency' in value) money(value);
       for (const [key, field] of Object.entries(value)) {
-        if (['quantity', 'order_revision', 'expected_version'].includes(key)) invariant(typeof field === 'string' && /^(0|[1-9]\d*)$/.test(field), 'EXACT_FIXTURE_INTEGER_REQUIRED');
-        if (Array.isArray(field)) field.forEach(exact); else exact(field);
+        // These published subscription fields use bounded numbers; modifiers and order integers use strings.
+        const maxQuantity = key === 'quantity' && step.operation === 'subscriptionPlans.create' && path.length === 3 && path[0] === 0 && path[1] === 'line_items' && typeof path[2] === 'number' ? 9999
+          : key === 'quantity' && step.operation === 'subscriptions.update' && path.length === 1 && path[0] === 1 ? 100
+          : key === 'quantity' && step.operation === 'checkoutSessions.create' && path.length === 2 && path[0] === 0 && path[1] === 'subscription_terms' ? 100 : undefined;
+        if (maxQuantity !== undefined) invariant(typeof field === 'number' && Number.isInteger(field) && field >= 1 && field <= maxQuantity, 'EXACT_FIXTURE_INTEGER_REQUIRED');
+        else if (['quantity', 'order_revision', 'expected_version'].includes(key)) invariant(typeof field === 'string' && /^(0|[1-9]\d*)$/.test(field), 'EXACT_FIXTURE_INTEGER_REQUIRED');
+        if (Array.isArray(field)) field.forEach((item, index) => exact(item, [...path, key, index])); else exact(field, [...path, key]);
       }
-    }; step.args.forEach(exact);
+    }; step.args.forEach((arg, index) => exact(arg, [index]));
     // Positional target IDs must be run-owned. Creates may refer to sanctioned existing fixtures.
     if (!step.operation.endsWith('.create') && typeof step.args[0] === 'string') this.owned(step.sandbox, step.args[0]);
     if (step.operation === 'subscriptions.updateBillingSchedule') this.owned(step.sandbox, step.args[0].subscription_id);
