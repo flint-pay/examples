@@ -1,3 +1,4 @@
+import type {UpdateSettingsRequestInput} from '@flintpay/node';
 import type { PublicClient } from './sdk.ts';
 import { VerifiedClients } from './sdk.ts';
 import { Ledger } from './ledger.ts';
@@ -6,6 +7,9 @@ import type { PlanStep, Fixtures } from './fixtures.ts';
 import type { Sandbox } from './config.ts';
 import { invariant, requestId, digest } from './safe.ts';
 import { money } from './money.ts';
+import {randomBytes,randomUUID} from 'node:crypto';
+import {SdkError} from '@flintpay/node';
+import {trustedChallengeUrl} from './flint-boundary.ts';
 
 // Only published merchant SDK methods. No provider, live sandbox management or RPC calls.
 export const operations = {
@@ -43,7 +47,9 @@ export const operations = {
 type Operation = keyof typeof operations;
 export class Operator {
   readonly clients: VerifiedClients; readonly ledger: Ledger; readonly fixtures: Fixtures;
-  constructor(clients: VerifiedClients, ledger: Ledger, fixtures: Fixtures) { this.clients = clients; this.ledger = ledger; this.fixtures = fixtures; }
+  private giftChallengeTrippedAt=0;
+  private giftChallengeProbeSequence=0;
+  constructor(clients: VerifiedClients, ledger: Ledger, fixtures: Fixtures) { this.clients = clients; this.ledger = ledger; this.fixtures = fixtures;this.giftChallengeTrippedAt=ledger.state.giftChallengeTrippedAt??0;this.giftChallengeProbeSequence=Math.max(0,...Object.keys(ledger.state.actions).map(name=>Number(/^A:challenge-probe-(\d+)-(?:order|session|close)$/.exec(name)?.[1]??0))); }
   private owned(sandbox: Sandbox, id: string): void {
     invariant(this.ledger.state.resources.some(r => r.sandbox === sandbox && r.resource === id && r.owned), 'RUN_RESOURCE_AUTHORITY_REQUIRED');
   }
@@ -123,6 +129,48 @@ export class Operator {
     const response = await this.execute({ name, sandbox: 'A', operation: 'giftCards.create', args: [{ currency: 'USD', external_reference_id: `${this.ledger.run}-${name}`, funding: { source: { funding_source_type: 'external_payment', reference_id: `${this.ledger.run}-${name}`, buyer_id: buyerId }, consideration_money: { amount: value, currency: 'USD' }, value_money: { amount: value, currency: 'USD' } }, ...(email ? { notification: { email } } : {}) }], creates: [{ path: 'gift_card.gift_card_id', type: 'gift_card', cleanup: 'gift_card', reviewAt }], purpose: name });
     return response.data;
   }
+  async challengeFor(orderId:string,pageOrigin:string):Promise<{url:string;checkoutSessionId:string}>{
+    this.owned('A',orderId);
+    const client=this.clients.clients.A;
+    const sessions=await client.checkoutSessions.list({order_id:orderId,status:'open',page_size:100});
+    invariant(sessions.data.length===1&&!sessions.next_page_token,'APP_CURRENT_CHECKOUT_SESSION_AMBIGUOUS');
+    const session=await client.checkoutSessions.get(sessions.data[0]!.checkout_session_id);
+    const url=trustedChallengeUrl(session.gift_card_challenge?.url);
+    invariant(session.order_id===orderId&&session.status==='open'&&!session.recovery_mode&&session.page_origin===pageOrigin&&url,'PUBLIC_GIFT_CHALLENGE_SESSION_REQUIRED');
+    return {url,checkoutSessionId:session.checkout_session_id};
+  }
+  async challengeUrlFor(orderId:string,pageOrigin:string):Promise<string>{return (await this.challengeFor(orderId,pageOrigin)).url;}
+  async tripGiftChallenge():Promise<void>{
+    const client=await this.clients.writable('A'),origin=this.clients.config.origins.storefrontA;
+    const recent=this.giftChallengeTrippedAt>Date.now()-50*60000;
+    let lookups=0,tripped=false;
+    for(let index=0;index<3&&!tripped;index++){
+      const name=`challenge-probe-${++this.giftChallengeProbeSequence}`,reviewAt=new Date(this.runDate()+86400000).toISOString();
+      const order=await this.execute({name:`${name}-order`,sandbox:'A',operation:'orders.create',args:[{line_items:[{name:'Gift card verification probe',quantity:'1',unit_price_money:{amount:'200',currency:'USD'},fulfillment:{requirement:'none'}}],metadata:{e2e_run:this.ledger.run}}],creates:[{path:'order_id',type:'order',cleanup:'review',reviewAt}],purpose:'gift-challenge-probe'});
+      const launched=await this.execute({name:`${name}-session`,sandbox:'A',operation:'checkoutSessions.create',args:[{order_id:order.data.order_id,surface:'embedded',page_origin:origin}],creates:[{path:'checkout_session.checkout_session_id',type:'checkout_session',cleanup:'checkout_session',reviewAt}],purpose:'gift-challenge-probe'});
+      const sessionId=launched.data.checkout_session.checkout_session_id,secret=launched.data.checkout_access.checkout_auth_token;
+      invariant(sessionId&&secret,'CHALLENGE_PROBE_AUTHORITY_REQUIRED');
+      try{
+        for(let attempt=0;attempt<5&&lookups<15;attempt++){
+          lookups++;const fresh=await client.orders.get(order.data.order_id);invariant(fresh.order_revision,'CHALLENGE_PROBE_REVISION_REQUIRED');
+          let code:string|undefined;
+          try{await client.orders.applyGiftCard(order.data.order_id,{gift_card_code:`E2ENOPE${randomBytes(12).toString('base64url')}`,order_revision:fresh.order_revision},{authMode:'checkout',credentials:{CheckoutSessionIDHeader:sessionId,CheckoutSessionSecretHeader:secret},idempotencyKey:randomUUID(),maxAttempts:1});}
+          catch(error){if(error instanceof SdkError)code=error.code;else throw error;}
+          invariant(code==='GIFT_CARD_UNAVAILABLE'||code==='GIFT_CARD_CHALLENGE_REQUIRED','CHALLENGE_TRIP_UNEXPECTED_OUTCOME');
+          if(code==='GIFT_CARD_CHALLENGE_REQUIRED'){
+            if(attempt===0){tripped=true;this.giftChallengeTrippedAt=Date.now();this.ledger.state.giftChallengeTrippedAt=this.giftChallengeTrippedAt;await this.ledger.save();}
+            break;
+          }
+          // A recent trip is renewed within the same session and lookup limits.
+          if(recent&&attempt===0){this.giftChallengeTrippedAt=0;this.ledger.state.giftChallengeTrippedAt=0;await this.ledger.save();}
+        }
+      }finally{
+        await this.ledger.action(`${name}-close`,'A','checkoutSessions.closeSession',[sessionId,{}],key=>client.checkoutSessions.closeSession(sessionId,{}, {idempotencyKey:key}),async()=>{});
+        const resource=this.ledger.state.resources.find(row=>row.sandbox==='A'&&row.resource===sessionId&&row.type==='checkout_session');invariant(resource,'CHALLENGE_PROBE_TRACKING_REQUIRED');await this.ledger.disposition(resource,'CLEANED UP');
+      }
+    }
+    invariant(tripped,'CHALLENGE_TRIP_NOT_OBSERVED');
+  }
   runDate(): number {
     const r = this.ledger.run;
     const date = Date.parse(`${r.slice(0, 4)}-${r.slice(4, 6)}-${r.slice(6, 8)}T${r.slice(9, 11)}:${r.slice(11, 13)}:${r.slice(13, 15)}Z`);
@@ -133,11 +181,13 @@ export class Operator {
     invariant(authority?.runOwned && authority.owner && authority.reviewAt, 'PREEXISTING_SETTINGS_CHANGE_FORBIDDEN');
     const client = await this.clients.writable(sandbox);
     const current = await client.settings.get();
-    invariant(Object.keys(patch).every(k => ['customer_account', 'customer_email_delivery', 'checkout'].includes(k) && (current as any)[k] !== undefined), 'SETTINGS_PATCH_NOT_RESTORABLE');
-    invariant(Object.keys(patch).every(k => (current as any)[k] !== null), 'NULL_SETTINGS_SNAPSHOT_UNSUPPORTED_BY_PINNED_SDK');
+    invariant(Object.keys(patch).every(k => ['customer_account', 'customer_email_delivery', 'checkout'].includes(k) && (k === 'customer_account' || (current as any)[k] !== undefined && (current as any)[k] !== null)), 'SETTINGS_PATCH_NOT_RESTORABLE');
     const name = `settings-${sandbox}`;
     invariant(!this.ledger.state.settings[name]?.restored, 'SETTINGS_LIFECYCLE_ALREADY_COMPLETE');
-    await this.ledger.snapshot(name, Object.fromEntries(['version', ...Object.keys(patch)].map(k => [k, (current as any)[k]])));
+    const presence = Object.fromEntries(Object.keys(patch).map(k => [k, !Object.hasOwn(current, k) ? 'absent' : (current as any)[k] === null ? 'null' : 'value']));
+    const effectiveAccount = Object.hasOwn(patch, 'customer_account') && presence.customer_account !== 'value' ? (await client.settings.getEffective()).customer_account : undefined;
+    if(Object.hasOwn(patch,'customer_account')&&presence.customer_account!=='value')invariant(effectiveAccount!==undefined,'SETTINGS_EFFECTIVE_SNAPSHOT_REQUIRED');
+    await this.ledger.snapshot(name, { ...Object.fromEntries(['version', ...Object.keys(patch)].map(k => [k, (current as any)[k]])), _presence: presence, ...(effectiveAccount !== undefined ? { _effective_customer_account: effectiveAccount } : {}) });
     const prior = this.ledger.state.actions[`${sandbox}:${name}`];
     const request = prior ? prior.args[0] as any : { ...patch, expected_version: current.version };
     const { expected_version, ...originalPatch } = request; invariant(digest(originalPatch) === digest(patch), 'SETTINGS_REQUEST_CHANGED');
@@ -205,14 +255,22 @@ export class Operator {
         const previousRestore = this.ledger.state.actions[`${sandbox}:restore-${name}`];
         invariant(previousRestore || settings.applied && current.version === settings.applied.version, 'SETTINGS_CONCURRENT_CHANGE');
         const fields = ['customer_account', 'customer_email_delivery', 'checkout'];
-        const patch = Object.fromEntries(fields.filter(k => settings.snapshot[k] !== undefined).map(k => [k, settings.snapshot[k]]));
+        const presence = settings.snapshot._presence as Record<string, 'absent' | 'null' | 'value'> | undefined;
+        const patch = Object.fromEntries(fields.filter(k => presence ? Object.hasOwn(presence, k) : settings.snapshot[k] !== undefined).map(k => [k, k === 'customer_account' && presence?.[k] !== 'value' && presence?.[k] !== undefined ? clearCustomerAccount().customer_account : settings.snapshot[k]]));
         const request = previousRestore ? previousRestore.args[0] as any : { ...patch, expected_version: current.version };
         await this.ledger.action(`restore-${name}`, sandbox, 'settings.update', [request], k => c.settings.update(request, { idempotencyKey: k }), async () => {});
         const readback = await c.settings.get();
-        for (const field of Object.keys(patch)) invariant(digest((readback as any)[field]) === digest(patch[field]), 'SETTINGS_RESTORE_FAILED');
+        for (const field of Object.keys(patch)) {
+          if (field === 'customer_account' && patch[field] === null) {
+            invariant(!Object.hasOwn(readback, field), 'SETTINGS_RESTORE_FAILED');
+            invariant(digest((await c.settings.getEffective()).customer_account) === digest(settings.snapshot._effective_customer_account), 'SETTINGS_EFFECTIVE_RESTORE_FAILED');
+          } else invariant(digest((readback as any)[field]) === digest(patch[field]), 'SETTINGS_RESTORE_FAILED');
+        }
         settings.restored = true; await this.ledger.save();
       } catch { failed = true; }
     }
     invariant(!failed, 'TEARDOWN_FAILED'); this.ledger.assertTracked();
   }
 }
+
+function clearCustomerAccount():UpdateSettingsRequestInput{return {customer_account:null};}

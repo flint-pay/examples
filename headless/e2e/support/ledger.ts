@@ -5,8 +5,8 @@ import type { Sandbox } from './config.ts';
 
 export type Disposition = 'CLEANED UP' | 'PENDING EXPIRY' | 'PENDING AUTHORIZED CLEANUP' | 'RETAINED FOR RECONCILIATION';
 export type Resource = { resource: string; type: string; mode: 'test'; sandbox: Sandbox; merchant: string; sandboxId: string; createdBy: string; purpose: string; creationRequestId?: string; cleanup: string; owner: string; reviewAt: string; status: Disposition; owned: boolean };
-type Action = { key: string; fingerprint: string; operation: string; args: unknown[]; sandbox: Sandbox; phase: 'prepared' | 'unknown' | 'known' | 'rejected'; response?: unknown; responseNeedsReplay?: boolean };
-type State = { run: string; resources: Resource[]; actions: Record<string, Action>; settings: Record<string, { snapshot: any; applied?: any; restored: boolean }> };
+type Action = { key: string; fingerprint: string; operation: string; args: unknown[]; sandbox: Sandbox; phase: 'prepared' | 'unknown' | 'known' | 'rejected' | 'abandoned'; reconcileActionId?: string; response?: unknown; responseNeedsReplay?: boolean };
+type State = { run: string;giftChallengeTrippedAt?:number; resources: Resource[]; actions: Record<string, Action>; settings: Record<string, { snapshot: any; applied?: any; restored: boolean }> };
 // Persist reconciliation evidence without browser, checkout, customer or gift authority.
 export function redactJournalResponse(value: any): any {
   if (Array.isArray(value)) return value.map(redactJournalResponse);
@@ -48,6 +48,7 @@ export class Ledger {
     const fingerprint = digest({ sandbox, operation, args });
     const actionId = `${sandbox}:${name}`;
     let action = this.state.actions[actionId];
+    invariant(!action || action.phase !== 'abandoned', 'UNREPLAYABLE_ACTION_ABANDONED');
     invariant(!action || action.fingerprint === fingerprint, 'IDEMPOTENCY_REQUEST_CHANGED');
     invariant(!action || !suppliedKey || action.key === suppliedKey, 'IDEMPOTENCY_KEY_CHANGED');
     if (!action) {
@@ -62,6 +63,7 @@ export class Ledger {
     if (action.phase === 'unknown' && action.response !== undefined && !action.responseNeedsReplay) {
       await reconcile(action.response as T); action.phase = 'known'; await this.save(); return action.response as T;
     }
+    invariant(!action.args.some(a => a && typeof a === 'object' && 'credential_source' in a) || action.phase === 'prepared', 'IN_MEMORY_AUTHORITY_CANNOT_BE_REPLAYED');
     // Persist unknown before the network call. A killed process must reconcile this key.
     action.phase = 'unknown'; await this.save();
     let response: T;
@@ -77,8 +79,21 @@ export class Ledger {
     action.phase = 'known'; await this.save();
     return response;
   }
+  validAbandonment(action: Action): boolean {
+    const reconcile = action.reconcileActionId && this.state.actions[action.reconcileActionId];
+    const count = reconcile && (reconcile.response as any)?.revoked_count;
+    const customer = reconcile && this.state.resources.find(r => r.type === 'customer' && r.resource === reconcile.args[0] && r.sandbox === reconcile.sandbox && r.owned && r.createdBy === this.run);
+    return action.args.some(a => a && typeof a === 'object' && 'credential_source' in a && typeof (a as any).credential_source === 'string') && !!reconcile && reconcile.phase === 'known' && reconcile.operation === 'customers.revokeSessions' && reconcile.sandbox === action.sandbox && !!customer && typeof count === 'string' && /^(0|[1-9]\d*)$/.test(count);
+  }
+  async abandonUnreplayable(actionId: string, reconcileActionId: string): Promise<void> {
+    const action = this.state.actions[actionId];
+    invariant(action && action.phase === 'unknown', 'UNREPLAYABLE_ACTION_REQUIRED');
+    const candidate = { ...action, reconcileActionId };
+    invariant(this.validAbandonment(candidate), 'OWNED_CUSTOMER_REVOCATION_RECONCILIATION_REQUIRED');
+    action.reconcileActionId = reconcileActionId; action.phase = 'abandoned'; await this.save();
+  }
   assertTracked(): void {
-    invariant(Object.values(this.state.actions).every(a => a.phase === 'known' || a.phase === 'rejected'), 'UNRECONCILED_CREATION_OR_MUTATION');
+    invariant(Object.values(this.state.actions).every(a => a.phase === 'known' || a.phase === 'rejected' || a.phase === 'abandoned' && this.validAbandonment(a)), 'UNRECONCILED_CREATION_OR_MUTATION');
     invariant(this.state.resources.every(r => r.cleanup && r.owner && r.reviewAt), 'UNTRACKED_RESOURCE');
     invariant(Object.values(this.state.settings).every(s => s.restored), 'SETTINGS_NOT_RESTORED');
     invariant(this.state.resources.every(r => r.status !== 'PENDING AUTHORIZED CLEANUP'), 'CLEANUP_INCOMPLETE');

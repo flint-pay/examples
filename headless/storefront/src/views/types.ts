@@ -5,6 +5,26 @@
 
 export type Money = { amount: string; currency: string };
 
+export interface GiftChallengeView {
+  challenge_id: string;
+  url: string;
+  session_tag: string;
+  reason: 'proof_required' | 'proof_rejected';
+  expires_in_seconds: number;
+}
+
+export interface GiftChallengeRequest {
+  challenge_id: string;
+  gift_card_code: string;
+  proof: string;
+}
+
+export interface GiftChallengeBoot {
+  origin: string;
+  slow_after_ms: 60000;
+  max_mounts: 3;
+}
+
 export type PageId =
   | 'sf-home'
   | 'sf-product'
@@ -35,6 +55,7 @@ export type PageContext<D = Record<string, unknown>> = {
   cartCount: number;
   accountOrigin: string | null;
   appOrigin: string;
+  giftChallengeOrigin?: string;
   data: D;
   /** Copy keys. `key:value` passes one parameter, for example `email_confirmed_linked:3`. */
   notices: string[];
@@ -396,6 +417,10 @@ export type CheckoutState = {
 };
 
 export type CheckoutData = { state: CheckoutState };
+
+export type GiftApplyResponse =
+  | { state: CheckoutState; gift_challenge?: GiftChallengeView }
+  | { error: PageError; state?: CheckoutState };
 
 export type CompleteData = {
   state: CheckoutState;

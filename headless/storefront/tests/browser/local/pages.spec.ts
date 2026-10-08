@@ -3,6 +3,7 @@
 // They are not staging acceptance.
 
 import { expect, test, type Page } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
 import { installStripeStub } from '../support/stripe-stub.ts';
 import { resetFixtures } from '../support/helpers.ts';
 
@@ -136,13 +137,6 @@ test('money elements expose amount and currency', async ({ page }) => {
 });
 
 test('axe reports no serious or critical violations on screen states', async ({ page }) => {
-  let AxeBuilder: any;
-  try {
-    AxeBuilder = (await import('@axe-core/playwright')).default;
-  } catch {
-    test.skip(true, 'install @axe-core/playwright (it is an e2e dependency) to run the automated accessibility scan');
-    return;
-  }
   await installStripeStub(page);
   for (const entry of pages) {
     await page.goto(entry.url);

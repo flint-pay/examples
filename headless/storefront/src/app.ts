@@ -11,7 +11,7 @@ import {SDK_VERSION} from './config.ts';
 import type {Config} from './config.ts';
 import {createAuth} from './flint/auth.ts';
 import {createClient} from './flint/client.ts';
-import {LocalError,appError,errorStatus} from './flint/errors.ts';
+import {LocalError,appError,errorStatus,unknownOutcome} from './flint/errors.ts';
 import type {Preflight} from './flint/preflight.ts';
 import {Catalog} from './flint/catalog.ts';
 import {Checkouts} from './flint/checkouts.ts';
@@ -25,7 +25,8 @@ import {PaymentEngine} from './payments/engine.ts';
 import type {PayInput,PaymentResult} from './payments/engine.ts';
 import {RateLimiter} from './security/rate-limit.ts';
 import {securityHeaders} from './security/headers.ts';
-import {logRequest} from './security/log.ts';
+import {validProof} from './flint/gift-challenge.ts';
+import {logRequest,logLaunchInvalid} from './security/log.ts';
 import {returnPath} from './security/paths.ts';
 import {decimalMinor} from './security/money.ts';
 import {buyerSafe} from './flint/projection.ts';
@@ -45,7 +46,7 @@ function phone(value:unknown):string|null {
   if(!/^\+[1-9]\d{1,14}$/.test(normalized))throw new LocalError('INVALID_PHONE');return normalized;
 }
 async function body(c:Context<Env>):Promise<Body>{
-  const value:unknown=c.req.header('content-type')?.includes('application/json')?await c.req.json():await c.req.parseBody();
+  const value:unknown=c.req.header('content-type')?.includes('application/json')?await c.req.json().catch(()=>{throw new LocalError('INVALID_INPUT');}):await c.req.parseBody();
   if(!value||typeof value!=='object'||Array.isArray(value))throw new LocalError('INVALID_INPUT');return value as Body;
 }
 function asRecord(value:unknown):Body{if(!value||typeof value!=='object'||Array.isArray(value))throw new LocalError('INVALID_INPUT');return value as Body;}
@@ -69,7 +70,7 @@ export function createApp(options:AppOptions){
     const session=c.get('session');const user=c.get('user');const cart=carts.current(session,user);
     const queryNotice=c.req.query('notice');const fromRedirect=pageId==='sf-product'&&queryNotice==='added_to_cart'?'added_to_cart':pageId==='sign-in'&&queryNotice==='signed_out'?'signed_out':undefined;
     const url=new URL(c.req.url);
-    const context:ViewContext={storeName:config.storeName,csrf:session.csrf_token,user:user?{name:user.name,email:user.email}:null,cartCount:carts.lines(cart).reduce((sum,line)=>sum+line.quantity,0),accountOrigin:config.accountOrigin??null,appOrigin:config.appOrigin,data,notices:[...new Set([...notices,...(fromRedirect?[fromRedirect]:[])])],error,form:c.get('form'),path:viewPath(url.pathname+url.search)};
+    const context:ViewContext={storeName:config.storeName,csrf:session.csrf_token,user:user?{name:user.name,email:user.email}:null,cartCount:carts.lines(cart).reduce((sum,line)=>sum+line.quantity,0),accountOrigin:config.accountOrigin??null,appOrigin:config.appOrigin,giftChallengeOrigin:config.giftChallengeOrigin,data,notices:[...new Set([...notices,...(fromRedirect?[fromRedirect]:[])])],error,form:c.get('form'),path:viewPath(url.pathname+url.search)};
     return c.html(await renderPage(pageId,context),status);
   }
   async function checkoutPage(c:Context<Env>,pageId:'sf-checkout'|'sf-complete',data:Record<string,unknown>,read:ReadCheckout){
@@ -102,7 +103,7 @@ export function createApp(options:AppOptions){
   app.use('*',bodyLimit({maxSize:65536,onError:c=>c.json({error:{kind:'validation',code:'REQUEST_TOO_LARGE',message_key:'generic_error'}},413)}));
   app.use('*',async(c,next)=>{
     const started=Date.now();const requestId=randomUUID();c.set('requestId',requestId);c.header('X-Request-Id',requestId);
-    for(const [name,value] of Object.entries(securityHeaders))c.header(name,value);
+    for(const [name,value] of Object.entries(securityHeaders(config)))c.header(name,value);
     await next();logRequest({request_id:requestId,route:c.req.path,status:c.res.status,duration_ms:Date.now()-started});
   });
   app.get('/healthz',c=>c.json({status:'ok',app:'storefront',sandbox_id:preflight.sandboxId,mode:'test',sdk_version:SDK_VERSION,cards:preflight.cards,...(config.build?{build:config.build}:{})}));
@@ -210,7 +211,20 @@ export function createApp(options:AppOptions){
       details.delivery_selection=(response as {delivery_selection:Details['delivery_selection']}).delivery_selection;checkouts.saveDetails(record,details);
     });
   }));
-  app.post('/checkout/:ref/gift-card',async c=>job(c,async()=>{limited(c,'gift',5,60*60_000);const gift_card_code=text((await body(c)).gift_card_code,200);await checkouts.mutate(c.req.param('ref'),'gift',{code_hash:digest(gift_card_code)},async(record,key,context)=>{if(!context.order_revision)throw new LocalError('ORDER_CHANGED_REFRESH_REQUIRED',409);return client.orders.applyGiftCard(record.order_id!,{gift_card_code,order_revision:context.order_revision},auth.checkout(record,key));});}));
+  app.post('/checkout/:ref/gift-card',async c=>{
+    own(c);limited(c,'gift',5,3600000);await checkouts.read(c.req.param('ref'),c.get('user'));
+    const giftCardCode=text((await body(c)).gift_card_code,200);if(!giftCardCode)throw new LocalError('INVALID_INPUT');
+    const giftChallenge=await checkouts.applyGift(c.req.param('ref'),giftCardCode);
+    return c.json({state:(await state(c)).state,...(giftChallenge?{gift_challenge:giftChallenge}:{})});
+  });
+  app.post('/checkout/:ref/gift-card/challenge',async c=>{
+    own(c);limited(c,'gift_challenge',10,3600000);
+    if(!c.req.header('Content-Type')?.includes('application/json'))throw new LocalError('INVALID_INPUT');
+    const input=await body(c),challengeId=input.challenge_id,proof=input.proof,giftCardCode=text(input.gift_card_code,200);
+    if(typeof challengeId!=='string'||!/^gch_[A-Za-z0-9_-]{32}$/.test(challengeId)||!giftCardCode||!validProof(proof))throw new LocalError('INVALID_INPUT');
+    const giftChallenge=await checkouts.retryGift(c.req.param('ref'),challengeId,giftCardCode,proof);
+    return c.json({state:(await state(c)).state,...(giftChallenge?{gift_challenge:giftChallenge}:{})});
+  });
   app.post('/checkout/:ref/gift-card/:giftCardId/remove',async c=>job(c,async()=>{const giftCardId=c.req.param('giftCardId');await checkouts.mutate(c.req.param('ref'),'gift_remove',{gift_card_id:giftCardId},async(record,key,context)=>{if(!context.order_revision)throw new LocalError('NOT_FOUND',404);return client.orders.removeGiftCard(record.order_id!,giftCardId,{order_revision:context.order_revision},auth.checkout(record,key));});}));
   app.post('/checkout/:ref/tip',async c=>job(c,async()=>{
     const input=await body(c);let requested_tip:{percent:number}|{amount_money:{amount:string;currency:string}}|null;
@@ -259,6 +273,8 @@ export function createApp(options:AppOptions){
   app.notFound(c=>page(c,'not-found',{},404));
   app.onError(async(error,c)=>{
     const mapped=appError(error);const status=errorStatus(error) as ContentfulStatusCode;
+    if(c.req.path.endsWith('/gift-card/challenge')&&unknownOutcome(error))mapped.message_key='gift_challenge_unconfirmed';
+    if(mapped.code==='INVALID_PAGE_ORIGIN')logLaunchInvalid('invalid_page_origin',mapped.request_id);
     if(c.req.path.startsWith('/cart/')&&['CHECKOUT_PAYMENT_RESOLVING','PAYMENT_ATTEMPT_IN_PROGRESS'].includes(mapped.code)){
       mapped.message_key='cart_locked_payment';
       if(!jsonWanted(c)&&c.get('session')){
@@ -273,7 +289,8 @@ export function createApp(options:AppOptions){
       if(mapped.code==='INVALID_SIGN_IN')mapped.message_key='sign_in_failed';
     }
     if(jsonWanted(c)){
-      let projected:unknown;const ref=c.req.param('ref');if(ref&&status!==404){try{own(c);projected=(await state(c)).state;}catch{}}
+      const localChallenge=c.req.path.endsWith('/gift-card/challenge')&&['GIFT_CHALLENGE_EXPIRED','GIFT_CHALLENGE_SESSION_CHANGED','GIFT_CHALLENGE_CODE_CHANGED','GIFT_CHALLENGE_ORDER_CHANGED','CHECKOUT_PAYMENT_RESOLVING','PAYMENT_ATTEMPT_IN_PROGRESS'].includes(mapped.code);
+      let projected:unknown;const ref=c.req.param('ref');if(ref&&status!==404&&!localChallenge){try{own(c);projected=(await state(c)).state;}catch{}}
       return c.json({error:mapped,state:projected},status);
     }
     if(status===401&&c.get('user')===undefined&&c.req.path.startsWith('/verify-email'))return c.redirect(`/sign-in?next=${encodeURIComponent(c.get('returnNext')??returnPath(c.req.query('next')))}`,303);

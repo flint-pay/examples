@@ -4,7 +4,7 @@ import {readFileSync,readdirSync} from 'node:fs';
 import {join,relative,resolve} from 'node:path';
 import ts from 'typescript';
 import {readConfig} from '../../src/config.ts';
-import {catalogProducts,deterministicKey,deliveryInputs,owned,productInput} from '../../scripts/setup.ts';
+import {affirmReady,catalogProducts,deterministicKey,deliveryInputs,owned,productInput} from '../../scripts/setup.ts';
 function files(root:string):string[]{return readdirSync(root,{withFileTypes:true}).flatMap(entry=>entry.isDirectory()?files(join(root,entry.name)):entry.name.endsWith('.ts')?[join(root,entry.name)]:[]);}
 const sourceRoot=resolve('src');
 const merchantAllowed=new Set(['capabilities.listWithResponse','products.listItems','products.listVariantsItems','subscriptionPlans.listItems','customers.list','customers.create','customerVerifications.create','customerVerifications.confirm','customers.linkGuestPurchases','customerSessions.revoke','checkoutSessions.create','checkoutSessions.get','checkoutSessions.closeSession','orders.create','orders.get','orders.update','orders.deleteLineItem','orders.updateLineItem','orders.addLineItems','orders.getPaymentAttempt','orders.sendReceipt','subscriptions.get']);
@@ -30,3 +30,5 @@ test('setup keys and catalog metadata are stable while variant inventory remains
   const [shipping,pickup]=deliveryInputs('location','set');assert.equal(shipping?.type,'shipment');assert.equal(pickup?.configuration.public_details?.pickup_mode,'in_store');
   assert.equal(owned([{metadata:{example_catalog:'other',example_slug:'house-blend'}}],'house-blend'),undefined);assert.throws(()=>owned([{metadata:{example_catalog:'cedar-and-stone',example_slug:'duplicate'}},{metadata:{example_catalog:'cedar-and-stone',example_slug:'duplicate'}}],'duplicate'));
 });
+
+test('Affirm readiness uses the published capability ready state',()=>{assert.equal(affirmReady([{capability:'accept_affirm_payments',status:'ready'}]),true);for(const status of ['enabled','pending','disabled'])assert.equal(affirmReady([{capability:'accept_affirm_payments',status}]),false);assert.equal(affirmReady([{capability:'accept_card_payments',status:'ready'}]),false);});

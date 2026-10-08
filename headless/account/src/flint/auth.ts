@@ -12,7 +12,7 @@ export function createAuth(apiKey:string){
   function checkout(record:CheckoutRecord,key:string):RequestOptions<'checkout'>;
   function checkout(record:CheckoutRecord,key?:string):RequestOptions<'checkout'>{
     if(!record.checkout_session_id||!record.checkout_auth_token)throw new Error('checkout_credentials_missing');
-    return {authMode:'checkout' as const,credentials:{CheckoutSessionIDHeader:record.checkout_session_id,CheckoutSessionSecretHeader:record.checkout_auth_token},...(key?{idempotencyKey:key}:{})};
+    return {authMode:'checkout' as const,maxAttempts:1,credentials:{CheckoutSessionIDHeader:record.checkout_session_id,CheckoutSessionSecretHeader:record.checkout_auth_token},...(key?{idempotencyKey:key}:{})};
   }
   return {merchant,customer,checkout};
 }

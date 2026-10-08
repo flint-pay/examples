@@ -25,7 +25,7 @@ The browser never calls Flint. It calls the app, and the app calls Flint.
 ## What each app does not do
 
 - No Flint-hosted checkout, hosted invoice page, or hosted account page, and no fallback to one.
-- No gift card sales flow. Gift cards are redeemed at checkout and saved in the account. Headless sales are supported, but Flint delivers purchased cards through its hosted recipient email, which these examples do not demonstrate.
+- No gift card sales flow. Gift cards are redeemed at checkout and on invoice and exchange payments, and saved in the account. Headless sales are supported, but Flint delivers purchased cards through its hosted recipient email, which these examples do not demonstrate.
 - No microdeposit ACH. Instant bank verification only.
 - No wallet shipping-address changes inside the Apple Pay or Google Pay sheet.
 - The sample sign-in is not a production identity system. It proves a buyer's email with a Flint verification code so earlier guest orders can be linked without exposing someone else's orders.
@@ -70,7 +70,8 @@ Pick a path outside the repository so the database is not committed. A buyer who
 
 ## Known limits
 
-- Entering a challenged gift card code at checkout depends on a Flint-side contract that is not yet available to merchant-hosted pages. The storefront shows that gift card codes can't be checked right now and does not work around it.
+- After repeated failed gift card codes, Flint needs a check on one of its own pages before it looks up a code. Both apps show that page in an iframe on their own checkout or payment page, and they accept its answer only from that frame. A browser that blocks the frame, or a frame that never answers, ends in a message that gift card codes can't be checked right now. The apps don't work around the check.
+- Saving a gift card in the account is not challenged. The check runs when a code is applied at checkout or to an invoice or an exchange payment.
 - Gift card recipient delivery is hosted by Flint by design, not by the merchant, and is not an API gap. When a gift card is sold, the recipient's email links to a Flint-hosted page where the recipient reveals the code. The examples do not host that page and do not sell gift cards. A buyer who has a gift card redeems it at checkout, and the account example can save a gift card when the buyer pastes the link from that email without opening it.
 - Past-due subscription retries depend on a billing worker that the examples cannot trigger on demand.
 

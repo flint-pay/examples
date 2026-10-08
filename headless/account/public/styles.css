@@ -350,6 +350,31 @@ dialog.dialog::backdrop { background: rgba(29, 27, 22, 0.55); }
 .affirm-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .pay-blocker { color: var(--muted); font-size: 0.9375rem; margin: 8px 0 0; min-height: 1.5em; }
 .pay-actions { margin-top: 20px; }
+/* Gift cards on the payment pages. The verification panel sits inside the card and the frame takes its full width. */
+.gift-apply { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+.gift-apply .field { flex: 1 1 14rem; margin-bottom: 0; }
+.gift-apply .btn { flex: 0 0 auto; }
+.gift-unconfirmed { margin: 0 0 12px; padding: 10px 14px; border-radius: var(--radius); background: var(--warn-soft); color: var(--warn-ink); border-left: 4px solid #b58b00; }
+.gift-unconfirmed:focus { outline: none; }
+.gift-unconfirmed:focus-visible { outline: var(--focus); outline-offset: 2px; }
+.gift-recheck { margin: 0 0 12px; }
+.gift-reload { margin: 4px 0 0; }
+.gift-reload a { display: inline-flex; align-items: center; min-height: 44px; }
+.gift-applied { margin-top: 12px; }
+.gift-applied .row-meta { display: block; }
+.card-gift .hint { margin-top: 12px; }
+.card-gift .hint[hidden] { display: none; }
+.card-gift .field-error { margin: 8px 0 0; }
+.gift-challenge { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
+.gift-challenge-intro { margin: 0 0 8px; }
+.gift-challenge-intro:focus { outline: none; }
+.gift-challenge-host { min-height: 65px; border-radius: var(--radius); }
+.gift-challenge-frame { display: block; width: 100%; min-width: 300px; height: 65px; border: 0; }
+.gift-challenge-status { margin: 8px 0 0; color: var(--muted); font-size: 0.9375rem; }
+.gift-challenge-status:empty { margin: 0; }
+.gift-challenge-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.gift-challenge-actions:not(:has(.btn:not([hidden]))) { display: none; }
+@media (max-width: 399px) { .card-gift { padding-inline: 12px; } }
 .card-setup > * + * { margin-top: 16px; }
 .card-setup [hidden] { display: none !important; }
 

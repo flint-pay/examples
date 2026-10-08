@@ -1,6 +1,6 @@
 # Headless storefront and account acceptance
 
-This package holds the acceptance harness for the headless storefront and account examples. It drives the real apps in Chromium against two Flint staging sandboxes, reads a real inbox, and uses the published `@flintpay/node` package pinned to `3.0.0-beta.20261007031000`. It runs on Node 24 with no build step.
+This package holds the acceptance harness for the headless storefront and account examples. It drives the real apps in Chromium against two Flint staging sandboxes, reads a real inbox, and uses the published `@flintpay/node` package pinned to `3.0.0-beta.20261008013000`. It runs on Node 24 with no build step.
 
 **Status: no staging, API, provider, browser, or email run has been executed.** What exists today is code that type checks, static checks of the scenario inventory, and unit tests that use injected clients. Those tests exercise the harness's own safeguards. They are not acceptance evidence, and a passing unit run never counts as a row passing.
 

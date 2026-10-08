@@ -108,6 +108,7 @@ export interface MerchantSupport {
 export interface RenderContext<D = unknown> {
   storeName: string;
   appOrigin: string;
+  giftChallengeOrigin?: string;
   /** STOREFRONT_ORIGIN. Null hides the Shop link. */
   storefrontOrigin: string | null;
   /** Per session CSRF token. Rendered in every form and in <meta name="csrf-token">. */
@@ -329,6 +330,39 @@ export type ErrorPageData = Record<string, never>;
 
 export type PaymentSurfaceKind = 'invoice' | 'return';
 
+export interface GiftChallengeView {
+  challenge_id: string;
+  url: string;
+  session_tag: string;
+  reason: 'proof_required' | 'proof_rejected';
+  expires_in_seconds: number;
+}
+
+export interface GiftChallengeRequest {
+  challenge_id: string;
+  gift_card_code: string;
+  proof: string;
+}
+
+export interface GiftChallengeBoot {
+  origin: string;
+  slow_after_ms: 60000;
+  max_mounts: 3;
+}
+
+export interface GiftPayBoot {
+  surface: PaymentSurfaceKind;
+  resource_id: string;
+  endpoints: { apply: string; challenge: string; page: string };
+  challenge: GiftChallengeBoot;
+  copy: Record<string, string>;
+}
+
+export type GiftApplyResponse =
+  | { redirect: string }
+  | { gift_challenge: GiftChallengeView }
+  | { error: PageError };
+
 /** The engine's nextStep result, with the bank_processing refinement. */
 export type PaymentNext =
   | 'done'
@@ -363,7 +397,21 @@ export interface PaymentAttemptView
   }>;
 }
 
+export type GiftUnconfirmed =
+  | { kind: 'apply'; can_check: boolean }
+  | { kind: 'remove'; gift_card_id: string; last_characters: string | null; can_check: boolean };
+
 export interface PaymentOrderView {
+  order_revision?: string;
+  gift_card_tender_enabled?: boolean;
+  gift_cards?: { gift_card_id: string; last_characters: string; available_money: MoneyValue | null }[];
+  gift_card_estimate?: {
+    can_pay: boolean;
+    order_revision: string;
+    gift_card_money: MoneyValue;
+    processor_money: MoneyValue;
+    gift_cards: { gift_card_id: string; amount_money: MoneyValue }[];
+  };
   order_number?: Order['order_number'];
   line_items: Order['line_items'];
   pricing_amounts: Order['pricing_amounts'];
@@ -377,6 +425,13 @@ export interface PaymentOrderView {
  * render. It never carries a Flint credential, a checkout session ID, or a provider client secret.
  */
 export interface PaymentState {
+  collection_kind: 'processor' | 'settlement' | 'unavailable';
+  gift_editable: boolean;
+  /**
+   * An apply or remove whose outcome is unknown. The page offers the way to settle it. Never holds
+   * the code, its hash, an idempotency key, or the stored order revision.
+   */
+  gift_unconfirmed: GiftUnconfirmed | null;
   order: PaymentOrderView;
   /** order.payment_collection exactly as returned. Null when the order has no collection guidance. */
   payment_collection: PaymentCollection | null;
@@ -460,6 +515,9 @@ export interface PaymentSubmitRequest {
     value: string;
   };
   approved_outstanding_money: MoneyValue;
+  approved_collection_kind: 'processor' | 'settlement';
+  approved_order_revision?: string;
+  approved_gift_card_money?: MoneyValue;
 }
 
 /** Response of POST /payment-methods/new/setup. */

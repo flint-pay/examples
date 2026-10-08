@@ -275,9 +275,10 @@ test('gift card: unavailable, challenge, partial, and full coverage use settleme
   await page.getByTestId('sf-gift-card-code').fill('BADCARD');
   await page.getByTestId('sf-gift-card-apply').click();
   await expect(page.locator('[data-job-error="gift-card"]')).toContainText("That gift card code isn't valid for this order.");
-  await page.getByTestId('sf-gift-card-code').fill('CHALLENGE');
+  await page.getByTestId('sf-gift-card-code').fill('NOCHECK');
   await page.getByTestId('sf-gift-card-apply').click();
   await expect(page.locator('[data-job-error="gift-card"]')).toContainText("We can't check gift card codes right now.");
+  await expect(page.getByTestId('sf-gift-challenge')).toBeHidden();
   await page.getByTestId('sf-gift-card-code').fill('GOODCARD');
   await page.getByTestId('sf-gift-card-apply').click();
   await expect(page.getByTestId('sf-gift-card-applied-0')).toContainText('Gift card ending 4821');

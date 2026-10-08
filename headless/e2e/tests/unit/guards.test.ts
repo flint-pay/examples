@@ -58,3 +58,18 @@ test('raw errors and URL data cannot enter normalized evidence', () => {
 test('run aliases exist only in supplied private runtime configuration', () => {
   assert.equal(alias({ inboxAddress: 'buyer@example.invalid', run: '20000101T000000Z-00000000' }, 'b2'), 'buyer+fx-20000101T000000Z-00000000-b2@example.invalid');
 });
+
+test('challenge navigation admits only the registered subframe and its own proof POST',()=>{
+ const url='https://checkout.staging.withflintpay.com/gift-card-challenge/gccf_fixture',registered=new Set([url]);
+ assert.equal(navigationDecision(url,'GET',false,new Map(),registered,'about:blank',true),'gift-frame');
+ assert.equal(navigationDecision(url,'GET',true,new Map(),registered,url),'reject');assert.equal(navigationDecision(url,'GET',false),'reject');
+ assert.equal(navigationDecision(url,'GET',false,new Map(),registered,url,false),'reject');
+ assert.equal(navigationDecision(url+'/proof','POST',false,new Map(),registered,url,false),'gift-proof');
+ for(const frame of ['about:blank',url+'other'])assert.equal(navigationDecision(url+'/proof','POST',false,new Map(),registered,frame,false),'reject');
+ for(const path of ['/proof/extra','/other','?x=1'])assert.equal(navigationDecision(url+path,'POST',false,new Map(),registered,url,false),'reject');
+});
+test('a proof is admitted exactly once in its scoped challenge request and remembered thereafter',()=>{
+ const proof='gccp_'+ 'X'.repeat(30),scanner=new CredentialScanner();scanner.scan(proof,'request',{challengeProofSubmit:true});scanner.assertClean();scanner.scan(proof,'request',{challengeProofSubmit:true});assert.throws(()=>scanner.assertClean());
+ for(const surface of ['url','body','dom','storage','console','cookie','child'] as const){const scanner=new CredentialScanner();scanner.scan(proof,surface,{challengeProofSubmit:true});assert.throws(()=>scanner.assertClean());}
+ const ordinary=new CredentialScanner();ordinary.scan(proof,'request',{submittedGift:true});assert.throws(()=>ordinary.assertClean());
+});

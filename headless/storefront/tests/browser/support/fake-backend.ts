@@ -6,16 +6,93 @@
 // say nothing about Flint, Stripe, or the real app. Staging acceptance lives in
 // tests/browser/acceptance and runs against the real app and a sandbox.
 
-import type { CheckoutState, Money } from '../../../src/views/types.ts';
+import { createHash } from 'node:crypto';
+import type { CheckoutState, GiftChallengeView, Money } from '../../../src/views/types.ts';
 import { baseOrder, guidance, scenarioConfig, usd, type FakeConfig, type Scenario } from './fixtures.ts';
 
 type Json = Record<string, any>;
-export type Reply = { status: number; body: Json };
+export type Reply = { status: number; body: Json; /** A body that is not JSON, such as a proxy error page. */ raw?: string };
 
 const big = (money: Money | null | undefined) => BigInt(money?.amount ?? '0');
 
 function fail(status: number, kind: string, code: string, messageKey: string, state: Json): Reply {
   return { status, body: { error: { kind, code, message_key: messageKey, request_id: 'req_fixture' }, state } };
+}
+
+// ----- Gift card verification stand-in -----
+//
+// The real frame lives on Flint's checkout host. Tests serve a fake page for the same address
+// (page.route), so message origins are genuine. Every token, proof, and session ID below is a
+// made-up placeholder. The page behaves according to the last part of the token.
+
+export const CHALLENGE_ORIGIN = 'https://checkout.staging.withflintpay.com';
+export const FAKE_PROOF = 'proof_fake_0001';
+const TAG_PREFIX = 'flint-examples.gift-challenge.v1\n';
+
+export const sessionIdFor = (ref: string) => `cs_fake_${ref}`;
+
+export function sessionTag(challengeId: string, checkoutSessionId: string): string {
+  return createHash('sha256').update(`${TAG_PREFIX}${challengeId}\n${checkoutSessionId}`).digest('base64url');
+}
+
+type Retry = 'applied' | 'rejected' | 'expired' | 'origin' | 'unavailable' | 'unknown' | 'stale' | 'refused' | 'proxy502' | 'proxy503';
+type ChallengeCode = { page: string; retry?: Retry; url?: string; expires?: number; apply?: 'origin' | 'unavailable' };
+
+/** Gift card codes that start a check. The code picks what the fake frame and the fake app do next. */
+const challengeCodes: Record<string, ChallengeCode> = {
+  CHALLENGE: { page: 'completed' },
+  CHALLENGEDOUBLE: { page: 'double' },
+  CHALLENGEFAIL: { page: 'failed' },
+  CHALLENGEGONE: { page: 'unavailable' },
+  CHALLENGESILENT: { page: 'silent' },
+  CHALLENGESHORT: { page: 'silent', expires: 120 },
+  CHALLENGESPOOF: { page: 'spoof' },
+  CHALLENGEWRONG: { page: 'wrongsession' },
+  CHALLENGEREJECT: { page: 'completed', retry: 'rejected' },
+  CHALLENGEEXPIRED: { page: 'completed', retry: 'expired' },
+  CHALLENGEORIGIN: { page: 'completed', retry: 'origin' },
+  CHALLENGEUNAVAIL: { page: 'completed', retry: 'unavailable' },
+  CHALLENGEUNKNOWN: { page: 'completed', retry: 'unknown' },
+  CHALLENGESTALE: { page: 'completed', retry: 'stale' },
+  CHALLENGEREFUSED: { page: 'completed', retry: 'refused' },
+  // A proxy answers the proof request with its own page. The app may or may not have processed it.
+  PROXYPROOF502: { page: 'completed', retry: 'proxy502' },
+  PROXYPROOF503: { page: 'completed', retry: 'proxy503' },
+  UNTRUSTEDHTTP: { page: 'completed', url: 'http://checkout.staging.withflintpay.com/gift-card-challenge/gccf_fake.completed' },
+  UNTRUSTEDHOST: { page: 'completed', url: 'https://evil.example.test/gift-card-challenge/gccf_fake.completed' },
+  UNTRUSTEDPATH: { page: 'completed', url: `${CHALLENGE_ORIGIN}/gift-card-challenge/gccf_fake/completed` },
+  UNTRUSTEDQUERY: { page: 'completed', url: `${CHALLENGE_ORIGIN}/gift-card-challenge/gccf_fake.completed?next=1` },
+  ORIGINAPPLY: { page: 'completed', apply: 'origin' },
+  NOCHECK: { page: 'completed', apply: 'unavailable' },
+};
+
+/**
+ * The document the fake challenge host serves. It posts to its parent with the app origin as the
+ * target, as Flint's page does. `scenario` is the last part of the frame address.
+ */
+export function challengePageHtml(scenario: string, sessionId: string, appOrigin: string): string {
+  const completed = { type: 'flint.gift_card_challenge.completed', checkout_session_id: sessionId, proof: FAKE_PROOF, expires_at: '2026-10-08T12:15:00Z' };
+  const messages: Record<string, unknown[]> = {
+    completed: [completed],
+    double: [completed, completed],
+    failed: [{ type: 'flint.gift_card_challenge.failed', checkout_session_id: sessionId, reason: 'verification_failed' }],
+    unavailable: [{ type: 'flint.gift_card_challenge.failed', checkout_session_id: sessionId, reason: 'unavailable' }],
+    silent: [],
+    wrongsession: [{ ...completed, checkout_session_id: 'cs_fake_someone_else' }],
+    spoof: [
+      { ...completed, checkout_session_id: 'cs_fake_someone_else' },
+      { type: 'flint.gift_card_challenge.progress', checkout_session_id: sessionId },
+      'flint.gift_card_challenge.completed',
+      [completed],
+      { ...completed, proof: 'has a space' },
+      completed,
+    ],
+  };
+  const list = JSON.stringify(messages[scenario] ?? []).replace(/</g, '\\u003c');
+  return `<!doctype html><meta charset="utf-8"><title>Fake verification</title><body style="margin:0;font:14px sans-serif"><p style="margin:0;padding:20px">Fake verification</p><script>
+    const target = ${JSON.stringify(appOrigin)};
+    for (const message of ${list}) parent.postMessage(message, target);
+  </script></body>`;
 }
 
 export class FakeCheckout {
@@ -48,6 +125,11 @@ export class FakeCheckout {
   totalBump = 0n;
   pendingBehavior = '';
   user: { name: string; email: string } | null = null;
+  challenges = new Map<string, { code: string; spec: ChallengeCode; used: boolean }>();
+  challengeSeq = 0;
+  challengePosts = 0;
+  /** The code of a change a proxy page left unconfirmed. Applying the same code again finds it applied. */
+  proxyPending = '';
 
   constructor(ref: string) {
     this.ref = ref;
@@ -318,6 +400,8 @@ export class FakeCheckout {
         return this.deliverySelect(body);
       case 'gift-card':
         return this.giftCard(body);
+      case 'gift-card/challenge':
+        return this.giftChallenge(body);
       case 'tip':
         return this.tipJob(body);
       case 'saved-methods':
@@ -442,11 +526,85 @@ export class FakeCheckout {
 
   private giftCard(body: Json): Reply {
     const code = String(body.gift_card_code).toUpperCase();
-    if (code === 'CHALLENGE') return fail(403, 'validation', 'GIFT_CARD_CHALLENGE_REQUIRED', 'gift_card_challenge_required', this.project());
+    if (this.proxyPending === code) {
+      // The earlier request did go through. A same-key replay returns the recorded success.
+      this.proxyPending = '';
+      this.giftCode = 'GOODCARD';
+      this.recalc();
+      return this.ok();
+    }
+    if (code === 'PROXYAPPLY502' || code === 'PROXYAPPLY503') {
+      this.proxyPending = code;
+      return this.proxyPage(code.endsWith('502') ? 502 : 503);
+    }
+    const spec = challengeCodes[code];
+    if (spec) return this.startChallenge(code, spec);
     if (!['GOODCARD', 'FULLCARD'].includes(code)) return fail(404, 'validation', 'GIFT_CARD_UNAVAILABLE', 'gift_card_unavailable', this.project());
     this.giftCode = code;
     this.recalc();
     return this.ok();
+  }
+
+  /** The app's answer when Flint asks for a check before it looks the code up. */
+  private startChallenge(code: string, spec: ChallengeCode, reason: GiftChallengeView['reason'] = 'proof_required'): Reply {
+    if (spec.apply === 'origin') {
+      this.notices.push('checkout_refreshed');
+      return fail(409, 'conflict', 'GIFT_CARD_CHALLENGE_ORIGIN_REQUIRED', 'gift_challenge_origin_required', this.project());
+    }
+    if (spec.apply === 'unavailable') return fail(503, 'unavailable', 'GIFT_CARD_CHALLENGE_UNAVAILABLE', 'gift_card_challenge_required', this.project());
+    this.challengeSeq += 1;
+    const challengeId = `gch_${String(this.challengeSeq).padStart(32, 'A')}`;
+    this.challenges.set(challengeId, { code, spec, used: false });
+    const gift_challenge: GiftChallengeView = {
+      challenge_id: challengeId,
+      url: spec.url ?? `${CHALLENGE_ORIGIN}/gift-card-challenge/gccf_fake.${spec.page}`,
+      session_tag: sessionTag(challengeId, sessionIdFor(this.ref)),
+      reason,
+      expires_in_seconds: spec.expires ?? 900,
+    };
+    return { status: 200, body: { state: this.project(), gift_challenge } };
+  }
+
+  private proxyPage(status: number): Reply {
+    return { status, body: {}, raw: '<!doctype html><title>Bad gateway</title><h1>Bad gateway</h1>' };
+  }
+
+  /** The retry route. A proof works once, as it does at Flint. */
+  private giftChallenge(body: Json): Reply {
+    this.challengePosts += 1;
+    if (Object.keys(body).sort().join(',') !== 'challenge_id,gift_card_code,proof' || body.proof !== FAKE_PROOF) {
+      return fail(400, 'validation', 'INVALID_INPUT', 'generic_error', this.project());
+    }
+    const challenge = this.challenges.get(String(body.challenge_id));
+    if (!challenge || challenge.used || String(body.gift_card_code).toUpperCase() !== challenge.code) {
+      return fail(409, 'conflict', 'GIFT_CHALLENGE_EXPIRED', 'gift_challenge_expired', this.project());
+    }
+    challenge.used = true;
+    switch (challenge.spec.retry) {
+      case 'rejected':
+        return this.startChallenge(challenge.code, { page: 'completed' }, 'proof_rejected');
+      case 'expired':
+        return fail(409, 'conflict', 'GIFT_CHALLENGE_EXPIRED', 'gift_challenge_expired', this.project());
+      case 'proxy502':
+      case 'proxy503':
+        this.proxyPending = challenge.code;
+        return this.proxyPage(challenge.spec.retry === 'proxy502' ? 502 : 503);
+      case 'origin':
+        this.notices.push('checkout_refreshed');
+        return fail(409, 'conflict', 'GIFT_CARD_CHALLENGE_ORIGIN_REQUIRED', 'gift_challenge_origin_required', this.project());
+      case 'unavailable':
+        return fail(503, 'unavailable', 'GIFT_CARD_CHALLENGE_UNAVAILABLE', 'gift_card_challenge_required', this.project());
+      case 'unknown':
+        return fail(503, 'unknown_outcome', 'UNKNOWN_OUTCOME', 'gift_challenge_unconfirmed', this.project());
+      case 'stale':
+        return fail(409, 'conflict', 'GIFT_CHALLENGE_ORDER_CHANGED', 'gift_card_apply_again', this.project());
+      case 'refused':
+        return fail(404, 'validation', 'GIFT_CARD_UNAVAILABLE', 'gift_card_unavailable', this.project());
+      default:
+        this.giftCode = 'GOODCARD';
+        this.recalc();
+        return this.ok();
+    }
   }
 
   private tipJob(body: Json): Reply {
@@ -562,6 +720,7 @@ export class FakeCheckout {
 function sanitizeBody(body: Json): unknown {
   const clone: Json = JSON.parse(JSON.stringify(body ?? {}));
   if (clone.gift_card_code) clone.gift_card_code = '[code]';
+  if (clone.proof) clone.proof = '[proof]';
   if (clone.code) clone.code = '[code]';
   return clone;
 }

@@ -54,6 +54,15 @@ function resources(value: any): { id: string; type: string; cleanup: string; rev
   };
   visit(value); return [...found.values()];
 }
+export function sessionOperation(method: string, path: string): { operation: string; targetId?: string } | undefined {
+  if (method !== 'POST') return;
+  if (path === '/v1/customer-sessions') return { operation: 'CUSTOMER_SESSION_CREATE' };
+  if (path === '/v1/customer-sessions/refresh') return { operation: 'CUSTOMER_SESSION_REFRESH' };
+  const one = /^\/v1\/customer-sessions\/([A-Za-z0-9_-]+)\/revoke$/.exec(path);
+  if (one) return { operation: 'CUSTOMER_SESSION_REVOKE', targetId: one[1] };
+  const all = /^\/v1\/customers\/([A-Za-z0-9_-]+)\/sessions\/revoke$/.exec(path);
+  if (all) return { operation: 'CUSTOMER_SESSIONS_REVOKE_ALL', targetId: all[1] };
+}
 export function auditedFetch(originalFetch: typeof fetch, append: AuditAppend): typeof fetch {
   return async (input, init) => {
     const request = new Request(input, init), url = new URL(request.url);
@@ -68,7 +77,10 @@ export function auditedFetch(originalFetch: typeof fetch, append: AuditAppend): 
     const body = writing ? await request.clone().text() : '';
     // Exact requests remain in the application's durable journal. Export only hashes.
     const fingerprint = digest({ method: request.method, url: request.url, body, keyHash: key ? digest(key) : null });
-    if (writing) await append({ kind: 'MUTATION', fingerprint, keyHash: key ? digest(key) : null, ...(/^\/v1\/orders\/[A-Za-z0-9_-]+\/pay$/.test(url.pathname) ? { operation: 'ORDER_PAY', targetId: url.pathname.split('/')[3] } : {}) });
+    const giftApply=request.method==='POST'&&/^\/v1\/orders\/[A-Za-z0-9_-]+\/gift-cards$/.test(url.pathname);
+    const giftAuthority=giftApply?{operation:'ORDER_APPLY_GIFT_CARD',targetId:url.pathname.split('/')[3],authMode:request.headers.has('X-Checkout-Session-ID')&&request.headers.has('X-Checkout-Session-Secret')?'checkout':'merchant',challengeProof:request.headers.has('Flint-Gift-Card-Challenge')}:{};
+    if (writing) await append({ kind: 'MUTATION', timestamp: Date.now(), fingerprint, keyHash: key ? digest(key) : null, ...(sessionOperation(request.method, url.pathname) ?? {}), ...(/^\/v1\/orders\/[A-Za-z0-9_-]+\/pay$/.test(url.pathname) ? { operation: 'ORDER_PAY', targetId: url.pathname.split('/')[3] } : {}),...giftAuthority });
+    invariant(!giftApply||giftAuthority.authMode==='checkout','APP_GIFT_APPLY_MERCHANT_AUTH');
     const response = await originalFetch(input, { ...init, redirect: 'manual' });
     invariant(response.status < 300 || response.status >= 400, 'APP_API_REDIRECT_FORBIDDEN');
     let errorCode: unknown;
@@ -79,12 +91,12 @@ export function auditedFetch(originalFetch: typeof fetch, append: AuditAppend): 
         let args: unknown; try { args = JSON.parse(body); } catch { args = {}; }
         const supplied = new Set(resources(args).map(r => r.id));
         const pathIds = new Set(url.pathname.split('/'));
-        for (const resource of resources(value?.data)) await append({ kind: 'RESOURCE', ...resource, created: creates.has(resource.type) && !supplied.has(resource.id) && !pathIds.has(resource.id), requestId: requestId(response.headers.get('x-request-id')) });
-        if (value?.data?.revoked === true && typeof value.data.customer_session_id === 'string') await append({ kind: 'REVOCATION', id: value.data.customer_session_id });
-        if (typeof value?.data?.revoked_count === 'string' && /^(0|[1-9]\d*)$/.test(value.data.revoked_count) && typeof value.data.customer_id === 'string') await append({ kind: 'REVOCATION_ALL', customerId: value.data.customer_id, count: value.data.revoked_count });
+        for (const resource of resources(value?.data)) await append({ kind: 'RESOURCE', timestamp: Date.now(), ...resource, ...(resource.type === 'customer_session' && /^[A-Za-z0-9_-]+$/.test(value?.data?.customer_id ?? '') ? { customerId: value.data.customer_id } : {}), created: creates.has(resource.type) && !supplied.has(resource.id) && !pathIds.has(resource.id), requestId: requestId(response.headers.get('x-request-id')) });
+        if (value?.data?.revoked === true && typeof value.data.customer_session_id === 'string') await append({ kind: 'REVOCATION', timestamp: Date.now(), id: value.data.customer_session_id });
+        if (typeof value?.data?.revoked_count === 'string' && /^(0|[1-9]\d*)$/.test(value.data.revoked_count) && typeof value.data.customer_id === 'string') await append({ kind: 'REVOCATION_ALL', timestamp: Date.now(), customerId: value.data.customer_id, count: value.data.revoked_count });
       }
     }
-    if (writing && response.status < 500 && errorCode !== 'IDEMPOTENCY_KEY_IN_PROGRESS') await append({ kind: 'RESOLVED', fingerprint, status: response.status });
+    if (writing && response.status < 500 && errorCode !== 'IDEMPOTENCY_KEY_IN_PROGRESS') await append({ kind: 'RESOLVED', timestamp: Date.now(), fingerprint, status: response.status });
     return response;
   };
 }

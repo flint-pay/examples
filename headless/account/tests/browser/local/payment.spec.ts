@@ -58,7 +58,7 @@ test.describe('invoice payment', () => {
 
     const posts = await submitCalls(request);
     expect(posts).toHaveLength(1);
-    expect(posts[0]?.body).toEqual({ credential: { kind: 'confirmation_token', value: 'ctoken_stub_1' }, approved_outstanding_money: { amount: '12000', currency: 'USD' } });
+    expect(posts[0]?.body).toEqual({ credential: { kind: 'confirmation_token', value: 'ctoken_stub_1' }, approved_outstanding_money: { amount: '12000', currency: 'USD' }, approved_collection_kind: 'processor' });
     expect(posts[0]?.actionId).toBeTruthy();
     expect(posts[0]?.csrf).toBe('csrf-example-token');
     expect(posts[0]?.origin).toBe(baseURL);

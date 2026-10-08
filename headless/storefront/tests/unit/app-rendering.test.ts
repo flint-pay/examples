@@ -24,7 +24,7 @@ function fixture(){
     checkoutSessions:{get:async()=>remote.session,getCurrentDeliverySelection:async()=>({}),create:mutation,update:mutation,closeSession:mutation,createDeliveryQuote:mutation},
     orders:{get:async()=>{remote.reads++;if(remote.reads===remote.readFailureAt)throw new Error('local order read failure');return remote.order;},getPaymentAttempt:async()=>remote.order.active_payment_attempt,updateLineItem:mutation,deleteLineItem:mutation,addLineItems:mutation,pay:mutation},
   } as unknown as Client;
-  const config:Config={apiKey:'local-render-fixture',apiBaseUrl:'https://api.staging.withflintpay.com',appOrigin:origin,port:4100,identityDatabasePath:':memory:',appDatabasePath:':memory:',cookieName:'render_session',checkoutTtl:3600,storeName:'Example store'};
+  const config:Config={apiKey:'local-render-fixture',apiBaseUrl:'https://api.staging.withflintpay.com',giftChallengeOrigin:'https://checkout.staging.withflintpay.com',appOrigin:origin,port:4100,identityDatabasePath:':memory:',appDatabasePath:':memory:',cookieName:'render_session',checkoutTtl:3600,storeName:'Example store'};
   const runtime=createApp({config,preflight:{sandboxId:'fixture-sandbox',cards:'enabled'},client,store:new Store(':memory:'),identity:new IdentityStore(':memory:')});
   const identitySession=runtime.identity.createSession();const cookie=`render_session=${identitySession.token}`;
   const get=(path:string,method='GET')=>runtime.app.request(origin+path,{method,headers:{Cookie:cookie}});

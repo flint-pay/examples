@@ -9,7 +9,7 @@ import { Hono } from 'hono';
 import { renderPage } from '../../../src/views/index.ts';
 import type { PageContext, PageId } from '../../../src/views/types.ts';
 import { cartData, catalog, homeLoaded, plans } from './fixtures.ts';
-import { FakeCheckout } from './fake-backend.ts';
+import { CHALLENGE_ORIGIN, FakeCheckout } from './fake-backend.ts';
 
 const PORT = Number(process.env.LOCAL_STATE_PORT ?? 4190);
 const ORIGIN = `http://localhost:${PORT}`;
@@ -38,6 +38,7 @@ function context(data: Record<string, unknown>, extra: Partial<PageContext> = {}
     cartCount: cart.reduce((sum, line) => sum + line.quantity, 0),
     accountOrigin: 'http://localhost:4200',
     appOrigin: ORIGIN,
+    giftChallengeOrigin: CHALLENGE_ORIGIN,
     data,
     notices: [],
     ...extra,
@@ -49,7 +50,7 @@ const app = new Hono();
 app.use('*', async (c, next) => {
   await next();
   c.header('Cache-Control', 'no-store');
-  c.header('Content-Security-Policy', "default-src 'self'; script-src 'self' https://js.stripe.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.stripe.com; frame-src https://js.stripe.com; base-uri 'self'; form-action 'self'");
+  c.header('Content-Security-Policy', `default-src 'self'; script-src 'self' https://js.stripe.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.stripe.com; frame-src https://js.stripe.com ${CHALLENGE_ORIGIN}; base-uri 'self'; form-action 'self'`);
 });
 
 const types: Record<string, string> = { '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml' };
@@ -143,6 +144,7 @@ app.all('/checkout/:ref/*', async (c) => {
   if (name === 'receipt' && fake.log.filter((entry) => entry.path === 'receipt').length > 1) {
     return c.json({ error: { kind: 'rate_limited', code: 'RECEIPT_JUST_SENT', message_key: 'receipt_just_sent' }, state: fake.project() }, 429);
   }
+  if (reply.raw !== undefined) return c.body(reply.raw, reply.status as 200, { 'Content-Type': 'text/html; charset=utf-8' });
   return c.json(reply.body, reply.status as 200);
 });
 
@@ -164,7 +166,7 @@ app.post('/__reset', (c) => {
 });
 app.get('/__log/:ref', (c) => {
   const fake = checkouts.get(c.req.param('ref'));
-  return c.json({ log: fake?.log ?? [], payCount: fake?.payCount ?? 0, resumeCount: fake?.resumeCount ?? 0 });
+  return c.json({ log: fake?.log ?? [], payCount: fake?.payCount ?? 0, resumeCount: fake?.resumeCount ?? 0, challengePosts: fake?.challengePosts ?? 0 });
 });
 app.get('/__health', (c) => c.text('ok'));
 app.notFound((c) => page(c, 'not-found', {}, {}, 404));

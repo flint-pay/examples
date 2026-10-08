@@ -2,11 +2,11 @@ import { randomBytes } from 'node:crypto';
 import { invariant } from './safe.ts';
 
 export const API_ORIGIN = 'https://api.staging.withflintpay.com';
-export const SDK_VERSION = '3.0.0-beta.20261007031000';
+export const SDK_VERSION = '3.0.0-beta.20261008013000';
 export type Sandbox = 'A' | 'B';
 export type Buyer = 'b1' | 'b2' | 'd' | 'b1b';
 export type Pin = { merchantId: string; sandboxId: string; providerId: string; key: string };
-export type Config = { run: string; apiOrigin: typeof API_ORIGIN; pins: Record<Sandbox, Pin>; operatorPins: Record<Sandbox, Pin>; origins: { storefrontA: string; storefrontB: string; accountA: string }; privateDir: string; fixtureFile: string; suite: 'standard' | 'extended'; inbox?: 'imap' | 'operator'; inboxAddress: string; targetCommit: string; apiCommit: string; builds: Record<string, string>; healthPaths?: Record<string, string>; apply: boolean };
+export type Config = { run: string; apiOrigin: typeof API_ORIGIN; pins: Record<Sandbox, Pin>; operatorPins: Record<Sandbox, Pin>; origins: { storefrontA: string; storefrontB: string; accountA: string }; privateDir: string; fixtureFile: string; suite: 'standard' | 'extended'; inbox?: 'imap' | 'operator'; inboxAddress: string; targetCommit: string; apiCommit: string; builds: Record<string, string>; healthPaths?: Record<string, string>; apply: boolean; appVaultRead?: string };
 
 export function origin(value: string): string {
   const url = new URL(value);
@@ -37,12 +37,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, apply = false):
   invariant(/^\d{8}T\d{6}Z-[a-f0-9]{8}$/.test(run), 'INVALID_RUN_ID');
   const inbox = env.E2E_INBOX;
   invariant(!inbox || ['imap', 'operator'].includes(inbox), 'INVALID_INBOX_MODE');
+  invariant(!env.E2E_APP_VAULT_READ || env.E2E_APP_VAULT_READ.split(',').length<=4&&new Set(env.E2E_APP_VAULT_READ.split(',')).size===env.E2E_APP_VAULT_READ.split(',').length&&/^(AC-15|AC-16|SF-GIFTCHALLENGE|AC-GIFTCHALLENGE)(,(AC-15|AC-16|SF-GIFTCHALLENGE|AC-GIFTCHALLENGE))*$/.test(env.E2E_APP_VAULT_READ), 'APP_VAULT_READ_SCOPE_INVALID');
   const suite = env.E2E_SUITE ?? 'standard';
   invariant(suite === 'standard' || suite === 'extended', 'INVALID_SUITE');
   const targetCommit = required('E2E_TARGET_COMMIT');
   invariant(/^[a-f0-9]{40}$/.test(targetCommit), 'TARGET_COMMIT_REQUIRED');
   const apiCommit = required('E2E_API_TARGET_COMMIT'); invariant(/^[a-f0-9]{40}$/.test(apiCommit), 'API_TARGET_COMMIT_REQUIRED');
-  return { run, apiOrigin, pins, operatorPins, suite, apply, inbox: inbox as Config['inbox'], inboxAddress: env.E2E_INBOX_ADDRESS ?? '',
+  return { run, apiOrigin, pins, operatorPins, suite, apply, appVaultRead: env.E2E_APP_VAULT_READ, inbox: inbox as Config['inbox'], inboxAddress: env.E2E_INBOX_ADDRESS ?? '',
     privateDir: required('E2E_PRIVATE_RUN_DIR'), fixtureFile: required('E2E_FIXTURE_FILE'), targetCommit, apiCommit,
     origins: { storefrontA: origin(env.E2E_STOREFRONT_A_ORIGIN ?? 'http://localhost:4100'), storefrontB: origin(env.E2E_STOREFRONT_B_ORIGIN ?? 'http://localhost:4110'), accountA: origin(env.E2E_ACCOUNT_A_ORIGIN ?? 'http://localhost:4200') },
     healthPaths: { storefrontA: env.E2E_STOREFRONT_A_HEALTH_PATH ?? '/healthz', storefrontB: env.E2E_STOREFRONT_B_HEALTH_PATH ?? '/healthz', accountA: env.E2E_ACCOUNT_A_HEALTH_PATH ?? '/healthz', api: env.E2E_API_HEALTH_PATH ?? '/health' },

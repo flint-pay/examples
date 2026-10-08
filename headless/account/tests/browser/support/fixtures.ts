@@ -58,6 +58,7 @@ export function context<D>(data: D, overrides: Partial<RenderContext<D>> = {}): 
   return {
     storeName: 'Cedar & Stone',
     appOrigin: 'http://localhost:4291',
+    giftChallengeOrigin: 'https://checkout.staging.withflintpay.com',
     storefrontOrigin: 'http://localhost:4100',
     csrf: 'csrf-example-token',
     user: { name: 'Avery Example', email: 'avery@example.test' },
@@ -330,6 +331,9 @@ export const deletionRequests: CustomerDeletionRequest[] = [
 
 export function paymentState(overrides: Partial<PaymentState> = {}): PaymentState {
   return {
+    collection_kind: 'processor',
+    gift_editable: false,
+    gift_unconfirmed: null,
     order: {
       order_number: '2001',
       line_items: order({ order_number: '2001' }).line_items,
@@ -365,6 +369,21 @@ export function paymentState(overrides: Partial<PaymentState> = {}): PaymentStat
     returned: false,
     notices: [],
     ...overrides,
+  };
+}
+
+/** Gift card fields of an order that accepts them. `covered` is the share the gift card pays. */
+export function giftOrder(covered: number | null, total = 12000) {
+  const base = paymentState().order;
+  const applied = covered === null ? null : { gift_card_id: 'gc_example_001', last_characters: '4821', available_money: usd(covered) };
+  return {
+    ...base,
+    order_revision: 'rev_example_3',
+    gift_card_tender_enabled: true,
+    gift_cards: applied ? [applied] : [],
+    gift_card_estimate: applied
+      ? { can_pay: true, order_revision: 'rev_example_3', gift_card_money: usd(covered!), processor_money: usd(total - covered!), gift_cards: [{ gift_card_id: 'gc_example_001', amount_money: usd(covered!) }] }
+      : undefined,
   };
 }
 
@@ -590,6 +609,24 @@ function paymentPageVariant(surface: 'invoice' | 'return', variant: Variant) {
       return paymentPage(surface, paymentState({ payment_collection: withTypes(['card'], ['apple_pay', 'google_pay']) }));
     case 'total_changed':
       return paymentPage(surface, paymentState({ total_changed: true, approved_outstanding_money: usd(13000), notices: ['total_changed'] }));
+    case 'gift':
+      return paymentPage(surface, paymentState({ gift_editable: true, order: giftOrder(null) }));
+    case 'gift_split':
+      return paymentPage(surface, paymentState({ gift_editable: true, order: giftOrder(2500) }));
+    case 'gift_settlement':
+      return paymentPage(surface, paymentState({ collection_kind: 'settlement', gift_editable: true, payment_collection: null, order: giftOrder(12000) }));
+    case 'gift_locked':
+      return paymentPage(surface, paymentState({ gift_editable: false, order: giftOrder(2500) }));
+    case 'gift_unconfirmed_apply':
+      return paymentPage(surface, paymentState({ gift_unconfirmed: { kind: 'apply', can_check: true }, order: giftOrder(null) }));
+    case 'gift_unconfirmed_remove':
+      return paymentPage(surface, paymentState({ gift_unconfirmed: { kind: 'remove', gift_card_id: 'gc_example_001', last_characters: '4821', can_check: true }, order: giftOrder(2500) }));
+    case 'gift_unconfirmed_remove_any':
+      return paymentPage(surface, paymentState({ gift_unconfirmed: { kind: 'remove', gift_card_id: 'gc_example_001', last_characters: null, can_check: true }, order: giftOrder(null) }));
+    case 'gift_unconfirmed_wait':
+      return paymentPage(surface, paymentState({ gift_unconfirmed: { kind: 'apply', can_check: false }, order: giftOrder(null) }));
+    case 'gift_changed':
+      return paymentPage(surface, paymentState({ gift_editable: true, order: giftOrder(2500), total_changed: true, notices: ['gift_card_changed'] }));
     default:
       return paymentPage(surface, paymentState());
   }

@@ -25,6 +25,7 @@ export type CreatePath = { path: string; type: string; cleanup: string; reviewAt
 export type PlanStep = { name: string; sandbox: Sandbox; operation: string; args: any[]; creates: CreatePath[]; purpose: string };
 export async function loadFixtures(config: Config): Promise<Fixtures> {
   const f = await readPrivate<Fixtures>(config.fixtureFile);
+  assertFixtureSecretsAbsent(f);
   validateFixtureShape(f);
   invariant(f.schema_version === 1 && f.run === config.run && Array.isArray(f.resources), 'FIXTURE_MANIFEST_INVALID');
   for (const s of ['A', 'B'] as const) {
@@ -41,6 +42,7 @@ export function atPath(value: any, path: string): any {
 }
 
 export function validateFixtureShape(f: Fixtures): void {
+  assertFixtureSecretsAbsent(f); assertSessionExceptions(f.acceptedExceptions);
   invariant(f && f.schema_version === 1 && typeof f.run === 'string' && Array.isArray(f.resources), 'FIXTURE_MANIFEST_INVALID');
   for (const role of ['b1', 'b2', 'd', 'b1b'] as const) {
     const buyer = f.buyers?.[role];
@@ -58,8 +60,19 @@ export function validateFixtureShape(f: Fixtures): void {
     const id = `${r.sandbox}:${r.type}:${r.id}`; invariant(!ids.has(id), 'DUPLICATE_FIXTURE_RESOURCE'); ids.add(id);
   }
   for (const product of Object.values(f.products)) { invariant(product && /^[A-Za-z0-9_-]+$/.test(product.productId) && /^[A-Za-z0-9_-]+$/.test(product.variantId), 'PRODUCT_FIXTURE_INVALID'); money(product.unitPrice); }
-  const rowIds = new Set([...matrix.map(r => r.id), 'SF-05Z2', 'SF-05Z1', 'SF-05Z3', 'AC-15API', 'SF-GIFTCHALLENGE', 'SF-ACH-MICRODEP']);
+  const rowIds = new Set([...matrix.map(r => r.id), 'SF-05Z2', 'SF-05Z1', 'SF-05Z3', 'AC-15API', 'SF-GIFTCHALLENGE','AC-GIFTCHALLENGE','SF-ACH-MICRODEP']);
   const exceptions = new Set<string>();
   for (const e of f.acceptedExceptions ?? []) { invariant(rowIds.has(e.id) && !exceptions.has(e.id) && e.acceptedByUser === true && /^[A-Z0-9_-]{3,100}$/.test(e.reference), 'USER_EXCEPTION_REQUIRED'); exceptions.add(e.id); }
   for (const b of f.confirmedBlockers ?? []) invariant(/^PRQ-[A-Z0-9_-]+$/.test(b.id) && /^[A-Z0-9_-]{3,100}$/.test(b.code) && /^[A-Z0-9_-]{3,100}$/.test(b.authority), 'CONFIRMED_BLOCKER_AUTHORITY_REQUIRED');
+}
+
+export function assertFixtureSecretsAbsent(value: unknown): void {
+  if (typeof value === 'string') invariant(!/flint_(?:cses|cref|test|live)_/.test(value), 'FIXTURE_SECRET_FORBIDDEN');
+  else if (Array.isArray(value)) value.forEach(assertFixtureSecretsAbsent);
+  else if (value && typeof value === 'object') for (const [key, item] of Object.entries(value)) {
+    invariant(!['secret', 'refresh_token', 'customer_session_secret'].includes(key), 'FIXTURE_SECRET_FORBIDDEN'); assertFixtureSecretsAbsent(item);
+  }
+}
+export function assertSessionExceptions(exceptions: Fixtures['acceptedExceptions']): void {
+  invariant(!(exceptions ?? []).some(e => e.id === 'AC-15' || e.id === 'AC-16'||e.id==='SF-GIFTCHALLENGE'||e.id==='AC-GIFTCHALLENGE'), 'EXCEPTION_NOT_PERMITTED_FOR_ROW');
 }

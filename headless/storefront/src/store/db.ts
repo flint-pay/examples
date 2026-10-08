@@ -26,6 +26,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS resource_locks (resource TEXT PRIMARY KEY, owner TEXT NOT NULL, expires_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS webhook_events (webhook_id TEXT PRIMARY KEY, type TEXT NOT NULL, object_id TEXT, received_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS order_signals (order_id TEXT PRIMARY KEY, paid_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS gift_challenges(challenge_id TEXT PRIMARY KEY,checkout_ref TEXT NOT NULL,action_id TEXT NOT NULL,checkout_session_id TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('open','retrying','closed')),origin_replacements INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL);
+      CREATE UNIQUE INDEX IF NOT EXISTS one_active_gift_challenge ON gift_challenges(checkout_ref) WHERE status IN ('open','retrying');
     `);
     if(!this.all<{name:string}>('PRAGMA table_info(checkouts)').some(column=>column.name==='cart_dirty'))this.db.exec('ALTER TABLE checkouts ADD COLUMN cart_dirty INTEGER NOT NULL DEFAULT 0');
     if(!this.all<{name:string}>('PRAGMA table_info(checkouts)').some(column=>column.name==='cart_finalized'))this.db.exec('ALTER TABLE checkouts ADD COLUMN cart_finalized INTEGER NOT NULL DEFAULT 0');
@@ -34,6 +36,7 @@ export class Store {
   }
   cleanup(){
     this.run('UPDATE checkouts SET checkout_auth_token=NULL WHERE completed_at IS NOT NULL AND completed_at<?',Date.now()-24*60*60*1000);
+    this.run("DELETE FROM gift_challenges WHERE status='closed' OR expires_at<?",Date.now()-24*60*60*1000);
   }
   get<T>(sql: string, ...values: SQLInputValue[]): T | undefined { return this.db.prepare(sql).get(...values) as T | undefined; }
   all<T>(sql: string, ...values: SQLInputValue[]): T[] { return this.db.prepare(sql).all(...values) as T[]; }
@@ -65,6 +68,27 @@ export class Store {
     try { return await fn(assertOwnership); }
     finally { clearInterval(heartbeat); this.run('DELETE FROM resource_locks WHERE resource=? AND owner=?', resource, owner); }
   }
+  closeGiftChallenges(ref:string){this.run("UPDATE gift_challenges SET status='closed' WHERE checkout_ref=? AND status IN ('open','retrying')",ref);}
+  abandonGiftChallenges(ref:string,resource:string){
+    this.transaction(()=>{
+      this.run("UPDATE actions SET status='rejected' WHERE resource=? AND kind IN ('gift','gift_apply') AND status='challenge'",resource);
+      this.closeGiftChallenges(ref);
+    });
+  }
+  issueGiftChallenge(ref:string,actionId:string,sessionId:string,challengeId:string){
+    const now=Date.now();
+    this.transaction(()=>{
+      this.closeGiftChallenges(ref);
+      this.run("UPDATE actions SET status='challenge' WHERE action_id=?",actionId);
+      this.run("INSERT INTO gift_challenges(challenge_id,checkout_ref,action_id,checkout_session_id,status,created_at,expires_at) VALUES(?,?,?,?,'open',?,?)",challengeId,ref,actionId,sessionId,now,now+900000);
+    });
+  }
+  claimGiftChallenge(row:GiftChallengeRecord){
+    this.transaction(()=>{
+      if(this.run("UPDATE gift_challenges SET status='retrying' WHERE challenge_id=? AND status='open'",row.challenge_id).changes!==1)throw new LocalError('GIFT_CHALLENGE_EXPIRED',409);
+      if(this.run("UPDATE actions SET status='pending' WHERE action_id=? AND status='challenge'",row.action_id).changes!==1)throw new LocalError('GIFT_CHALLENGE_EXPIRED',409);
+    });
+  }
   close() { this.db.close(); }
 }
 
@@ -75,4 +99,5 @@ export type CheckoutRecord = {
   status: string; last_attempt_id: string | null; pay_seq: number; resume_seq: number;
   needs_replacement: number; cart_dirty: number; cart_finalized:number; flash: string; details: string; created_at: number; updated_at: number; completed_at: number | null;
 };
-export type ActionRecord = {action_id:string;resource:string;kind:string;idempotency_key:string;body:string|null;body_hash:string;status:string;attempt_id:string|null;created_at:number};
+export type ActionRecord = {action_id:string;resource:string;kind:string;idempotency_key:string;body:string|null;body_hash:string;status:'pending'|'unknown'|'succeeded'|'rejected'|'challenge';attempt_id:string|null;created_at:number};
+export type GiftChallengeRecord={challenge_id:string;checkout_ref:string;action_id:string;checkout_session_id:string;status:'open'|'retrying'|'closed';origin_replacements:number;created_at:number;expires_at:number};

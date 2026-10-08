@@ -37,7 +37,7 @@ test('prerequisite is recorded once and dependent rows stay NOT RUN', async () =
   const results = new Results(join(dir, 'result.json'), ['SF-01', 'SF-02']); results.root({ id: 'PRQ-INBOX', status: 'PENDING', code: 'INBOX_CONFIG_REQUIRED' }); results.stopped('SF-02', 'PRQ-INBOX'); assert.equal(results.rows.get('SF-02')?.status, 'NOT RUN');
   assert.throws(() => results.root({ id: 'PRQ-INBOX', status: 'BLOCKED', code: 'DIFFERENT' })); assert.throws(() => results.finish('SF-01', 'PASS', [])); assert.throws(() => results.finish('SF-01', 'OUT OF SCOPE', ['NO_USER_EXCEPTION'])); await results.save();
 }));
-test('all 52 settled rows and six supplemental contract rows have an implementation', () => { validateRegistry(); assert.equal(rows.length, 58); });
+test('all 52 settled rows and seven supplemental contract rows have an implementation', () => { validateRegistry(); assert.equal(rows.length, 59); });
 test('money avoids floating point and rejects numeric amounts', () => {
   assert.equal(money({ amount: '9007199254740993', currency: 'USD' }).amount, '9007199254740993'); assert.throws(() => money({ amount: 12000, currency: 'USD' })); assert.throws(() => equalMoney({ amount: '1', currency: 'USD' }, { amount: '1', currency: 'CAD' }));
 });

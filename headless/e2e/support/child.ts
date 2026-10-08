@@ -3,11 +3,11 @@ import { invariant } from './safe.ts';
 import type { CredentialScanner } from './credential-scan.ts';
 
 // Child output is scanned and discarded at capture. Do not echo even redacted URLs.
-export function spawnChild(command: string, args: string[], cwd: string, scanner: CredentialScanner, env: NodeJS.ProcessEnv) {
+export function spawnChild(command: string, args: string[], cwd: string, scanner: CredentialScanner, env: NodeJS.ProcessEnv,observeOutput?:(stream:'stdout'|'stderr',chunk:string)=>void) {
   const child = spawn(command, args, { cwd, env: { PATH: `${process.env.HOME}/.local/bin:${process.env.PATH}`, NODE_NO_WARNINGS: '1', ...env }, stdio: ['ignore', 'pipe', 'pipe'], shell: false });
-  for (const stream of [child.stdout, child.stderr]) {
+  for (const [name,stream] of [['stdout',child.stdout],['stderr',child.stderr]] as const) {
     let tail = '';
-    stream.on('data', chunk => { const text = tail + String(chunk); scanner.scan(text, 'child'); tail = text.slice(-4096); });
+    stream.on('data', chunk => { observeOutput?.(name,String(chunk));const text = tail + String(chunk); scanner.scan(text, 'child'); tail = text.slice(-4096); });
   }
   return child;
 }

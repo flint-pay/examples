@@ -2,11 +2,17 @@ import { expect } from '@playwright/test';
 import type { Driver } from '../support/driver.ts';
 import type { Scenario } from './storefront.ts';
 import { providerSteps, bank } from './provider.ts';
-import { invariant } from '../support/safe.ts';
+import { invariant, apiFailure, emit } from '../support/safe.ts';
 import { equalMoney, money, assertOneCharge } from '../support/money.ts';
 import { createBuyerClient, buyerInvoiceLaunch, hostedInvoiceLaunch, beginHostedAuthentication } from '../support/public-actions.ts';
 import { exerciseOwnSessionRefresh } from '../support/owned-sessions.ts';
 import { auditEmail, CHECKOUT_ORIGIN } from '../support/email-links.ts';
+import { AppVault, anonymousSessionClient, sessionCall, assertVaultScans, verifyVaultAuthority } from '../support/app-vault.ts';
+import type { SealedCredential, VaultSnapshot } from '../support/app-vault.ts';
+import { runChild } from '../support/child.ts';
+import { checkoutRoot } from '../support/private-files.ts';
+import { join } from 'node:path';
+import type { Client } from '@flintpay/node';
 import { syncAppAudit, revocationCheckpoint, assertFreshRevocation } from '../support/audit-feed.ts';
 
 async function signed(d: Driver, buyer: 'b1' | 'b2' | 'd' = 'b1') {
@@ -232,22 +238,136 @@ export const account: Record<string, Scenario> = {
     return ['DELETION_PENDING_DUPLICATE_REJECT_APPROVE_CLOSED'];
   },
   'AC-15API': async d => exerciseOwnSessionRefresh(d.operator, await fixture(d, 'sessionDisposableCustomerId')),
-  'AC-15': async () => { invariant(false, 'REFRESH_REPLAY_SESSION_EXTRACTION_FORBIDDEN'); },
-  'AC-16': async d => {
-    const page = await signed(d); const response = await d.job(page, '/profile', { name: 'invalid' }, { noCsrf: true }); invariant(response.status === 403, 'ACCOUNT_CSRF_NOT_REJECTED');
-    const session = await fixture(d, 'independentRevocationSession');
-    // A supplied public fixture session is not an extracted application session.
-    await d.operator.clients.clients.A.customerSessions.revoke(session.id, {}, { idempotencyKey: `${d.config.run}-revoke-independent` });
-    const { Client } = await import('@flintpay/node'); const { pinnedFetch } = await import('../support/sdk.ts');
-    const customer = new Client({ baseUrl: d.config.apiOrigin, customerToken: session.secret, transport: pinnedFetch(), maxAttempts: 1 }); const error = await customer.me.get().then(() => null, e => e); invariant(error?.code === 'INVALID_CUSTOMER_SESSION', 'REVOKED_SESSION_MUST_FAIL');
-    const before = await revocationCheckpoint(d); await d.form(page, '/sign-out'); await syncAppAudit(d);
-    assertFreshRevocation(d, before, 'accountA', d.fixtures.buyers.b1.customerId);
-    await d.goto(page, d.config.origins.accountA, '/orders'); await expect(page.locator('form[action="/sign-in"]')).toBeVisible(); await d.guardCheck();
-    return ['ACCOUNT_SIGNOUT_CSRF_REAL_API_REVOCATION'];
-  },
+  'AC-15': async d => appRefreshAcceptance(d),
+  'AC-16': async d => appSignoutAcceptance(d),
   'AC-17': async d => {
     const c = await d.checkout(await d.page('late-guest'), 'brewing-class'); await bank(d, c, 'processing');
     invariant(!(await d.operator.clients.clients.A.orders.get(c.orderId)).customer_id, 'VERIFIED_BUYER_GUEST_ORDER_LINKED_EARLY'); const page = await signed(d); await d.goto(page, d.config.origins.accountA, '/link-purchases'); const after = new Date(); await d.form(page, '/link-purchases/send'); const mail = await d.email('b1', after, 'verification'); await d.form(page, '/link-purchases/confirm', { code: mail.codes[0] });
     await expect(page.getByTestId('ac-link-result')).toHaveAttribute('data-count', '1'); invariant((await d.operator.clients.clients.A.orders.get(c.orderId)).customer_id === d.fixtures.buyers.b1.customerId, 'LATE_GUEST_LINK_FAILED'); return ['LATER_GUEST_PROCESSING_LINKED_BY_NEW_PROOF'];
   },
 };
+
+
+export function assertNoEarlyRefresh(d: Driver, checkpoint: number): void { invariant(refreshes(d, checkpoint).length === 0, 'EARLY_REFRESH_DURING_WAIT'); }
+const refreshes = (d: Driver, checkpoint: number) => d.appMutations.slice(checkpoint).filter(e => e.app === 'accountA' && e.operation === 'CUSTOMER_SESSION_REFRESH');
+export function assertRefreshRotation(d: Driver, checkpoint: number, familyId: string): void {
+  const events = refreshes(d, checkpoint);
+  invariant(events.length === 1 && events[0].status === 200 && Number.isFinite(events[0].resolvedAt), 'APP_AUTOMATIC_REFRESH_NOT_OBSERVED');
+  invariant(d.appResources.some(e => e.app === 'accountA' && e.type === 'customer_session' && e.id === familyId && e.timestamp >= events[0].timestamp && e.timestamp <= events[0].resolvedAt!), 'APP_REFRESH_FAMILY_CHANGED');
+}
+export async function replayAppRefresh(d: Driver, anonymous: Pick<Client, 'customerSessions'>, oldToken: SealedCredential, familyId: string): Promise<void> {
+  const ledger = d.operator.ledger, customerId = d.fixtures.buyers.b1.customerId!;
+  d.requireOwned('A', familyId); d.requireOwned('A', customerId);
+  let failure: ReturnType<typeof apiFailure> | undefined;
+  try {
+    await ledger.action('ac15-superseded-refresh-replay', 'A', 'customerSessions.refresh', [{ credential_source: 'accountA:customer_session_vault', customer_session_id: familyId, generation: 'superseded' }], async key => {
+      try { await oldToken.use(refresh_token => sessionCall(() => anonymous.customerSessions.refresh({ refresh_token }, { idempotencyKey: key }))); }
+      catch (error) { const result = apiFailure(error); if (!result.status || result.status < 200 || result.status >= 300) throw result; }
+      return { accepted: true };
+    }, async () => {});
+  } catch (error) { failure = apiFailure(error); }
+  if (!failure || failure.status && failure.status >= 200 && failure.status < 300) {
+    await ledger.action('ac15-accepted-replay-cleanup', 'A', 'customerSessions.revoke', [familyId, {}], async key => (await d.operator.clients.writable('A', true)).customerSessions.revoke(familyId, {}, { idempotencyKey: key }), async response => { invariant(response.revoked === true && response.customer_session_id === familyId, 'SESSION_CLEANUP_FAILED'); });
+    invariant(false, 'SUPERSEDED_REFRESH_ACCEPTED');
+  }
+  if (ledger.state.actions['A:ac15-superseded-refresh-replay'].phase === 'unknown') {
+    await ledger.action('ac15-replay-reconcile', 'A', 'customers.revokeSessions', [customerId, {}], async key => (await d.operator.clients.writable('A', true)).customers.revokeSessions(customerId, {}, { idempotencyKey: key }), async response => { invariant(typeof response.revoked_count === 'string' && /^(0|[1-9]\d*)$/.test(response.revoked_count), 'SESSION_RECONCILIATION_FAILED'); });
+    await ledger.abandonUnreplayable('A:ac15-superseded-refresh-replay', 'A:ac15-replay-reconcile');
+    invariant(false, 'REPLAY_OUTCOME_UNKNOWN');
+  }
+  invariant(failure.status === 401 && failure.code === 'CUSTOMER_SESSION_REFRESH_REUSED' && ledger.state.actions['A:ac15-superseded-refresh-replay'].phase === 'rejected', 'APP_SUPERSEDED_REFRESH_REPLAY_NOT_REUSED');
+}
+export async function assertAppSecretInvalid(anonymous: Pick<Client, 'me'>, secret: SealedCredential, code: string): Promise<void> {
+  const invalid = await secret.use(customerToken => sessionCall(() => anonymous.me.get(undefined, { customerToken }))).then(() => undefined, apiFailure);
+  invariant(invalid?.status === 401 && invalid.code === 'INVALID_CUSTOMER_SESSION', code);
+}
+type RowReader = Pick<AppVault, 'metadata' | 'readVault' | 'count'>;
+type RefreshPorts = { reader: RowReader; anonymous: Pick<Client, 'customerSessions' | 'me'>; now: () => number; wait: (ms: number) => Promise<void>; sync: () => Promise<void>; verify: () => Promise<unknown>; scan: () => Promise<void> };
+async function appRefreshAcceptance(d: Driver): Promise<string[]> {
+  const reader = new AppVault(d, 'AC-15');
+  return runAppRefreshTransition(d, { reader, anonymous: anonymousSessionClient(d.operator.clients.requestIds), now: () => Date.now(), wait: ms => new Promise(resolve => setTimeout(resolve, ms)), sync: () => syncAppAudit(d), verify: () => verifyVaultAuthority(d, 'AC-15'), scan: () => assertVaultScans(d, reader.scanner) });
+}
+// Dependency ports support local injected tests. The registered handler always uses the real gates and timers above.
+export async function runAppRefreshTransition(d: Driver, ports: RefreshPorts): Promise<string[]> {
+  await d.guardCheck();
+  for (const context of d.contexts.values()) for (const page of context.pages()) if (Object.values(d.config.origins).some(origin => page.url().startsWith(origin + '/'))) await page.goto('about:blank');
+  const rowStart = ports.now(), { reader, anonymous } = ports;
+  const page = await d.page('app-vault-ac15'); await d.login(page, 'b1');
+  await d.goto(page, d.config.origins.accountA, '/'); await expect(page.getByTestId('ac-home')).toBeVisible();
+  await d.goto(page, d.config.origins.accountA, '/orders'); await expect(page.getByTestId('ac-orders')).toBeVisible();
+  if ((await reader.metadata()).mintedAt < rowStart) {
+    await d.form(page, '/sign-out'); await d.login(page, 'b1'); await d.goto(page, d.config.origins.accountA, '/'); await expect(page.getByTestId('ac-home')).toBeVisible();
+  }
+  let first: VaultSnapshot | undefined = await reader.readVault();
+  const familyId = first.familyId, mintedAt = first.mintedAt, expiresAt = first.expiresAt;
+  invariant(mintedAt >= rowStart && expiresAt - mintedAt >= 295_000 && expiresAt - mintedAt <= 305_000 && first.refreshExpiresAt > ports.now() + 3600_000, 'REAL_TTL_300_REQUIRED');
+  let oldToken: SealedCredential | undefined = first.refreshToken, oldSecret: SealedCredential | undefined = first.secret; first = undefined;
+  // Keep sealed values only within this row's stack frame.
+  await page.goto('about:blank'); await ports.sync(); const checkpoint = d.appMutations.length;
+  const wakeAt = Math.max(mintedAt + 360_000, expiresAt + 60_000);
+  while (ports.now() < wakeAt) { await ports.wait(Math.min(30_000, wakeAt - ports.now())); emit({ event: 'APP_SESSION_REAL_TTL_WAIT', row: 'AC-15' }); }
+  await ports.sync(); assertNoEarlyRefresh(d, checkpoint);
+  await reader.metadata();
+  await d.goto(page, d.config.origins.accountA, '/orders'); await expect(page.getByTestId('ac-orders')).toBeVisible();
+  await d.goto(page, d.config.origins.accountA, '/'); await expect(page.getByTestId('ac-home')).toBeVisible();
+  await ports.sync(); assertRefreshRotation(d, checkpoint, familyId);
+  let current: VaultSnapshot | undefined = await reader.readVault();
+  invariant(current.familyId === familyId && !current.refreshToken.equals(oldToken) && !current.secret.equals(oldSecret) && current.expiresAt > ports.now() + 240_000, 'APP_REFRESH_FAMILY_OR_AUTHORITY_DID_NOT_ROTATE');
+  oldSecret = undefined;
+  let currentSecret: SealedCredential | undefined = current.secret; current = undefined;
+  await ports.verify();
+  await replayAppRefresh(d, anonymous, oldToken, familyId); oldToken = undefined;
+  await ports.verify();
+  await assertAppSecretInvalid(anonymous, currentSecret, 'REUSE_DID_NOT_REVOKE_APP_FAMILY'); currentSecret = undefined;
+  await d.goto(page, d.config.origins.accountA, '/orders');
+  const destination = new URL(page.url());
+  invariant(destination.pathname === '/sign-in' && destination.searchParams.get('notice') === 'session_ended' && destination.searchParams.get('next') === '/orders', 'APP_DID_NOT_END_SESSION_AFTER_FAMILY_REVOCATION');
+  await expect(page.getByTestId('ac-notice')).toContainText('session');
+  invariant(await reader.count('vaultCount') === 0 && await reader.count('sessionCount') === 0, 'LOCAL_SESSIONS_AND_VAULT_NOT_CLEARED');
+  await ports.sync(); invariant(refreshes(d, checkpoint).filter(e => e.status === 200).length === 1, 'APP_REFRESH_AFTER_FAMILY_REVOCATION');
+  await ports.scan();
+  return ['APP_VAULT_RUN_OWNED_GATES_VERIFIED', 'REAL_TTL_300_OBSERVED', 'AUTOMATIC_REFRESH_AFTER_6_MINUTES_SAME_FAMILY', 'APP_SUPERSEDED_REFRESH_REPLAY_REUSED', 'APP_CURRENT_SECRET_INVALID_AFTER_REUSE', 'NEXT_PAGE_SESSION_ENDED', 'LOCAL_SESSIONS_AND_VAULT_CLEARED', 'CREDENTIAL_SCANS_CLEAN'];
+}
+export async function assertSignoutNegative(reader: Pick<AppVault, 'metadata' | 'readVault' | 'count'>, d: Driver, page: any, secret: SealedCredential, familyId: string, sessions: number, checkpoint: number, send: () => Promise<number>, sync: () => Promise<void> = () => syncAppAudit(d)): Promise<void> {
+  invariant(await send() === 403, 'ACCOUNT_CSRF_NOT_REJECTED');
+  invariant((await reader.metadata()).familyId === familyId, 'ACCOUNT_CSRF_NOT_REJECTED');
+  const current = await reader.readVault();
+  invariant(current.familyId === familyId && current.secret.equals(secret) && await reader.count('sessionCount') === sessions, 'ACCOUNT_CSRF_NOT_REJECTED');
+  await sync(); invariant(!d.revocations.slice(checkpoint).some(e => e.app === 'accountA'), 'ACCOUNT_CSRF_NOT_REJECTED');
+  await expect(page.getByTestId('ac-home')).toBeVisible();
+}
+export function assertSignoutRevoked(d: Driver, checkpoint: number, familyId: string, pending: number, vaults: number): void {
+  assertFreshRevocation(d, checkpoint, 'accountA', { sessionId: familyId });
+  invariant(pending === 0 && vaults === 0, 'APP_SIGNOUT_DID_NOT_REVOKE_EXACT_SESSION');
+}
+type SignoutPorts = Pick<RefreshPorts, 'reader' | 'anonymous' | 'sync' | 'verify' | 'scan'> & { boundary: () => Promise<void> };
+async function appSignoutAcceptance(d: Driver): Promise<string[]> {
+  const reader = new AppVault(d, 'AC-16');
+  return runAppSignoutTransition(d, { reader, anonymous: anonymousSessionClient(d.operator.clients.requestIds), sync: () => syncAppAudit(d), verify: () => verifyVaultAuthority(d, 'AC-16'), scan: () => assertVaultScans(d, reader.scanner), boundary: () => runChild(process.execPath, ['--test', 'tests/unit/credential-boundary.test.ts'], join(checkoutRoot, 'headless/account'), d.scanner, {}) });
+}
+export async function runAppSignoutTransition(d: Driver, ports: SignoutPorts): Promise<string[]> {
+  const { reader, anonymous } = ports;
+  const page = await d.page('app-vault-ac16'); await d.login(page, 'b1'); await d.goto(page, d.config.origins.accountA, '/'); await expect(page.getByTestId('ac-home')).toBeVisible();
+  let current: VaultSnapshot | undefined = await reader.readVault(); const familyId = current.familyId;
+  let secret: SealedCredential | undefined = current.secret; current = undefined;
+  const positive = await secret.use(customerToken => sessionCall(() => anonymous.me.get(undefined, { customerToken })));
+  invariant(positive.customer_id === d.fixtures.buyers.b1.customerId, 'OLD_APP_SECRET_POSITIVE_CONTROL_REQUIRED');
+  const sessions = await reader.count('sessionCount'), checkpoint = await ports.sync().then(() => d.revocations.length);
+  const negatives = [
+    () => d.job(page, '/profile', { name: 'invalid' }, { noCsrf: true }).then(r => r.status),
+    () => d.job(page, '/sign-out', {}, { noCsrf: true }).then(r => r.status),
+    () => d.job(page, '/sign-out', {}, { noCsrf: true, headers: { 'X-CSRF-Token': 'invalid' } }).then(r => r.status),
+    async () => { const response = await page.request.post(new URL('/sign-out', d.config.origins.accountA).href, { headers: { Origin: 'http://csrf.invalid', 'X-CSRF-Token': await d.csrf(page) }, form: {}, maxRedirects: 0 }); d.scanner.scan(await response.text(), 'body'); return response.status(); },
+  ];
+  for (const send of negatives) await assertSignoutNegative(reader, d, page, secret, familyId, sessions, checkpoint, send, ports.sync);
+  const before = await ports.sync().then(() => d.revocations.length); await d.form(page, '/sign-out'); await ports.sync();
+  assertSignoutRevoked(d, before, familyId, await reader.count('pendingCount', familyId), await reader.count('vaultCount'));
+  const destination = new URL(page.url()); invariant(destination.pathname === '/sign-in' && destination.searchParams.get('notice') === 'signed_out', 'APP_SIGNOUT_NOTICE_REQUIRED');
+  await ports.verify();
+  await assertAppSecretInvalid(anonymous, secret, 'OLD_APP_SECRET_STILL_VALID'); secret = undefined;
+  await d.goto(page, d.config.origins.accountA, '/orders'); invariant(new URL(page.url()).pathname === '/sign-in', 'NEXT_PAGE_NOT_SIGNED_OUT');
+  await ports.scan();
+  await ports.boundary();
+  await ports.scan();
+  return ['APP_VAULT_RUN_OWNED_GATES_VERIFIED', 'OLD_SECRET_VALID_BEFORE_SIGNOUT', 'SIGNOUT_CSRF_AND_ORIGIN_REJECTED_WITHOUT_EFFECT', 'APP_SIGNOUT_REVOKED_EXACT_FAMILY', 'OLD_APP_SECRET_INVALID_CUSTOMER_SESSION', 'NEXT_PAGE_SIGNED_OUT', 'ACCOUNT_CREDENTIAL_BOUNDARY_TEST_PASS', 'CREDENTIAL_SCANS_CLEAN'];
+}

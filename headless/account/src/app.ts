@@ -15,18 +15,20 @@ import {IdentityStore,verifyPassword,hashPassword,equalSecret,normalizeEmail,dig
 import type {Session,User} from './identity/index.ts';
 import {CustomerSessions} from './flint/customer-sessions.ts';
 import {Store} from './store/db.ts';
-import type {CheckoutRecord} from './store/db.ts';
+import type {CheckoutRecord,ActionRecord} from './store/db.ts';
 import type {ReadOptions} from './flint/auth.ts';
 import {createAuth} from './flint/auth.ts';
 import type {Preflight} from './flint/preflight.ts';
-import {LocalError,appError,errorStatus,unknownOutcome} from './flint/errors.ts';
+import {LocalError,appError,errorStatus,unknownOutcome,giftPayError} from './flint/errors.ts';
 import {project,safeMethod,safeNested} from './flint/projection.ts';
 import {securityHeaders} from './security/headers.ts';
 import {RateLimiter} from './security/rate-limit.ts';
 import {returnPath} from './security/paths.ts';
 import {resourceHint} from './security/hints.ts';
 import {text,required,id,bool,code,email,object,giftRecipient} from './security/input.ts';
-import {logRequest} from './security/log.ts';
+import {createHash} from 'node:crypto';
+import {validProof} from './flint/gift-challenge.ts';
+import {logRequest,logLaunchInvalid} from './security/log.ts';
 import {attemptOpen} from './payments/next-step.ts';
 import {PaymentEngine} from './payments/engine.ts';
 import type {PayInput} from './payments/engine.ts';
@@ -61,7 +63,7 @@ export function createApp(deps:Dependencies){
     const current=c.get('user'),flashes=c.get('flash')??{notices:[]};
     const form=flashes.form;
     if(form&&data&&typeof data==='object')data={...data,...(['sign-in','sign-up'].includes(pageId)?form.values:{values:form.values}),...(form.dialog?{dialog:form.dialog}:{})};
-    const ctx={storeName:config.storeName,appOrigin:config.appOrigin,storefrontOrigin:config.storefrontOrigin,csrf:c.get('session').csrf_token,user:current?{name:current.name,email:current.email}:null,data,notices:flashes.notices,error:flashes.error,support:preflight.support,setupNeeded:preflight.setupNeeded};
+    const ctx={storeName:config.storeName,appOrigin:config.appOrigin,giftChallengeOrigin:config.giftChallengeOrigin,storefrontOrigin:config.storefrontOrigin,csrf:c.get('session').csrf_token,user:current?{name:current.name,email:current.email}:null,data,notices:flashes.notices,error:flashes.error,support:preflight.support,setupNeeded:preflight.setupNeeded};
     return c.html(await render(pageId,ctx as never),status as 200);
   };
   const loaded=async<T>(fn:()=>Promise<T>)=>{try{return {status:'ok' as const,value:await fn()};}catch(error){if(errorStatus(error)===401)throw error;return {status:'error' as const,error:appError(error)};}};
@@ -75,7 +77,7 @@ export function createApp(deps:Dependencies){
   const ownedSubscription=(c:C,subscriptionId:string)=>me(c,opts=>client.me.getSubscription(id(subscriptionId),undefined,opts));
   const boundRoutes=new Set(['/sign-in','/sign-up','/verify-email','/verify-email/send','/verify-email/confirm','/sign-out','/email-preferences','/email-preferences/lookup','/email-preferences/unsubscribe','/healthz']);
   app.use('*',async(c,next)=>{
-    for(const [key,value]of Object.entries(securityHeaders))c.header(key,value);
+    for(const [key,value]of Object.entries(securityHeaders(config)))c.header(key,value);
     const start=Date.now(),requestId=randomUUID();c.header('X-Request-ID',requestId);
     // Network listeners supply peer addresses explicitly. Proxy headers are never trusted.
     c.set('ip',c.env?.incoming?.socket.remoteAddress??c.env?.ip??'local');
@@ -127,7 +129,9 @@ export function createApp(deps:Dependencies){
     await next();
   });
   app.onError(async(error,c)=>{
-    const safe=appError(error),status=errorStatus(error);
+    const safe=/\/pay\/gift-card(?:\/|$)/.test(c.req.path)?giftPayError(error):appError(error),status=errorStatus(error);
+    if(/\/pay\/gift-card(?:\/challenge)?$/.test(c.req.path)&&unknownOutcome(error))safe.message_key='gift_challenge_unconfirmed';
+    if(safe.code==='INVALID_PAGE_ORIGIN')logLaunchInvalid('invalid_page_origin',safe.request_id);
     const errorField=safe.code==='EMAIL_ALREADY_USED'||safe.code==='INVALID_EMAIL'?(c.req.path.startsWith('/profile/email')?'new_email':'email'):safe.code==='PASSWORD_TOO_SHORT'?(c.req.path==='/sign-up'?'password':'new_password'):safe.code==='CURRENT_PASSWORD_INCORRECT'?'current_password':undefined;
     if(errorField)Object.assign(safe,{field_errors:{[errorField]:safe.message_key}});
     if(safe.request_id)console.warn(JSON.stringify({event:'flint_request_failed',code:safe.code,request_id:safe.request_id}));
@@ -306,17 +310,27 @@ export function createApp(deps:Dependencies){
         record=await store.locked(`launch:${preflight.sandboxId}:${current.user_id}:${type}:${resourceId}`,async()=>{
           const previous=store.checkout(current.user_id,preflight.sandboxId,type,resourceId);
           if(previous){
-            try{const state=await engine.status(previous.checkout_ref);if(state.unknown||attemptOpen(state.attempt))return previous;}
+            try{const state=await engine.status(previous.checkout_ref);if(state.unknown||attemptOpen(state.attempt)||engine.unresolvedGift(previous))return previous;}
             catch(error){if(!['INVALID_CHECKOUT_SESSION','CHECKOUT_SESSION_NOT_OPEN','CHECKOUT_SESSION_EXPIRED'].includes(appError(error).code))throw error;if(engine.unresolved(previous))throw new LocalError('UNKNOWN_PAYMENT_OUTCOME',409);}
           }
           if(!resource.buyer_actions.some(item=>item.kind===action&&item.is_available))return previous!;
           const resolutionId=type==='return'?('completion_blockers'in resource?resource.completion_blockers.find(blocker=>blocker.code==='resolution_requires_action'&&blocker.return_resolution_id)?.return_resolution_id:undefined):undefined;
           if(type==='return'&&!resolutionId)throw new LocalError('RETURN_PAYMENT_NOT_AVAILABLE',409);
-          const generation=(previous?.generation??0)+1,returnUrl=`${config.appOrigin}/${root}/${resourceId}/pay/return`,body={surface:'embedded' as const,redirects:{success_redirect_url:returnUrl}};
-          const result=await store.mutate(`${preflight.sandboxId}:${current.user_id}:launch:${type}:${resourceId}`,'launch',{...body,generation,resolutionId},key=>sessions.call(current,opts=>type==='invoice'?client.me.createInvoiceCheckoutSession(resourceId,body,opts):client.me.createReturnResolutionCheckoutSession(resolutionId!,body,opts),key),`generation:${generation}`);
+          const generation=(previous?.generation??0)+1,returnUrl=`${config.appOrigin}/${root}/${resourceId}/pay/return`,freshBody={surface:'embedded' as const,page_origin:config.appOrigin,redirects:{success_redirect_url:returnUrl}};
+          const launchResource=`${preflight.sandboxId}:${current.user_id}:launch:${type}:${resourceId}`,launchNonce=`generation:${generation}`,actionId=createHash('sha256').update(`${launchResource}:launch:${launchNonce}`).digest('hex');
+          const prior=store.get<ActionRecord>('SELECT * FROM actions WHERE action_id=?',actionId);
+          const replay=prior&&(prior.status==='pending'||prior.status==='unknown')&&prior.body;
+          const journalBody=replay?JSON.parse(prior.body!) as typeof freshBody&{generation:number;resolutionId?:string}:{...freshBody,generation,resolutionId};
+          const {generation:storedGeneration,resolutionId:storedResolutionId,...body}=journalBody;
+          const result=await store.mutate(launchResource,'launch',journalBody,async key=>{
+            const launched=await sessions.call(current,opts=>type==='invoice'?client.me.createInvoiceCheckoutSession(resourceId,body,opts):client.me.createReturnResolutionCheckoutSession(storedResolutionId!,body,opts),key);
+            return {...launched,checkout_session:{...launched.checkout_session,gift_card_challenge:undefined}};
+          },launchNonce);
           if(!result.checkout_session.order_id||result.checkout_session.surface!=='embedded')throw new LocalError('CHECKOUT_LAUNCH_INVALID',503);
+          if(!replay&&body.page_origin&&result.checkout_session.page_origin!==body.page_origin){logLaunchInvalid('page_origin_mismatch');throw new LocalError('CHECKOUT_LAUNCH_INVALID',503);}
+          if(previous&&previous.checkout_session_id!==result.checkout_session.checkout_session_id)store.closeGiftChallenges(previous.checkout_ref);
           const ref=previous?.checkout_ref??randomUUID(),now=Date.now();
-          store.run(`INSERT INTO payment_checkouts(checkout_ref,user_id,sandbox_id,resource_type,resource_id,resolution_id,order_id,checkout_session_id,checkout_auth_token,generation,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,sandbox_id,resource_type,resource_id) DO UPDATE SET last_attempt_id=CASE WHEN payment_checkouts.order_id=excluded.order_id THEN payment_checkouts.last_attempt_id ELSE NULL END,order_id=excluded.order_id,checkout_session_id=excluded.checkout_session_id,checkout_auth_token=excluded.checkout_auth_token,resolution_id=excluded.resolution_id,generation=excluded.generation,updated_at=excluded.updated_at`,ref,current.user_id,preflight.sandboxId,type,resourceId,resolutionId??null,result.checkout_session.order_id,result.checkout_session.checkout_session_id,result.checkout_access.checkout_auth_token,generation,now,now);
+          store.run(`INSERT INTO payment_checkouts(checkout_ref,user_id,sandbox_id,resource_type,resource_id,resolution_id,order_id,checkout_session_id,checkout_auth_token,generation,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,sandbox_id,resource_type,resource_id) DO UPDATE SET last_attempt_id=CASE WHEN payment_checkouts.order_id=excluded.order_id THEN payment_checkouts.last_attempt_id ELSE NULL END,order_id=excluded.order_id,checkout_session_id=excluded.checkout_session_id,checkout_auth_token=excluded.checkout_auth_token,resolution_id=excluded.resolution_id,generation=excluded.generation,updated_at=excluded.updated_at`,ref,current.user_id,preflight.sandboxId,type,resourceId,storedResolutionId??null,result.checkout_session.order_id,result.checkout_session.checkout_session_id,result.checkout_access.checkout_auth_token,storedGeneration,now,now);
           return store.checkout(current.user_id,preflight.sandboxId,type,resourceId)!;
         });
       }catch(error){const code=appError(error).code;if(code==='CHECKOUT_SURFACE_CHANGE_NOT_ALLOWED')launch='surface_conflict';else if(code==='ORDER_COLLECTION_IN_PROGRESS')launch='collection_in_progress';else throw error;}
@@ -342,7 +356,9 @@ export function createApp(deps:Dependencies){
         const body=c.get('body'),approved=object(body.approved_outstanding_money),amount=required(approved.amount,30),currency=required(approved.currency,3);
         if(!/^\d+$/.test(amount)||!/^[A-Z]{3}$/.test(currency))throw new LocalError('INVALID_INPUT');
         let credential:PayInput['credential'];if(body.credential){const value=object(body.credential),kind=value.kind;if(kind!=='confirmation_token'&&kind!=='payment_method_token'&&kind!=='saved_payment_method')throw new LocalError('INVALID_INPUT');credential={kind,value:required(value.value,2048)};}
-        payInput={approved_outstanding_money:{amount,currency},credential};
+        const collection=body.approved_collection_kind;if(collection!=='processor'&&collection!=='settlement')throw new LocalError('INVALID_INPUT');
+        let giftMoney:PayInput['approved_gift_card_money'];if(body.approved_gift_card_money){const value=object(body.approved_gift_card_money),giftAmount=required(value.amount,30),giftCurrency=required(value.currency,3);if(!/^\d+$/.test(giftAmount)||!/^[A-Z]{3}$/.test(giftCurrency))throw new LocalError('INVALID_INPUT');giftMoney={amount:giftAmount,currency:giftCurrency};}
+        payInput={approved_outstanding_money:{amount,currency},approved_collection_kind:collection,approved_order_revision:body.approved_order_revision===undefined?undefined:required(body.approved_order_revision,200),approved_gift_card_money:giftMoney,credential};
       }
       const result=kind==='submit'?await engine.start(record.checkout_ref,payInput!,nonce(c)):kind==='resume'?await engine.resume(record.checkout_ref,nonce(c)):kind==='cancel'?await engine.cancel(record.checkout_ref):await engine.status(record.checkout_ref);
       return c.json(await engine.view(record,result));
@@ -351,6 +367,29 @@ export function createApp(deps:Dependencies){
   const currentKey=(c:C)=>c.get('session').session_hash;
   for(const type of ['invoice','return'] as const){
     const route=type==='invoice'?'/invoices/:invoiceId/pay':'/returns/:returnId/pay';
+    const ownedPayment=async(c:C)=>{const resourceId=id(c.req.param(type==='invoice'?'invoiceId':'returnId'));if(type==='invoice')await ownedInvoice(c,resourceId);else await ownedReturn(c,resourceId);return paymentRecord(c,type,resourceId);};
+    const payPath=(c:C)=>`/${type==='invoice'?'invoices':'returns'}/${id(c.req.param(type==='invoice'?'invoiceId':'returnId'))}/pay`;
+    app.post(route+'/gift-card',async c=>{
+      const record=await ownedPayment(c);if(!limiter.take(`gift-apply:${currentKey(c)}`,5,3600000))throw new LocalError('RATE_LIMITED',429);
+      if(!c.req.header('Content-Type')?.includes('application/json'))throw new LocalError('INVALID_INPUT');
+      const actionId=nonce(c);if(!actionId)throw new LocalError('INVALID_INPUT');
+      const giftCardCode=required(c.get('body').gift_card_code,200),challenge=await engine.applyGift(record.checkout_ref,giftCardCode,config.giftChallengeOrigin,actionId);
+      if(challenge)return c.json({gift_challenge:challenge});flash(c,'gift_card_applied');return c.json({redirect:payPath(c)});
+    });
+    app.post(route+'/gift-card/challenge',async c=>{
+      const record=await ownedPayment(c);if(!limiter.take(`gift-challenge:${currentKey(c)}`,10,3600000))throw new LocalError('RATE_LIMITED',429);
+      if(!c.req.header('Content-Type')?.includes('application/json'))throw new LocalError('INVALID_INPUT');
+      const input=c.get('body'),challengeId=input.challenge_id,proof=input.proof,giftCardCode=required(input.gift_card_code,200);
+      if(typeof challengeId!=='string'||!/^gch_[A-Za-z0-9_-]{32}$/.test(challengeId)||!validProof(proof))throw new LocalError('INVALID_INPUT');
+      const challenge=await engine.retryGift(record.checkout_ref,challengeId,giftCardCode,proof,config.giftChallengeOrigin);
+      if(challenge)return c.json({gift_challenge:challenge});flash(c,'gift_card_applied');return c.json({redirect:payPath(c)});
+    });
+    app.post(route+'/gift-card/:giftCardId/remove',async c=>{
+      c.set('errorReturn',payPath(c));const record=await ownedPayment(c),actionId=nonce(c);if(!actionId)throw new LocalError('INVALID_INPUT');
+      try{await engine.removeGift(record.checkout_ref,id(c.req.param('giftCardId')),actionId);}
+      catch(error){if(!unknownOutcome(error))throw error;return c.redirect(payPath(c),303);}
+      flash(c,'gift_card_removed');return c.redirect(payPath(c),303);
+    });
     app.post(route+'/submit',c=>paymentJob(c,type,'submit'));app.post(route+'/pay',c=>paymentJob(c,type,'submit'));
     app.post(route+'/resume',c=>paymentJob(c,type,'resume'));app.get(route+'/attempt',c=>paymentJob(c,type,'attempt'));app.post(route+'/cancel-attempt',c=>paymentJob(c,type,'cancel'));
   }

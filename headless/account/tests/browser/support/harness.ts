@@ -10,6 +10,8 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
 import { fileURLToPath } from 'node:url';
 import { renderPage } from '../../../src/views/index.ts';
+import { securityHeaders } from '../../../src/security/headers.ts';
+import { CHALLENGE_ORIGIN, FAKE_PROOF, challengeCodes, frameUrl, sessionIdFor, sessionTag, type ChallengeCode } from './challenge.ts';
 import { attempt, context, ids, pageContext, paymentPage, paymentState, usd } from './fixtures.ts';
 import type { PageId } from '../../../src/views/index.ts';
 
@@ -49,6 +51,23 @@ const harness = {
   retryPolls: 0,
   log: [] as LogEntry[],
   card: 'activates' as 'activates' | 'fails' | 'never',
+  /** The gift cards on the order the fake app holds: none, a partial one, or one that pays everything. */
+  gift: 'none' as 'none' | 'partial' | 'full' | 'removed',
+  /** One notice the next pay page shows, as the app's flash does after a redirect. */
+  flash: null as string | null,
+  challenges: new Map<string, { code: string; spec: ChallengeCode; used: boolean }>(),
+  /**
+   * An apply or remove whose outcome is unknown, held by the fake app the way the real one holds it.
+   * It is matched by the code (apply) or the card (remove), never by the action ID.
+   */
+  unconfirmed: null as null | 'apply' | 'remove',
+  pendingCode: '',
+  /** The next remove of the card ends with an unknown outcome. */
+  removeUnknown: false,
+  /** False while a change is unresolved and the page cannot check it yet. */
+  canCheck: true,
+  challengeSeq: 0,
+  challengePosts: 0,
 };
 
 const clientAction = {
@@ -71,6 +90,12 @@ function job(state: ReturnType<typeof paymentState>, extra: Record<string, unkno
 }
 
 const app = new Hono();
+
+// The app's own security headers, so the verification frame is checked under the real policy.
+app.use('*', async (c, next) => {
+  await next();
+  for (const [name, value] of Object.entries(securityHeaders({ giftChallengeOrigin: CHALLENGE_ORIGIN }))) c.header(name, value);
+});
 
 app.use('/assets/*', serveStatic({ root: publicDir, rewriteRequestPath: (path) => path.replace(/^\/assets/, '') }));
 app.use('/js/*', serveStatic({ root: publicDir }));
@@ -96,7 +121,7 @@ app.use('*', async (c, next) => {
 // ---- Harness control -------------------------------------------------------
 
 app.post('/__harness/reset', async (c) => {
-  const body = (await c.req.json().catch(() => ({}))) as { scenario?: Scenario; card?: typeof harness.card };
+  const body = (await c.req.json().catch(() => ({}))) as { scenario?: Scenario; card?: typeof harness.card; removeUnknown?: boolean; canCheck?: boolean };
   harness.scenario = body.scenario ?? 'success';
   harness.card = body.card ?? 'activates';
   harness.submits = 0;
@@ -105,9 +130,19 @@ app.post('/__harness/reset', async (c) => {
   harness.statusPolls = 0;
   harness.retryPolls = 0;
   harness.log = [];
+  harness.gift = 'none';
+  harness.flash = null;
+  harness.challenges.clear();
+  harness.unconfirmed = null;
+  harness.pendingCode = '';
+  harness.removeUnknown = Boolean(body.removeUnknown);
+  harness.canCheck = body.canCheck !== false;
+  harness.challengeSeq = 0;
+  harness.challengePosts = 0;
   return c.json({ ok: true });
 });
 app.get('/__harness/log', (c) => c.json(harness.log));
+app.get('/__harness/challenge', (c) => c.json({ posts: harness.challengePosts, gift: harness.gift, unconfirmed: harness.unconfirmed }));
 
 // ---- Static page rendering -------------------------------------------------
 
@@ -141,8 +176,14 @@ for (const [root, kind, pageId] of [
   const base = `/${root}/:id/pay`;
 
   app.get(base, (c) => {
-    const variant = c.req.query('variant') ?? 'default';
+    // After a gift card is applied or removed the page shows the order the fake app now holds.
+    const recovery = !harness.unconfirmed ? null : !harness.canCheck ? 'gift_unconfirmed_wait' : harness.unconfirmed === 'apply' ? 'gift_unconfirmed_apply' : 'gift_unconfirmed_remove';
+    const variant = c.req.query('variant') ?? recovery ?? (harness.gift === 'partial' ? 'gift_split' : harness.gift === 'full' ? 'gift_settlement' : harness.gift === 'removed' ? 'gift' : 'default');
     const ctx = pageContext(pageId, variant);
+    if (harness.flash) {
+      ctx.notices = [harness.flash];
+      harness.flash = null;
+    }
     if (variant === 'xss') {
       const page = paymentPage(kind, paymentState());
       page.data.buyer = { name: '</script><script>window.__xss=1</script>', email: 'avery@example.test' };
@@ -153,8 +194,120 @@ for (const [root, kind, pageId] of [
 
   app.get(`${base}/return`, (c) => c.html('<!doctype html><title>Done</title><main data-testid="harness-complete">Payment return route reached</main>'));
 
+  // ---- Gift cards: apply, the verification retry, and remove ----
+  const surfaceId = kind;
+  const payPath = (id: string) => `/${root}/${id}/pay`;
+  const refuse = (c: any, status: number, errorKind: string, code: string, messageKey: string) =>
+    c.json({ error: { kind: errorKind, code, message_key: messageKey, request_id: 'req_example_001' } }, status);
+
+  const issue = (c: any, code: string, spec: ChallengeCode, reason: 'proof_required' | 'proof_rejected' = 'proof_required') => {
+    if (spec.apply === 'origin') return refuse(c, 409, 'conflict', 'GIFT_CARD_CHALLENGE_ORIGIN_REQUIRED', 'gift_challenge_origin_required');
+    if (spec.apply === 'unavailable') return refuse(c, 503, 'unavailable', 'GIFT_CARD_CHALLENGE_UNAVAILABLE', 'gift_card_challenge_required');
+    harness.challengeSeq += 1;
+    const challengeId = `gch_${String(harness.challengeSeq).padStart(32, 'A')}`;
+    harness.challenges.set(challengeId, { code, spec, used: false });
+    return c.json({
+      gift_challenge: {
+        challenge_id: challengeId,
+        url: frameUrl(spec),
+        session_tag: sessionTag(challengeId, sessionIdFor(surfaceId)),
+        reason,
+        expires_in_seconds: spec.expires ?? 900,
+      },
+    });
+  };
+
+  app.post(`${base}/gift-card`, async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { gift_card_code?: string };
+    if (!c.req.header('x-action-id')) return refuse(c, 400, 'validation', 'INVALID_INPUT', 'generic_error');
+    const code = String(body.gift_card_code ?? '').toUpperCase();
+    const changeUnconfirmed = () => refuse(c, 409, 'conflict', 'GIFT_CARD_CHANGE_UNCONFIRMED', 'gift_card_change_unconfirmed');
+    if (harness.unconfirmed === 'remove') return changeUnconfirmed();
+    if (harness.unconfirmed === 'apply') {
+      // The app replays the original request for the same code and ignores the action ID.
+      if (code !== harness.pendingCode) return changeUnconfirmed();
+      harness.unconfirmed = null;
+      if (code === 'UNKNOWNCHALLENGE') return issue(c, code, { page: 'completed' });
+      harness.gift = 'partial';
+      harness.flash = 'gift_card_applied';
+      return c.json({ redirect: payPath(c.req.param('id')!) });
+    }
+    if (code === 'PROXYAPPLY502' || code === 'PROXYAPPLY503') {
+      // A proxy answers with its own page. The app may have processed the request, so it holds the change.
+      harness.unconfirmed = 'apply';
+      harness.pendingCode = code;
+      return c.html('<!doctype html><title>Bad gateway</title><h1>Bad gateway</h1>', code.endsWith('502') ? 502 : 503);
+    }
+    if (code === 'UNKNOWNAPPLY' || code === 'UNKNOWNCHALLENGE') {
+      harness.unconfirmed = 'apply';
+      harness.pendingCode = code;
+      return refuse(c, 503, 'unknown_outcome', 'UNKNOWN_OUTCOME', 'gift_challenge_unconfirmed');
+    }
+    const spec = challengeCodes[code];
+    if (spec) return issue(c, code, spec);
+    if (code !== 'GOODCARD' && code !== 'FULLCARD') return refuse(c, 404, 'validation', 'GIFT_CARD_UNAVAILABLE', 'gift_card_unavailable_pay');
+    harness.gift = code === 'FULLCARD' ? 'full' : 'partial';
+    harness.flash = 'gift_card_applied';
+    return c.json({ redirect: payPath(c.req.param('id')!) });
+  });
+
+  /** The retry route. A proof works once, as it does at Flint. */
+  app.post(`${base}/gift-card/challenge`, async (c) => {
+    harness.challengePosts += 1;
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    if (Object.keys(body).sort().join(',') !== 'challenge_id,gift_card_code,proof' || body.proof !== FAKE_PROOF) return refuse(c, 400, 'validation', 'INVALID_INPUT', 'generic_error');
+    const challenge = harness.challenges.get(String(body.challenge_id));
+    if (!challenge || challenge.used || String(body.gift_card_code).toUpperCase() !== challenge.code) return refuse(c, 409, 'conflict', 'GIFT_CHALLENGE_EXPIRED', 'gift_challenge_expired');
+    challenge.used = true;
+    switch (challenge.spec.retry) {
+      case 'rejected':
+        return issue(c, challenge.code, { page: 'completed' }, 'proof_rejected');
+      case 'expired':
+        return refuse(c, 409, 'conflict', 'GIFT_CHALLENGE_EXPIRED', 'gift_challenge_expired');
+      case 'proxy502':
+      case 'proxy503':
+        harness.unconfirmed = 'apply';
+        harness.pendingCode = challenge.code;
+        return c.html('<!doctype html><title>Bad gateway</title><h1>Bad gateway</h1>', challenge.spec.retry === 'proxy502' ? 502 : 503);
+      case 'origin':
+        return refuse(c, 409, 'conflict', 'GIFT_CARD_CHALLENGE_ORIGIN_REQUIRED', 'gift_challenge_origin_required');
+      case 'unavailable':
+        return refuse(c, 503, 'unavailable', 'GIFT_CARD_CHALLENGE_UNAVAILABLE', 'gift_card_challenge_required');
+      case 'unknown':
+        return refuse(c, 503, 'unknown_outcome', 'UNKNOWN_OUTCOME', 'gift_challenge_unconfirmed');
+      case 'stale':
+        return refuse(c, 409, 'conflict', 'GIFT_CHALLENGE_ORDER_CHANGED', 'gift_card_apply_again_pay');
+      case 'refused':
+        return refuse(c, 404, 'validation', 'GIFT_CARD_UNAVAILABLE', 'gift_card_unavailable_pay');
+      default:
+        harness.gift = 'partial';
+        harness.flash = 'gift_card_applied';
+        return c.json({ redirect: payPath(c.req.param('id')!) });
+    }
+  });
+
+  app.post(`${base}/gift-card/:giftCardId/remove`, async (c) => {
+    if (harness.unconfirmed === 'apply') return c.redirect(payPath(c.req.param('id')!), 303);
+    if (harness.removeUnknown && !harness.unconfirmed) {
+      // The answer is lost. The page shows the recovery note and the card is still on the order.
+      harness.removeUnknown = false;
+      harness.unconfirmed = 'remove';
+      return c.redirect(payPath(c.req.param('id')!), 303);
+    }
+    harness.unconfirmed = null;
+    // The order still takes gift cards, so the section stays on the page without any.
+    harness.gift = 'removed';
+    harness.flash = 'gift_card_removed';
+    return c.redirect(payPath(c.req.param('id')!), 303);
+  });
+
   app.post(`${base}/submit`, async (c) => {
     harness.submits += 1;
+    if (harness.unconfirmed) {
+      // No payment starts while a gift card change is unresolved. The answer carries the current view.
+      const state = pageContext(pageId, harness.unconfirmed === 'apply' ? 'gift_unconfirmed_apply' : 'gift_unconfirmed_remove').data.state;
+      return c.json({ error: { kind: 'conflict', code: 'GIFT_CARD_CHANGE_UNCONFIRMED', message_key: 'gift_card_change_unconfirmed' }, state, next: state.next }, 409);
+    }
     const body = (await c.req.json().catch(() => ({}))) as { approved_outstanding_money?: { amount: string } };
     switch (harness.scenario) {
       case 'decline_then_success':

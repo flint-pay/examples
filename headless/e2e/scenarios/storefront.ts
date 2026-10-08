@@ -87,7 +87,7 @@ export const storefront: Record<string, Scenario> = {
     const issued = await d.operator.issueGiftCard('gift-remainder');
     const code = issued.code ?? issued.gift_card_code; invariant(typeof code === 'string', 'PUBLIC_GIFT_CODE_UNAVAILABLE'); d.scanner.addGift(code);
     const before = money(c.state.order.settlement_amounts.outstanding_money);
-    await c.page.getByTestId('sf-gift-card-code').fill(code); await c.page.getByTestId('sf-gift-card-apply').click(); await d.state(c);
+    await d.applyGift(c,code);
     const allocation = giftAllocation(c.state.order); equalMoney(allocation.gift_card_money, { amount: '2500', currency: 'USD' });
     invariant(BigInt(money(allocation.processor_money).amount) < BigInt(before.amount), 'GIFT_REMAINDER_NOT_REDUCED');
     // One invalid guess only, including reruns. Durable marker is saved before input.

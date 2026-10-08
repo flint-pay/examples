@@ -9,7 +9,7 @@ import {IdentityStore,digest,verifyPassword} from '../../src/identity/index.ts';
 import {Store} from '../../src/store/db.ts';
 
 function runtime(webhookSecret?:string){
-  const config:Config={apiKey:'local-test-fixture',apiBaseUrl:'https://api.staging.withflintpay.com',appOrigin:'http://localhost:4100',port:4100,identityDatabasePath:':memory:',appDatabasePath:':memory:',cookieName:'test_session',checkoutTtl:3600,storeName:'Example store',webhookSecret};
+  const config:Config={apiKey:'local-test-fixture',apiBaseUrl:'https://api.staging.withflintpay.com',giftChallengeOrigin:'https://checkout.staging.withflintpay.com',appOrigin:'http://localhost:4100',port:4100,identityDatabasePath:':memory:',appDatabasePath:':memory:',cookieName:'test_session',checkoutTtl:3600,storeName:'Example store',webhookSecret};
   return createApp({config,preflight:{sandboxId:'local-sandbox',cards:'enabled'},store:new Store(':memory:'),identity:new IdentityStore(':memory:')});
 }
 test('health reports configured build identity and process start while an ordinary copy omits it',async()=>{

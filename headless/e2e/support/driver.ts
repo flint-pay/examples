@@ -11,7 +11,7 @@ import { BrowserGuard } from './flint-boundary.ts';
 import { Operator } from './operator.ts';
 import { equalMoney, money, assertOneCharge } from './money.ts';
 import { invariant, HarnessError } from './safe.ts';
-import { AuditFeeds } from './audit-feed.ts';
+import { AuditFeeds,syncAppAudit } from './audit-feed.ts';
 
 export type Checkout = { page: Page; ref: string; origin: string; sandbox: Sandbox; orderId: string; state: any };
 export class Driver {
@@ -24,7 +24,8 @@ export class Driver {
   created = new Map<string, string>();
   visitedAxeStates = new Set<string>();
   auditFeeds = new AuditFeeds();
-  appMutations: { app: string; operation?: string; targetId?: string }[] = [];
+  appMutations: { app: string; fingerprint: string; operation?: string; targetId?: string; keyHash?:string;authMode?:string;challengeProof?:boolean;timestamp: number; status?: number; resolvedAt?: number }[] = [];
+  appResources: { app: string; id: string; type: string; created: boolean; customerId?: string; timestamp: number }[] = [];
   revocations: { app: string; sessionId?: string; customerId?: string }[] = [];
   readonly config: Config; readonly fixtures: Fixtures; readonly browser: Browser; readonly operator: Operator; readonly inbox?: Inbox;
   constructor(config: Config, fixtures: Fixtures, browser: Browser, operator: Operator, inbox?: Inbox) {
@@ -163,6 +164,17 @@ export class Driver {
     const response = await this.job(c.page, `/checkout/${c.ref}/state`);
     invariant(response.status === 200 && response.body?.state?.order?.order_id, 'CHECKOUT_STATE_INVALID');
     c.state = response.body.state; c.orderId = c.state.order.order_id; return c.state;
+  }
+  async registerGiftChallenge(page:Page,orderId:string,origin:string):Promise<string>{
+    await syncAppAudit(this);const url=await this.operator.challengeUrlFor(orderId,origin);
+    const guard=this.guards.get(page.context());invariant(guard,'BROWSER_GUARD_REQUIRED');guard.allowGiftChallenge(url);return url;
+  }
+  async applyGift(c:Checkout,giftCardCode:string):Promise<void>{
+    await this.registerGiftChallenge(c.page,c.orderId,c.origin);
+    const before=c.state.order.gift_cards?.length??0;
+    await c.page.getByTestId('sf-gift-card-code').fill(giftCardCode);await c.page.getByTestId('sf-gift-card-apply').click();
+    await expect.poll(async()=>{const state=await this.state(c);return state.order.gift_cards?.length??0;},{timeout:60000}).toBeGreaterThan(before);
+    const panel=c.page.locator('[data-challenge-state]');if(await panel.count())await expect(panel.first()).toHaveAttribute('data-challenge-state','none',{timeout:60000});
   }
   async delivery(c: Checkout, pickup = false): Promise<void> {
     if (!c.state.session.delivery_selection_required && !await c.page.getByTestId('sf-delivery').isVisible()) return;

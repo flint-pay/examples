@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@axe-core/playwright": "4.10.2",
-    "@flintpay/node": "3.0.0-beta.20261007031000",
+    "@flintpay/node": "3.0.0-beta.20261008013000",
     "@playwright/test": "1.56.1",
     "domutils": "3.2.2",
     "htmlparser2": "10.0.0",

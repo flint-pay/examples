@@ -237,6 +237,18 @@ input:disabled { background: #ece6da; color: #4a453c; cursor: not-allowed; }
 .support ul { list-style: none; }
 .support a { display: inline-flex; min-height: 32px; align-items: center; }
 
+/* Gift card verification. The panel sits inside the gift card section and the frame takes its full width. */
+.gift-challenge { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
+.gift-challenge-intro { margin: 0 0 8px; }
+.gift-challenge-intro:focus { outline: none; }
+.gift-challenge-host { min-height: 65px; border-radius: var(--radius); background: linear-gradient(90deg, #e6dfd0 0%, #efe9dc 50%, #e6dfd0 100%); }
+.gift-challenge-frame { display: block; width: 100%; min-width: 300px; height: 65px; border: 0; }
+.gift-challenge-status { margin: 8px 0 0; color: var(--muted); font-size: 0.9rem; }
+.gift-challenge-status:empty { margin: 0; }
+.gift-challenge .field-error { margin: 8px 0 0; }
+.gift-challenge-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.gift-challenge-actions:not(:has(.button:not([hidden]))) { display: none; }
+
 .applied-list { list-style: none; display: grid; gap: 8px; margin-top: 12px; }
 .applied-list li { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; padding: 8px 12px; background: var(--accent-soft); border-radius: var(--radius); }
 .applied-name { font-weight: 600; flex: 1 1 10rem; }

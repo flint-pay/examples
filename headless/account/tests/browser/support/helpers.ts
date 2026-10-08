@@ -77,7 +77,7 @@ export function watch(page: Page, origin: string): Watch {
   return seen;
 }
 
-export async function resetHarness(request: APIRequestContext, body: { scenario?: string; card?: string } = {}): Promise<void> {
+export async function resetHarness(request: APIRequestContext, body: { scenario?: string; card?: string; removeUnknown?: boolean; canCheck?: boolean } = {}): Promise<void> {
   const response = await request.post('/__harness/reset', { data: body });
   expect(response.ok()).toBeTruthy();
 }

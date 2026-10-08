@@ -6,17 +6,20 @@
 
 import * as logic from './checkout-logic.js';
 import { $, $$, announce, csrfToken, focusElement, setBusy } from './dom.js';
+import { mountChallengeFrame } from './gift-challenge.js';
 import { formatMoney, sameMoney } from './money.js';
 import { createStripePayment } from './stripe-payment.js';
 
 /** @typedef {import('../../src/views/types.ts').CheckoutState} CheckoutState */
+/** @typedef {import('../../src/views/types.ts').GiftChallengeView} GiftChallengeView */
+/** @typedef {import('../../src/views/types.ts').GiftChallengeBoot} GiftChallengeBoot */
 /** @typedef {import('./money.js').Money} Money */
 /** @typedef {{ kind?: string, code?: string, message_key?: string, request_id?: string }} JobError */
-/** @typedef {{ ok: boolean, status: number, transport?: boolean, error?: JobError, state?: CheckoutState, next?: string, client_action?: any, pending_action_id?: string }} JobResult */
+/** @typedef {{ ok: boolean, status: number, transport?: boolean, error?: JobError, state?: CheckoutState, gift_challenge?: GiftChallengeView, next?: string, client_action?: any, pending_action_id?: string }} JobResult */
 
 const bootNode = document.getElementById('checkout-bootstrap');
 if (!bootNode) throw new Error('checkout bootstrap missing');
-const boot = /** @type {{ ref: string, store: string, state: CheckoutState, messages: Record<string, string>, labels: Record<string, string> }} */ (
+const boot = /** @type {{ ref: string, store: string, state: CheckoutState, gift_challenge?: GiftChallengeBoot, messages: Record<string, string>, labels: Record<string, string> }} */ (
   JSON.parse(bootNode.textContent ?? '{}')
 );
 
@@ -52,6 +55,25 @@ const app = {
   /** Message to show once an automatic re-quote finishes. */
   afterQuote: '',
 };
+
+/**
+ * The gift card verification. States (data-challenge-state on the gift card section): none, loading,
+ * slow, checking, failed, expired, and the terminal unavailable, origin_required, and unconfirmed.
+ * The frame address lives only in `view`, which comes from the answer to one Apply.
+ */
+const gift = {
+  state: /** @type {string} */ ('none'),
+  mounts: 0,
+  view: /** @type {GiftChallengeView | null} */ (null),
+  /** A fresh challenge Flint sent back after it rejected a proof. Try again uses it without a request. */
+  held: /** @type {GiftChallengeView | null} */ (null),
+  frame: /** @type {{ unmount(): void } | null} */ (null),
+  /** Changes whenever a frame is mounted or the check ends, so a late answer for an old one is dropped. */
+  generation: 0,
+  /** True when a region swap was skipped while the check was open. */
+  skipped: false,
+};
+const GIFT_ACTIVE = new Set(['loading', 'slow', 'checking', 'failed', 'expired']);
 
 // ----- Copy -----
 
@@ -174,6 +196,8 @@ function setPaymentState(next, options = {}) {
  * @param {boolean} locked
  */
 function lockSections(locked) {
+  // A check that is still open ends silently so its controls can be locked with the rest.
+  if (locked && GIFT_ACTIVE.has(gift.state)) leaveGift('none');
   app.locked = locked;
   root.toggleAttribute('data-resolving', locked);
   $('[data-locked-note]')?.toggleAttribute('hidden', !locked);
@@ -333,7 +357,7 @@ function applyState(state) {
 /**
  * Replaces the server-rendered regions with the latest page. The payment form
  * and the contact inputs stay in place so typing and Stripe Elements survive.
- * @param {{ focusRegion?: string }} [options]
+ * @param {{ focusRegion?: string, announcePrefix?: string }} [options]
  */
 async function refreshRegions(options = {}) {
   let response;
@@ -353,6 +377,12 @@ async function refreshRegions(options = {}) {
   /** @type {{ state: CheckoutState }} */
   const next = JSON.parse(bootNext.textContent ?? '{}');
   for (const name of SWAP_REGIONS) {
+    // The open check keeps its frame, so the gift card region stays put until the check ends.
+    if (name === 'gift-cards' && GIFT_ACTIVE.has(gift.state)) {
+      gift.skipped = true;
+      continue;
+    }
+    if (name === 'gift-cards') gift.skipped = false;
     const incoming = doc.querySelector(`[data-region="${name}"]`);
     const current = document.querySelector(`[data-region="${name}"]`);
     if (!incoming || !current) {
@@ -375,7 +405,9 @@ async function refreshRegions(options = {}) {
   syncSummaryPanel();
   applyState(next.state);
   wireRegions();
-  announce(`${boot.labels.amountDue} ${formatMoney(logic.outstandingOf(app.state))}`);
+  renderGift();
+  const due = `${boot.labels.amountDue} ${formatMoney(logic.outstandingOf(app.state))}`;
+  announce(options.announcePrefix ? `${options.announcePrefix} ${due}` : due);
   maybeAutoRequote();
   return true;
 }
@@ -496,6 +528,14 @@ function showJobError(target, text) {
   } else if (text) {
     showMessage(text, false);
   }
+  if (target === 'gift-card') {
+    // The field points at its error while one is showing.
+    const input = document.getElementById('gift-card-code');
+    if (input instanceof HTMLInputElement && node?.id) {
+      if (text) input.setAttribute('aria-describedby', node.id);
+      else input.removeAttribute('aria-describedby');
+    }
+  }
 }
 
 /**
@@ -539,6 +579,12 @@ async function onJobSubmit(event) {
     await saveContact();
     return;
   }
+  if (kind === 'gift-card') {
+    // Apply is off while a check is open. A new Apply starts clean after a terminal state.
+    if (GIFT_ACTIVE.has(gift.state)) return;
+    gift.state = 'none';
+    renderGift();
+  }
   const problem = validateJobForm(kind, target);
   const errorTarget = errorTargets[kind] ?? 'payment';
   if (problem) {
@@ -562,11 +608,17 @@ async function onJobSubmit(event) {
     return;
   }
   app.quoteRetries = 0;
+  if (kind === 'gift-card' && result.gift_challenge) {
+    // Flint wants a check first. The code stays in the field and the order is unchanged.
+    if (result.state) applyState(result.state);
+    beginGiftChallenge(result.gift_challenge);
+    return;
+  }
   if (kind === 'gift-card') {
     const input = target.elements.namedItem('gift_card_code');
     if (input instanceof HTMLInputElement) input.value = '';
   }
-  await refreshRegions({ focusRegion: focusAfter(kind) });
+  await refreshRegions({ focusRegion: focusAfter(kind), announcePrefix: kind === 'gift-card' ? msg('gift_card_applied') : undefined });
   if (app.afterQuote && (kind === 'delivery-quote' || kind === 'pickup-locations')) {
     showJobError('delivery', app.afterQuote);
     app.afterQuote = '';
@@ -592,6 +644,15 @@ async function onJobError(kind, result, form) {
   const code = result.error?.code ?? '';
   const target = errorTargets[kind] ?? 'payment';
   if (result.state) applyState(result.state);
+  if (kind === 'gift-card' && code === 'GIFT_CARD_CHALLENGE_ORIGIN_REQUIRED') {
+    // The app replaced the checkout session so Flint can verify codes. The code stays in the field.
+    await endGiftChallenge('origin_required', { refresh: true, text: msg('gift_challenge_origin_required') });
+    return;
+  }
+  if (kind === 'gift-card' && code === 'GIFT_CARD_CHALLENGE_UNAVAILABLE') {
+    await endGiftChallenge('unavailable', { text: msg('gift_card_challenge_required') });
+    return;
+  }
   if (kind === 'gift-card' && result.error?.kind === 'conflict' && errorKey(result.error) === 'generic_error') {
     showJobError(target, msg('gift_card_apply_again'));
     await refreshRegions();
@@ -611,6 +672,265 @@ async function onJobError(kind, result, form) {
     return;
   }
   showJobError(target, errorText(result.error, fallbackKeys[kind]));
+}
+
+// ----- Gift card challenge -----
+
+const giftInput = () => /** @type {HTMLInputElement | null} */ ($('#gift-card-code'));
+const giftPanel = () => $('[data-gift-challenge]');
+
+/** Makes the page match `gift.state`. Safe to call at any time, including after a region swap. */
+function renderGift() {
+  const active = GIFT_ACTIVE.has(gift.state);
+  $('[data-region="gift-cards"]')?.setAttribute('data-challenge-state', gift.state);
+  const panel = giftPanel();
+  if (panel) {
+    panel.hidden = !active;
+    panel.setAttribute('data-state', active ? gift.state : 'none');
+    const status = $('[data-gift-challenge-status]', panel);
+    if (status) status.textContent = gift.state === 'slow' ? msg('gift_challenge_slow') : gift.state === 'checking' ? msg('gift_challenge_checking') : '';
+    const alert = $('[data-gift-challenge-message]', panel);
+    if (alert) {
+      const text = gift.state === 'failed' ? msg('gift_challenge_failed') : gift.state === 'expired' ? msg('gift_challenge_expired') : '';
+      alert.textContent = text;
+      alert.hidden = !text;
+    }
+    $('[data-gift-challenge-retry]', panel)?.toggleAttribute('hidden', !['slow', 'failed', 'expired'].includes(gift.state));
+    $('[data-gift-challenge-cancel]', panel)?.toggleAttribute('hidden', !active || gift.state === 'checking');
+    $('[data-gift-challenge-host]', panel)?.toggleAttribute('hidden', gift.state !== 'loading' && gift.state !== 'slow');
+  }
+  const input = giftInput();
+  if (input) {
+    input.readOnly = active;
+    if (active) input.setAttribute('aria-readonly', 'true');
+    else input.removeAttribute('aria-readonly');
+  }
+  const apply = $('form[data-job-form="gift-card"] button[type="submit"]');
+  if (apply instanceof HTMLButtonElement && !apply.hasAttribute('data-locked-by-payment')) {
+    apply.disabled = active;
+    apply.setAttribute('aria-busy', gift.state === 'checking' ? 'true' : 'false');
+  }
+}
+
+/** Frames one check may mount, from the boot block. */
+function giftMaxMounts() {
+  return boot.gift_challenge?.max_mounts ?? 3;
+}
+
+function mountGiftFrame() {
+  gift.frame?.unmount();
+  gift.frame = null;
+  gift.generation += 1;
+  const generation = gift.generation;
+  const host = $('[data-gift-challenge-host]');
+  const view = gift.view;
+  const config = boot.gift_challenge;
+  if (!(host instanceof HTMLElement) || !view || !config) {
+    void endGiftChallenge('unavailable', { text: msg('gift_card_challenge_required') });
+    return;
+  }
+  host.replaceChildren();
+  gift.frame = mountChallengeFrame(
+    host,
+    view,
+    { origin: config.origin, slow_after_ms: config.slow_after_ms, title: msg('gift_challenge_frame_title'), testid: 'sf-gift-challenge-frame' },
+    (event) => {
+      if (generation === gift.generation) onGiftFrameEvent(event);
+    },
+  );
+}
+
+/** @param {GiftChallengeView} view */
+function beginGiftChallenge(view) {
+  gift.view = view;
+  gift.held = null;
+  gift.mounts = 1;
+  gift.state = 'loading';
+  renderGift();
+  mountGiftFrame();
+  focusElement($('#gift-challenge-intro'));
+}
+
+/** @param {import('./gift-challenge.js').FrameEvent} event */
+function onGiftFrameEvent(event) {
+  switch (event.kind) {
+    case 'slow':
+      if (gift.state === 'loading') {
+        gift.state = 'slow';
+        renderGift();
+      }
+      break;
+    case 'completed':
+      void submitGiftProof(event.proof);
+      break;
+    case 'failed':
+      if (event.reason === 'verification_failed' && gift.mounts < giftMaxMounts()) {
+        gift.state = 'failed';
+        renderGift();
+        focusElement($('[data-gift-challenge-message]'));
+      } else {
+        // Either the frame cannot run, or this was the last frame the check allows. Try again could
+        // only lead here, so end now. The cap counts mounts, not failures.
+        void endGiftChallenge('unavailable', { text: msg('gift_card_challenge_required') });
+      }
+      break;
+    case 'expired':
+      gift.state = 'expired';
+      renderGift();
+      focusElement($('[data-gift-challenge-message]'));
+      break;
+  }
+}
+
+/**
+ * Sends the proof to this app once. The proof is a parameter and a request body, nothing else.
+ * @param {string} proof
+ */
+async function submitGiftProof(proof) {
+  const view = gift.view;
+  const code = giftInput()?.value.trim() ?? '';
+  // The frame is gone. Keep focus on the instruction if it was inside the frame.
+  gift.frame = null;
+  if (app.locked) {
+    leaveGift('none');
+    return;
+  }
+  if (!view || !code) {
+    await endGiftChallenge('unavailable', { text: msg('gift_card_challenge_required') });
+    return;
+  }
+  gift.state = 'checking';
+  renderGift();
+  if (!document.activeElement || document.activeElement === document.body) focusElement($('#gift-challenge-intro'));
+  const generation = gift.generation;
+  const result = await request('POST', '/gift-card/challenge', { challenge_id: view.challenge_id, gift_card_code: code, proof });
+  if (generation !== gift.generation) return;
+  await onGiftProofResult(result);
+}
+
+/** @param {JobResult} result */
+async function onGiftProofResult(result) {
+  if (result.state) applyState(result.state);
+  if (result.ok && result.gift_challenge) {
+    // Flint rejected the proof and sent a fresh check. Try again uses it without another Apply.
+    gift.held = result.gift_challenge;
+    gift.state = 'expired';
+    renderGift();
+    focusElement($('[data-gift-challenge-message]'));
+    return;
+  }
+  if (result.ok) {
+    leaveGift('none');
+    const input = giftInput();
+    if (input) input.value = '';
+    gift.skipped = false;
+    await refreshRegions({ focusRegion: 'gift-cards', announcePrefix: msg('gift_card_applied') });
+    return;
+  }
+  const error = result.error;
+  const code = error?.code ?? '';
+  if (code === 'GIFT_CHALLENGE_EXPIRED') {
+    gift.held = null;
+    gift.state = 'expired';
+    renderGift();
+    focusElement($('[data-gift-challenge-message]'));
+  } else if (code === 'GIFT_CARD_CHALLENGE_ORIGIN_REQUIRED') {
+    await endGiftChallenge('origin_required', { refresh: true, text: msg('gift_challenge_origin_required') });
+  } else if (code === 'GIFT_CARD_CHALLENGE_UNAVAILABLE') {
+    await endGiftChallenge('unavailable', { text: msg('gift_card_challenge_required') });
+  } else if (result.transport || error?.kind === 'unknown_outcome') {
+    // The proof is never sent again. The next Apply of the same code settles what happened.
+    await endGiftChallenge('unconfirmed', { text: msg('gift_challenge_unconfirmed') });
+  } else if (result.status === 429 || error?.kind === 'rate_limited') {
+    await endGiftChallenge('none', { text: msg('rate_limited') });
+  } else if (['GIFT_CHALLENGE_SESSION_CHANGED', 'GIFT_CHALLENGE_CODE_CHANGED', 'GIFT_CHALLENGE_ORDER_CHANGED', 'ORDER_CHANGED_REFRESH_REQUIRED'].includes(code) || (error?.kind === 'conflict' && errorKey(error) === 'generic_error')) {
+    await endGiftChallenge('none', { refresh: true, text: msg('gift_card_apply_again') });
+  } else {
+    await endGiftChallenge('none', { text: errorText(error, 'gift_card_unavailable') });
+  }
+}
+
+/**
+ * Removes the frame and returns the section to a resting state. The code field stays as it is.
+ * @param {'none' | 'unavailable' | 'origin_required' | 'unconfirmed'} next
+ */
+function leaveGift(next) {
+  gift.generation += 1;
+  gift.frame?.unmount();
+  gift.frame = null;
+  gift.view = null;
+  gift.held = null;
+  gift.mounts = 0;
+  gift.state = next;
+  renderGift();
+  $('[data-gift-challenge-host]')?.replaceChildren();
+}
+
+/**
+ * Ends the check, syncs the region if a swap was skipped, shows the line, and returns to the field.
+ * @param {'none' | 'unavailable' | 'origin_required' | 'unconfirmed'} next
+ * @param {{ text?: string, refresh?: boolean }} [options]
+ */
+async function endGiftChallenge(next, options = {}) {
+  leaveGift(next);
+  if (options.refresh || gift.skipped) {
+    gift.skipped = false;
+    // The swap replaces the field, so the typed code is put back afterwards.
+    const code = giftInput()?.value ?? '';
+    await refreshRegions();
+    const input = giftInput();
+    if (input && code) input.value = code;
+  }
+  renderGift();
+  showJobError('gift-card', options.text ?? '');
+  giftInput()?.focus();
+}
+
+function retryGiftChallenge() {
+  const state = gift.state;
+  if (state === 'slow' || state === 'failed') {
+    // Reached from slow at the cap. A failed frame at the cap has already ended the check.
+    if (gift.mounts >= giftMaxMounts()) {
+      void endGiftChallenge('unavailable', { text: msg('gift_card_challenge_required') });
+      return;
+    }
+    gift.mounts += 1;
+    gift.state = 'loading';
+    renderGift();
+    mountGiftFrame();
+    focusElement($('#gift-challenge-intro'));
+  } else if (state === 'expired') {
+    const held = gift.held;
+    if (held) {
+      beginGiftChallenge(held);
+      return;
+    }
+    // Apply the same code again. This starts a new check and drops the old one.
+    const form = $('form[data-job-form="gift-card"]');
+    leaveGift('none');
+    if (form instanceof HTMLFormElement) form.requestSubmit();
+  }
+}
+
+function cancelGiftChallenge() {
+  if (!GIFT_ACTIVE.has(gift.state) || gift.state === 'checking') return;
+  void endGiftChallenge('none');
+}
+
+function wireGiftChallenge() {
+  document.addEventListener('click', (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.closest('[data-gift-challenge-retry]')) retryGiftChallenge();
+    else if (target.closest('[data-gift-challenge-cancel]')) cancelGiftChallenge();
+  });
+  document.addEventListener('keydown', (event) => {
+    const target = event.target;
+    if (event.key !== 'Escape' || !(target instanceof Element) || !target.closest('[data-gift-challenge]')) return;
+    if (!GIFT_ACTIVE.has(gift.state) || gift.state === 'checking') return;
+    event.preventDefault();
+    cancelGiftChallenge();
+  });
 }
 
 // ----- Contact -----
@@ -1256,6 +1576,7 @@ function wireStatic() {
   const form = payForm();
   form?.addEventListener('submit', onPay);
   document.addEventListener('submit', onJobSubmit);
+  wireGiftChallenge();
   const card = $('#save-card');
   card?.addEventListener('change', async () => {
     if (card instanceof HTMLInputElement) {

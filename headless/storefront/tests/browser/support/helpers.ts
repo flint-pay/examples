@@ -7,7 +7,7 @@ export async function resetFixtures(request: APIRequestContext) {
   await request.post(`${BASE}/__reset`);
 }
 
-export async function fixtureLog(request: APIRequestContext, ref: string): Promise<{ log: { method: string; path: string; body: any }[]; payCount: number; resumeCount: number }> {
+export async function fixtureLog(request: APIRequestContext, ref: string): Promise<{ log: { method: string; path: string; body: any }[]; payCount: number; resumeCount: number; challengePosts: number }> {
   const response = await request.get(`${BASE}/__log/${ref}`);
   return response.json();
 }

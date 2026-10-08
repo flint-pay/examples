@@ -32,6 +32,7 @@ import type {
   CheckoutData,
   CheckoutState,
   DeliveryOption,
+  GiftChallengeBoot,
   Money,
   PageContext,
   SavedMethod,
@@ -290,18 +291,36 @@ function deliverySection(ctx: Ctx): Html {
 
 // ----- Gift cards -----
 
+/**
+ * The verification panel, rendered hidden and empty. It never holds a frame address: public/js
+ * fills the host only after the app answers an Apply with a challenge.
+ */
+function giftChallengePanel(): Html {
+  return html`<div class="gift-challenge" data-gift-challenge role="group" aria-labelledby="gift-challenge-intro" data-testid="sf-gift-challenge" data-state="none" hidden>
+      <p id="gift-challenge-intro" class="gift-challenge-intro" tabindex="-1">${message('gift_challenge_intro')}</p>
+      <div class="gift-challenge-host" data-gift-challenge-host data-testid="sf-gift-challenge-host"></div>
+      <p class="gift-challenge-status" data-gift-challenge-status role="status" data-testid="sf-gift-challenge-status"></p>
+      <p class="field-error" data-gift-challenge-message role="alert" tabindex="-1" data-testid="sf-gift-challenge-message" hidden></p>
+      <div class="gift-challenge-actions">
+        <button type="button" class="button" data-gift-challenge-retry data-testid="sf-gift-challenge-retry" hidden>${copy.checkout.giftChallengeRetry}</button>
+        <button type="button" class="button button-quiet" data-gift-challenge-cancel aria-label="${copy.checkout.giftChallengeCancelLabel}" data-testid="sf-gift-challenge-cancel">${copy.checkout.giftChallengeCancel}</button>
+      </div>
+    </div>`;
+}
+
 function giftCardSection(ctx: Ctx): Html {
   const state = ctx.data.state;
   if (state.kind !== 'order' || state.order.gift_card_tender_enabled === false) return html`<div data-region="gift-cards"></div>`;
   const cards = state.order.gift_cards ?? [];
   const allocations = new Map((state.order.gift_card_estimate?.gift_cards ?? []).map((card) => [card.gift_card_id, card.amount_money]));
-  return html`<section class="section checkout-section" id="gift-cards" data-region="gift-cards" aria-labelledby="gift-title" data-section="gift-cards">
+  return html`<section class="section checkout-section" id="gift-cards" data-region="gift-cards" aria-labelledby="gift-title" data-section="gift-cards" data-challenge-state="none">
     <h2 id="gift-title">${copy.checkout.giftCardHeading}</h2>
     <form method="post" action="${path(state, '/gift-card')}" data-job-form="gift-card" novalidate class="inline-field" data-testid="sf-gift-card">
       ${field({ id: 'gift-card-code', name: 'gift_card_code', label: copy.checkout.giftCardCode, autocomplete: 'off', testid: 'sf-gift-card-code', sensitive: true })}
       <button class="button" type="submit" data-testid="sf-gift-card-apply">${copy.checkout.giftCardApply}</button>
     </form>
-    <p class="field-error" role="alert" data-job-error="gift-card" hidden></p>
+    <p class="field-error" id="gift-card-error" role="alert" data-job-error="gift-card" hidden></p>
+    ${giftChallengePanel()}
     ${cards.length
       ? html`<ul class="applied-list" role="list" aria-label="${copy.checkout.giftCardApplied}">${cards.map((card, index) => {
           const amount = allocations.get(card.gift_card_id) ?? null;
@@ -587,6 +606,8 @@ function bootstrapJson(ctx: Ctx): Html {
     ref: ref(state),
     store: ctx.storeName,
     state: scrubForBrowser(state),
+    // The challenge origin only. The frame address arrives with the answer to an Apply.
+    ...(ctx.giftChallengeOrigin ? { gift_challenge: { origin: ctx.giftChallengeOrigin, slow_after_ms: 60000, max_mounts: 3 } satisfies GiftChallengeBoot } : {}),
     messages: browserMessages,
     labels: {
       savedLegend: copy.checkout.savedLegend,

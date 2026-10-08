@@ -20,6 +20,34 @@ export function hasPaymentCollection(state) {
 }
 
 /**
+ * Gift cards cover the whole amount, so no payment method is collected.
+ * @param {PaymentState} state
+ * @returns {boolean}
+ */
+export function isSettlement(state) {
+  return state.collection_kind === 'settlement';
+}
+
+/**
+ * @param {PaymentState} state
+ * @returns {boolean}
+ */
+export function hasGiftCards(state) {
+  return (state.order?.gift_cards?.length ?? 0) > 0;
+}
+
+/**
+ * What a payment processor has to collect. With gift cards that is the processor share of the
+ * estimate. Otherwise it is the whole amount due.
+ * @param {PaymentState} state
+ */
+export function processorMoney(state) {
+  const estimate = state.order?.gift_card_estimate;
+  if (hasGiftCards(state) && estimate?.can_pay && estimate.processor_money) return estimate.processor_money;
+  return state.approved_outstanding_money;
+}
+
+/**
  * True when an unfinished leg is an Affirm leg, or when the state does not say which payment
  * option the open leg uses. Affirm is the only method here that leaves the page and comes back,
  * so an open action after a provider return is an unfinished Affirm application.
@@ -46,7 +74,9 @@ export function derivePhase(state) {
   if (next === 'pay_remaining') return 'pay_remaining';
   if (next === 'capture') return 'unavailable';
   if (state.expired && !state.attempt) return 'expired';
-  if (!hasPaymentCollection(state)) return 'unavailable';
+  if (state.collection_kind === 'unavailable') return 'unavailable';
+  // A gift card settlement needs no payment form, so there is no collection guidance to wait for.
+  if (!isSettlement(state) && !hasPaymentCollection(state)) return 'unavailable';
   if (state.total_changed) return 'total_changed';
   if (state.decline && state.attempt?.status === 'failed') return 'declined';
   return 'ready';
@@ -90,7 +120,7 @@ export function shouldDropAffirm(decline) {
 
 /**
  * Names the reason the Pay button is disabled, or null when payment can start.
- * @param {{ phase: PaymentPhase, elementsComplete: boolean, usingSaved: boolean, hasSaved: boolean, busy: boolean }} input
+ * @param {{ phase: PaymentPhase, elementsComplete: boolean, usingSaved: boolean, hasSaved: boolean, busy: boolean, settlement?: boolean }} input
  * @returns {'attempt_open' | 'session_not_open' | 'elements_incomplete' | 'unavailable' | null}
  */
 export function payBlocker(input) {
@@ -108,6 +138,7 @@ export function payBlocker(input) {
     default:
       return 'attempt_open';
   }
+  if (input.settlement) return null;
   if (input.usingSaved && input.hasSaved) return null;
   return input.elementsComplete ? null : 'elements_incomplete';
 }

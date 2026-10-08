@@ -8,6 +8,7 @@ This example uses the `@flintpay/node` 3.0.0 beta, so names and shapes can still
 
 - A catalog read from Flint and a local cart that becomes a Flint order when the buyer checks out.
 - An embedded checkout session with contact details, discounts, delivery quotes and selections, pickup, a tip for pickup orders, gift cards, and a payment form built with Stripe Elements.
+- The gift card check Flint asks for after repeated failed codes, shown in an iframe under the code field.
 - Declines, 3D Secure, interrupted payments, and bank payments that settle later, handled from Flint's payment attempt state.
 - Subscription checkout, including a free trial that collects a payment method without charging.
 - A sample sign-in that proves the buyer's email with a Flint verification code, so a signed-in buyer's orders show up in the account example.
@@ -67,6 +68,21 @@ Amounts are exact integer strings in minor units and are formatted with `Intl.Nu
 
 If a payment request gets no answer, the app keeps the original request and its idempotency key and never starts a second payment. The page then shows that your payment is being confirmed, freezes the cart, delivery, discount, gift card, and tip controls, and asks the app to continue with an empty `POST /checkout/:ref/resume`. The app replays the saved request; the page sends no new card details or approval. Each run sends at most three resume requests and reads status for at most about a minute, then shows "still confirming" with a Check again button. Check again starts a new run. A reload during the wait picks up the same state.
 
+### Gift card verification
+
+Flint counts failed gift card codes. After enough failures in an hour, it needs proof that the buyer completed a check on a Flint page before it looks up any code. The checkout handles that check on its own page:
+
+- Every checkout session the app creates sets `page_origin` to `APP_ORIGIN`, because Flint only shows the check to a page with a matching origin. The app refuses to start if `APP_ORIGIN` is a value Flint won't accept: use an https host name, `http://localhost`, or `http://127.0.0.1`.
+- The Content Security Policy adds the one Flint checkout origin that matches `FLINT_API_BASE_URL` to `frame-src`. For the staging API that is `https://checkout.staging.withflintpay.com`. No `script-src` or `connect-src` change is needed, and the browser never calls Flint.
+- When Flint asks for a check, the app reads the checkout session again, confirms the check address is the one Flint lists for that session, and returns it only in the response to that Apply. The address is not in the page HTML, in the state embedded in the page, or in any later read. The page loads it in an iframe under the code field and accepts only the exact address shape of a Flint challenge page on that origin.
+- The page accepts an answer only from that iframe's window, from the Flint origin, for this checkout. Checkout session IDs never reach the browser, so the app sends a tag instead: a SHA-256 digest of a fixed prefix, a one-time challenge ID, and the session ID. The page computes the same digest over the session ID in the message and compares the two.
+- When the buyer passes, the page sends the proof once to `POST /checkout/:ref/gift-card/challenge`, with the challenge ID and the code from the locked field. The app repeats the original apply request with the same idempotency key and the proof in `Flint-Gift-Card-Challenge`. A proof is single use and lasts five minutes. It lives in browser memory for that one request and in a server variable for that one call. It is never written to storage, a log, a URL, or the page, and it is never sent twice.
+- If the answer to that request is lost, the page says it couldn't confirm that the gift card was applied. Applying the same code again settles it: a recorded success returns, otherwise Flint asks for a new check.
+- After 60 seconds with no answer from the frame, the page offers Try again. Each check allows three frames. Cancel and Escape close the check without sending anything.
+- A check does not survive a reload, and a new Apply for the same checkout drops the old one.
+
+A sandbox shows the same check page, and it always passes. Flint counts failures against the IP address your backend calls from, not the buyer's, so buyers who go through one backend share the same IP count.
+
 ## Test cards and bank accounts
 
 Use Stripe's test values.
@@ -100,7 +116,7 @@ Put the printed `whsec_...` value in `FLINT_WEBHOOK_SECRET`. With a secret set, 
 
 The browser tests come in two kinds that are different things:
 
-- **Local state tests** (`tests/browser/local`) run the real page templates and browser scripts against an in-memory stand-in for the app's JSON requests and a stand-in for Stripe.js. They check what the page does with each state: loading, ready, declined, 3D Secure, waiting, bank processing, recovery, total changed, gift cards, layout, keyboard use, and escaping. They run by default and need no credentials. Passing them does not show that Flint or Stripe behave this way.
+- **Local state tests** (`tests/browser/local`) run the real page templates and browser scripts against an in-memory stand-in for the app's JSON requests and a stand-in for Stripe.js. They check what the page does with each state: loading, ready, declined, 3D Secure, waiting, bank processing, recovery, total changed, gift cards, the gift card check frame and the messages it must ignore, layout, keyboard use, and escaping. The check frame is served by a fake page on Flint's checkout origin, so message origins are real, but the page behind it is not Flint's. They run by default and need no credentials. Passing them does not show that Flint or Stripe behave this way.
 - **Staging acceptance tests** (`tests/browser/acceptance`) drive a running copy of this app against a sandbox with real Stripe.js in test mode. They run only when you opt in:
 
   ```bash
@@ -109,7 +125,7 @@ The browser tests come in two kinds that are different things:
 
   They refuse to run unless `/healthz` reports test mode, and they fail if the browser calls a Flint host. Checks that need Flint's own records, such as the number of payment attempts, live in `headless/e2e`.
 
-Traces, screenshots, and videos are off and the reporter prints to the terminal only, because the pages and forms involved carry buyer and payment details. The local state suite also runs `@axe-core/playwright` when it is installed; it is an `e2e` dependency, so install it with `npm install --no-save @axe-core/playwright` to include the accessibility scan.
+Traces, screenshots, and videos are off and the reporter prints to the terminal only, because the pages and forms involved carry buyer and payment details. The accessibility scan uses `@axe-core/playwright`, a dev dependency of this app, and fails the run on serious or critical findings.
 
 Playwright needs a browser: `npx playwright install chromium`.
 
@@ -127,7 +143,7 @@ This is starter code. Before you take real payments:
 ## Limitations
 
 - The SDK is a beta.
-- Challenged gift card lookups depend on a Flint contract that merchant-hosted pages cannot complete yet. The app shows that gift card codes can't be checked right now.
+- The gift card check runs on a Flint page in an iframe. If the frame can't load or answer, the buyer gets Try again for up to three frames, then the message that gift card codes can't be checked right now. The app doesn't try to get around the check.
 - Gift card recipient delivery is hosted by Flint. The storefront redeems gift cards at checkout and does not sell them or host the page a recipient opens from the gift card email.
 - Apple Pay and Google Pay are offered after delivery is chosen on the page. Changing the shipping address inside the wallet sheet is not supported.
 - The sample sign-in is not a production identity system.

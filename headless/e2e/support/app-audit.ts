@@ -14,7 +14,7 @@ const handle = await open(file, 'a', 0o600);
 let queue = Promise.resolve();
 const append = (entry: Record<string, unknown>): Promise<void> => {
   queue = queue.then(async () => {
-    await handle.write(`${JSON.stringify({ schema_version: 1, run, app, sandbox, ...entry })}\n`);
+    await handle.write(`${JSON.stringify({ schema_version: 1, run, app, sandbox, timestamp: Date.now(), ...entry })}\n`);
     await handle.sync();
   });
   return queue;

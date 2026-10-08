@@ -6,18 +6,19 @@ import {join} from 'node:path';
 import type {Client,Order,OrderPaymentAttempt,RequestOptions,PayOrderRequestInput} from '@flintpay/node';
 import {Store} from '../../src/store/db.ts';
 import type {CheckoutRecord} from '../../src/store/db.ts';
-import {PaymentEngine} from '../../src/payments/engine.ts';
+import {PaymentEngine,acceptedAllocation,collectionKind,approvalMatches} from '../../src/payments/engine.ts';
 import {createAuth} from '../../src/flint/auth.ts';
 import {nextStep} from '../../src/payments/next-step.ts';
+import {SdkError} from '@flintpay/node';
 import {LocalError} from '../../src/flint/errors.ts';
 function checkout(store:Store):CheckoutRecord{
   store.run('INSERT INTO payment_checkouts(checkout_ref,user_id,sandbox_id,resource_type,resource_id,order_id,checkout_session_id,checkout_auth_token,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)','checkout_example','user_example','sandbox_example','invoice','inv_example','ord_example','session_example','example checkout authority',Date.now(),Date.now());
   return store.checkout('user_example','sandbox_example','invoice','inv_example')!;
 }
 const money={amount:'1000',currency:'USD'};
-const order=():Order=>({order_id:'ord_example',payment_status:'unpaid',status:'open',line_items:[],buyer_actions:[],pricing_amounts:{total_money:money},settlement_amounts:{outstanding_money:money},tax:{}} as unknown as Order);
+const order=():Order=>({order_id:'ord_example',payment_status:'unpaid',status:'open',line_items:[],buyer_actions:[],pricing_amounts:{total_money:money},settlement_amounts:{outstanding_money:money},tax:{},payment_collection:{stripe:{elements:{}}}} as unknown as Order);
 const attempt=(status='processing',resumable=false):OrderPaymentAttempt=>({order_payment_attempt_id:'attempt_example',expected_outstanding_money:money,status,is_resumable:resumable,mode:'payment'});
-const input={credential:{kind:'confirmation_token' as const,value:'ctoken_PLACEHOLDER'},approved_outstanding_money:money};
+const input={credential:{kind:'confirmation_token' as const,value:'ctoken_PLACEHOLDER'},approved_collection_kind:'processor' as const,approved_outstanding_money:money};
 test('concurrent duplicate pay clicks perform one charge and reuse authoritative state',async()=>{
   const store=new Store(':memory:');try{
     const record=checkout(store);let current=order(),charges=0;
@@ -99,4 +100,40 @@ test('explicit resume nonces replay a logical step and a later step gets a fresh
     const client={orders:{get:async()=>current,pay:async(_request:unknown,options:RequestOptions)=>{keys.push(options.idempotencyKey!);return {order:current,payment_attempt:current.active_payment_attempt};}}} as unknown as Client;
     const engine=new PaymentEngine(client,createAuth('flint_test_PLACEHOLDER'),store,async()=>{});await engine.resume(record.checkout_ref,'example-step');await engine.resume(record.checkout_ref,'example-step');await engine.resume(record.checkout_ref,'example-next-step');assert.equal(keys.length,2);assert.notEqual(keys[0],keys[1]);
   }finally{store.close();}
+});
+
+function giftOrder(processor='0'):Order{return {...order(),order_revision:'5',gift_card_tender_enabled:true,gift_cards:[{gift_card_id:'gift_fixture',last_characters:'1234'}],gift_card_estimate:{can_pay:true,order_revision:'5',gift_card_money:{amount:processor==='0'?'1000':'600',currency:'USD'},processor_money:{amount:processor,currency:'USD'},gift_cards:[{gift_card_id:'gift_fixture',amount_money:{amount:processor==='0'?'1000':'600',currency:'USD'}}]}} as unknown as Order;}
+function giftInput(processor='0'){return {approved_outstanding_money:money,approved_collection_kind:processor==='0'?'settlement' as const:'processor' as const,approved_order_revision:'5',approved_gift_card_money:{amount:processor==='0'?'1000':'600',currency:'USD'},...(processor==='0'?{}:{credential:input.credential})};}
+for(const processor of ['0','400'])test(`I17 fresh gift allocation with ${processor} processor amount is accepted exactly`,async()=>{
+ const store=new Store(':memory:');try{const record=checkout(store),current=giftOrder(processor),requests:PayOrderRequestInput[]=[];
+ const client={orders:{get:async()=>current,pay:async(request:{body:PayOrderRequestInput})=>{requests.push(request.body);current.payment_status='paid';return {order:current,payment_attempt:attempt('succeeded')};}},checkoutSessions:{get:async()=>({status:'open'})}} as unknown as Client;
+ const engine=new PaymentEngine(client,createAuth('fixture'),store,async()=>{});await engine.start(record.checkout_ref,giftInput(processor));assert.equal(requests.length,1);const sent=requests[0]!;assert.equal(sent.action,'pay');if(sent.action!=='pay')throw new Error('pay action required');assert.deepEqual(sent.accepted_gift_card_allocation,acceptedAllocation(giftOrder(processor)));assert.equal('payment_source'in sent,processor!=='0');
+ }finally{store.close();}
+});
+test('I17 concurrent gift-funded submissions settle once without a processor source',async()=>{
+ const store=new Store(':memory:');try{const record=checkout(store),current=giftOrder(),requests:PayOrderRequestInput[]=[];
+ const client={orders:{get:async()=>current,getPaymentAttempt:async()=>attempt('succeeded'),pay:async(request:{body:PayOrderRequestInput})=>{requests.push(request.body);current.payment_status='paid';return {order:current,payment_attempt:attempt('succeeded')};}},checkoutSessions:{get:async()=>({status:'open'})}} as unknown as Client,engine=new PaymentEngine(client,createAuth('fixture'),store,async()=>{});
+ const outcomes=await Promise.all([engine.start(record.checkout_ref,giftInput(),'one'),engine.start(record.checkout_ref,giftInput(),'two')]);assert.equal(requests.length,1);assert.equal('payment_source'in requests[0]!,false);assert.ok(outcomes.every(result=>result.order.payment_status==='paid'));assert.equal(store.all("SELECT * FROM actions WHERE kind='pay'").length,1);
+ }finally{store.close();}
+});
+test('I17 gift approval fences reject changed collection, revision, value and outstanding without paying',async()=>{
+ const store=new Store(':memory:');try{const record=checkout(store),current=giftOrder(),client={orders:{get:async()=>current,pay:async()=>{throw new Error('pay must not run');}}} as unknown as Client,engine=new PaymentEngine(client,createAuth('fixture'),store,async()=>{});
+ const valid=giftInput();assert.equal(collectionKind(current),'settlement');assert.equal(approvalMatches(current,valid),true);
+ for(const changed of [{...valid,approved_collection_kind:'processor' as const},{...valid,approved_order_revision:'4'},{...valid,approved_gift_card_money:{amount:'999',currency:'USD'}},{...valid,approved_outstanding_money:{amount:'1001',currency:'USD'}}])assert.equal((await engine.start(record.checkout_ref,changed)).totalChanged,true);
+ }finally{store.close();}
+});
+for(const code of ['GIFT_CARD_ALLOCATION_CHANGED','GIFT_CARD_INSUFFICIENT_VALUE'])test(`I17 ${code} returns a new approval state`,async()=>{
+ const store=new Store(':memory:');try{const record=checkout(store),current=giftOrder(),client={orders:{get:async()=>current,pay:async()=>{throw new SdkError('validation','fixture','response',false,{status:409,headers:{},attempts:1,durationMs:1},code);}},checkoutSessions:{get:async()=>({status:'open'})}} as unknown as Client,engine=new PaymentEngine(client,createAuth('fixture'),store,async()=>{});assert.equal((await engine.start(record.checkout_ref,giftInput())).totalChanged,true);
+ }finally{store.close();}
+});
+test('I17 unavailable gift backing retries the original settlement key and body',async()=>{
+ const store=new Store(':memory:');try{const record=checkout(store),current=giftOrder(),keys:string[]=[],bodies:string[]=[];
+ const client={orders:{get:async()=>current,pay:async(request:unknown,options:RequestOptions)=>{keys.push(options.idempotencyKey!);bodies.push(JSON.stringify(request));if(keys.length<3)throw new SdkError('server','fixture','response',true,{status:503,headers:{},attempts:1,durationMs:1},'GIFT_CARDS_UNAVAILABLE');current.payment_status='paid';return {order:current,payment_attempt:attempt('succeeded')};}},checkoutSessions:{get:async()=>({status:'open'})}} as unknown as Client,engine=new PaymentEngine(client,createAuth('fixture'),store,async()=>{});await engine.start(record.checkout_ref,giftInput());assert.equal(keys.length,3);assert.equal(new Set(keys).size,1);assert.equal(new Set(bodies).size,1);
+ }finally{store.close();}
+});
+test('I17 pending gift writes fence payment and closed sessions disable gift editing',async()=>{
+ const store=new Store(':memory:');try{const record=checkout(store),current=giftOrder(),client={orders:{get:async()=>current},checkoutSessions:{get:async()=>({status:'closed'})}} as unknown as Client,engine=new PaymentEngine(client,createAuth('fixture'),store,async()=>{});
+ store.action(engine.giftResource(record),'gift_apply',{code_hash:'hash',order_revision:'5'},'nonce');await assert.rejects(()=>engine.start(record.checkout_ref,giftInput()),{code:'GIFT_CARD_CHANGE_UNCONFIRMED'});
+ const view=await engine.view(record,{order:current,unknown:false});assert.equal(view.state.gift_editable,false);const serialized=JSON.stringify(view);for(const field of ['gift_card_challenge','page_origin','checkout_session_id'])assert.equal(serialized.includes(field),false);
+ }finally{store.close();}
 });

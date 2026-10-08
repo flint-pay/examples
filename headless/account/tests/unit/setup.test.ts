@@ -4,7 +4,7 @@ import {mkdtempSync,rmSync,readFileSync,statSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Client,SdkError} from '@flintpay/node';
-import type {CustomerAccountSettings,CustomerAccountSettingsInput} from '@flintpay/node';
+import type {CustomerAccountSettings} from '@flintpay/node';
 import {runSetup} from '../../scripts/setup.ts';
 import {readConfig} from '../../src/config.ts';
 const config=readConfig({FLINT_API_KEY:'flint_test_PLACEHOLDER',FLINT_API_BASE_URL:'https://api.staging.withflintpay.com',APP_ORIGIN:'http://localhost:4200',PORT:'4200',FLINT_SANDBOX_ID:'sandbox_example'});
@@ -46,20 +46,28 @@ test('setup snapshots before each write, retains permissions and restores existi
   await runSetup(api.client,config,['--restore='+temp.path]);assert.equal(api.account()?.mode,'flint_hosted');assert.equal(api.writes(),2);
   await runSetup(api.client,config,['--restore='+temp.path]);assert.equal(api.writes(),2);
 });
-test('absent customer_account dryrun is valid and snapshot records explicit absence before the SDK clearing prerequisite',async t=>{
+test('absent customer_account snapshots explicit absence and restores it with the published SDK',async t=>{
   const temp=tempSnapshot(),api=localApi(null);
   t.after(async()=>{await api.client.close();temp.close();});
-  const client=api.client;
-  const dryrun=await runSetup(client,config,[]);assert.equal(dryrun.setupNeeded,true);assert.equal(dryrun.previous_mode,undefined);assert.equal(dryrun.changes?.mode,'merchant_hosted');
-  await assert.rejects(runSetup(client,config,['--apply','--snapshot='+temp.path]),/published SDK.*customer_account:null/);
-  assert.equal(saved(temp.path).previous,null);assert.equal(saved(temp.path).state,'prepared');assert.ok(saved(temp.path).apply_key);assert.equal(api.writes(),0);
-  await assert.rejects(runSetup(client,config,['--restore='+temp.path]),/published SDK.*customer_account:null/);assert.equal(api.writes(),0);assert.equal(api.attempts.length,0);
+  const dryrun=await runSetup(api.client,config,[]);assert.equal(dryrun.setupNeeded,true);assert.equal(dryrun.previous_mode,undefined);assert.equal(dryrun.changes?.mode,'merchant_hosted');
+  api.beforeUpdate(()=>{const snapshot=saved(temp.path);assert.equal(snapshot.previous,null);assert.equal(snapshot.state,api.writes()===0?'prepared':'restoring');});
+  await runSetup(api.client,config,['--apply','--snapshot='+temp.path]);
+  assert.equal(saved(temp.path).previous,null);assert.equal(saved(temp.path).state,'applied');assert.equal(api.account()?.mode,'merchant_hosted');assert.equal(api.writes(),1);
+  api.loseNext('after');await assert.rejects(runSetup(api.client,config,['--restore='+temp.path]),error=>error instanceof SdkError&&error.outcome==='unknown');
+  assert.equal(saved(temp.path).state,'restoring');assert.equal(api.account(),undefined);assert.equal(api.attempts[1]!.body.customer_account,null);
+  await runSetup(api.client,config,['--restore='+temp.path]);assert.deepEqual(api.attempts[1],api.attempts[2]);assert.equal(saved(temp.path).state,'restored');assert.equal(api.account(),undefined);assert.equal(api.writes(),2);
+  await runSetup(api.client,config,['--restore='+temp.path]);assert.equal(api.attempts.length,3);assert.equal(api.writes(),2);
 });
-test('published SDK refuses clearing before transport, so a type assertion cannot silently turn null into omission',async()=>{
-  let calls=0;const client=new Client({baseUrl:config.apiBaseUrl,maxAttempts:1,transport:async()=>{calls++;throw new Error('Transport must not be called');}});
+test('published SDK sends explicit null clearing and serializes expected_version numerically',async()=>{
+  let calls=0;const client=new Client({baseUrl:config.apiBaseUrl,maxAttempts:1,transport:async(input,init)=>{
+    calls++;assert.equal(new URL(String(input)).pathname,'/v1/settings');assert.equal(init?.method,'PATCH');
+    assert.deepEqual(JSON.parse(String(init?.body)),{expected_version:1,customer_account:null});
+    assert.equal(new Headers(init?.headers).get('Idempotency-Key'),'example-clear-key');
+    return new Response(JSON.stringify({data:{settings_id:'settings_example',settings_scope:'merchant',version:'2'}}),{headers:{'Content-Type':'application/json','Flint-Mode':'test','Flint-Sandbox-ID':'sandbox_example'}});
+  }});
   try{
-    await assert.rejects(client.settings.update({expected_version:'1',customer_account:null as unknown as CustomerAccountSettingsInput},{apiKey:'flint_test_PLACEHOLDER',idempotencyKey:'example-clear-key'}),error=>error instanceof SdkError&&error.kind==='validation'&&error.outcome==='not_sent');
-    assert.equal(calls,0);
+    const restored=await client.settings.update({expected_version:'1',customer_account:null},{apiKey:'flint_test_PLACEHOLDER',idempotencyKey:'example-clear-key'});
+    assert.equal(restored.customer_account,undefined);assert.equal(restored.version,'2');assert.equal(calls,1);
   }finally{await client.close();}
 });
 test('lost apply responses resume the original request and key with one settings change',async t=>{

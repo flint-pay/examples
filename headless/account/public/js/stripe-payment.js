@@ -9,11 +9,14 @@
 // States (data-state on [data-testid="ac-payment"]): loading, unavailable, ready, submitting,
 // authenticating, resuming, waiting, bank_processing, declined, pay_remaining, total_changed,
 // affirm_incomplete, recovery, expired, succeeded.
+//
+// When gift cards cover the whole amount (collection_kind settlement) there is no payment form and
+// Stripe.js is not loaded. The buyer confirms, and the page sends the amounts they saw and no credential.
 
 import { newActionId, readBoot, requestJson, sleep } from './http.js';
 import { announce } from './live.js';
 import { formatMoney, stripeAmount } from './money.js';
-import { acceptsNewPayment, derivePhase, payBlocker, shouldDropAffirm, workFor } from './payment-phase.js';
+import { acceptsNewPayment, derivePhase, hasGiftCards, isSettlement, payBlocker, processorMoney, shouldDropAffirm, workFor } from './payment-phase.js';
 import { appearance, createStripe, whenStripeReady } from './stripe-loader.js';
 
 /** @typedef {import('../../src/views/types.ts').PaymentState} PaymentState */
@@ -58,6 +61,7 @@ async function run(root, boot) {
   const payActions = find('[data-pay-actions]');
   const payButton = find('[data-pay-button]');
   const blockerText = find('[data-pay-blocker]');
+  const settlementNote = find('[data-payment-settlement]');
 
   /** @type {PaymentState} */
   let state = boot.state;
@@ -85,7 +89,10 @@ async function run(root, boot) {
   const handledActions = new Set();
 
   const money = (/** @type {any} */ value) => formatMoney(value);
-  const label = () => (surface === 'invoice' ? ui.payInvoice : ui.payReturn).replace('{amount}', money(state.approved_outstanding_money));
+  /** The page is rendered for one kind of collection. A change of kind needs a fresh render. */
+  const settlementAtLoad = isSettlement(state);
+  const label = () =>
+    isSettlement(state) ? copy.gift.payConfirm : (surface === 'invoice' ? ui.payInvoice : ui.payReturn).replace('{amount}', money(processorMoney(state)));
 
   /** @param {string | undefined} code @param {string | undefined} kind */
   const errorText = (code, kind) => {
@@ -149,7 +156,9 @@ async function run(root, boot) {
       }
     }
     if (payButton instanceof HTMLButtonElement) payButton.textContent = label();
-    const value = stripeAmount(amount);
+    paintGift();
+    // Elements collects only what the gift cards leave over.
+    const value = stripeAmount(processorMoney(state));
     if (value !== null && value !== lastElementsAmount && elements) {
       lastElementsAmount = value;
       elements.update({ amount: value });
@@ -159,10 +168,27 @@ async function run(root, boot) {
 
   // ---- Rendering ---------------------------------------------------------
 
+  /** What the gift cards cover, in the explanation and the split note. */
+  function paintGift() {
+    const estimate = state.order?.gift_card_estimate;
+    const covered = estimate?.gift_card_money;
+    const settlement = isSettlement(state);
+    if (settlementNote instanceof HTMLElement) {
+      settlementNote.hidden = !settlement;
+      settlementNote.textContent = settlement ? (surface === 'invoice' ? copy.gift.settlementInvoice : copy.gift.settlementReturn).replace('{gift_card_money}', money(covered)) : '';
+    }
+    const split = document.querySelector('[data-gift-split]');
+    if (split instanceof HTMLElement) {
+      const show = !settlement && hasGiftCards(state) && Boolean(estimate?.can_pay);
+      split.hidden = !show;
+      split.textContent = show && estimate ? copy.gift.split.replace('{gift_card_money}', money(estimate.gift_card_money)).replace('{processor_money}', money(estimate.processor_money)) : '';
+    }
+  }
+
   function renderSaved() {
     if (!(savedBox instanceof HTMLElement) || !(savedList instanceof HTMLElement)) return;
     const methods = (state.saved_methods ?? []).filter((method) => method.status === 'active');
-    savedBox.hidden = methods.length === 0 || !acceptsNewPayment(derivePhase(state));
+    savedBox.hidden = methods.length === 0 || !acceptsNewPayment(derivePhase(state)) || isSettlement(state);
     if (methods.length === 0) {
       usingSaved = false;
       selectedSaved = null;
@@ -207,6 +233,7 @@ async function run(root, boot) {
       usingSaved,
       hasSaved: Boolean(selectedSaved),
       busy: local !== 'idle',
+      settlement: isSettlement(state),
     });
     switch (reason) {
       case 'elements_incomplete':
@@ -233,8 +260,8 @@ async function run(root, boot) {
 
     if (staticUnavailable instanceof HTMLElement) staticUnavailable.hidden = phase !== 'unavailable';
     if (staticExpired instanceof HTMLElement) staticExpired.hidden = phase !== 'expired';
-    if (elementWrap instanceof HTMLElement) elementWrap.hidden = !showForm || usingSaved;
-    if (walletsBox instanceof HTMLElement && !showForm) walletsBox.hidden = true;
+    if (elementWrap instanceof HTMLElement) elementWrap.hidden = !showForm || usingSaved || isSettlement(state);
+    if (walletsBox instanceof HTMLElement && (!showForm || isSettlement(state))) walletsBox.hidden = true;
     if (payActions instanceof HTMLElement) payActions.hidden = !showForm;
     if (affirmBox instanceof HTMLElement) affirmBox.hidden = phase !== 'affirm_incomplete';
     if (savedBox instanceof HTMLElement && !showForm) savedBox.hidden = true;
@@ -320,7 +347,7 @@ async function run(root, boot) {
     if (!guidance || !guidance.elements || !guidance.publishable_key) return false;
     const key = elementsKey(guidance);
     if (mountedKey === key && paymentElement) return true;
-    const amount = stripeAmount(state.approved_outstanding_money);
+    const amount = stripeAmount(processorMoney(state));
     if (amount === null) return false;
     try {
       StripeFactory = StripeFactory ?? (await whenStripeReady());
@@ -529,7 +556,7 @@ async function run(root, boot) {
     stillConfirming = false;
     // The attempt ended in a state that takes a new payment, but the form was never mounted
     // because the page opened in the middle of the attempt.
-    if (acceptsNewPayment(derivePhase(state)) && !paymentElement) {
+    if (acceptsNewPayment(derivePhase(state)) && !paymentElement && !isSettlement(state)) {
       const mounted = await mountElements();
       if (!mounted) state = { ...state, payment_collection: null };
     }
@@ -588,11 +615,18 @@ async function run(root, boot) {
   }
 
   function presentIdle() {
+    if (isSettlement(state) !== settlementAtLoad) {
+      // Gift cards now cover a different share, so the page needs the other layout. Render it again.
+      window.location.assign(endpoints.page);
+      return;
+    }
     const phase = derivePhase(state);
     clearMessage();
     showBanner('');
+    const giftChanged = (state.notices ?? []).includes('gift_card_changed');
     for (const key of state.notices ?? []) {
-      if (key === 'total_changed') showBanner(ui.totalChangedBanner.replace('{amount}', money(state.approved_outstanding_money)));
+      if (key === 'gift_card_changed') showBanner(copy.errors.gift_card_changed);
+      else if (key === 'total_changed' && !giftChanged) showBanner(ui.totalChangedBanner.replace('{amount}', money(state.approved_outstanding_money)));
       else if (key === 'still_confirming') showBanner(ui.stillConfirming);
     }
     if (phase === 'declined') {
@@ -608,7 +642,7 @@ async function run(root, boot) {
         void mountElements().then(render);
       }
     } else if (phase === 'total_changed') {
-      showBanner(ui.totalChangedBanner.replace('{amount}', money(state.approved_outstanding_money)));
+      showBanner(giftChanged ? copy.errors.gift_card_changed : ui.totalChangedBanner.replace('{amount}', money(state.approved_outstanding_money)));
     } else if (phase === 'expired') {
       showBanner(ui.expired);
     } else if (phase === 'affirm_incomplete') {
@@ -631,7 +665,10 @@ async function run(root, boot) {
     try {
       /** @type {{ kind: string, value: string } | undefined} */
       let credential;
-      if (source === 'card' && usingSaved && selectedSaved) {
+      if (isSettlement(state)) {
+        // Gift cards cover the whole amount: nothing to collect, so no credential is sent.
+        credential = undefined;
+      } else if (source === 'card' && usingSaved && selectedSaved) {
         credential = { kind: 'saved_payment_method', value: selectedSaved };
       } else {
         const target = source === 'wallet' ? expressElements : elements;
@@ -666,7 +703,20 @@ async function run(root, boot) {
         }
       }
       const approved = state.approved_outstanding_money;
-      const result = await post(endpoints.submit, { credential, approved_outstanding_money: approved }, actionId);
+      const estimate = state.order?.gift_card_estimate;
+      const withGift = hasGiftCards(state) && estimate?.gift_card_money && state.order.order_revision !== undefined;
+      // The server pays only what the buyer saw: the amount due, the kind of collection, and with
+      // gift cards the order revision and the gift card amount.
+      const result = await post(
+        endpoints.submit,
+        {
+          ...(credential ? { credential } : {}),
+          approved_outstanding_money: approved,
+          approved_collection_kind: isSettlement(state) ? 'settlement' : 'processor',
+          ...(withGift ? { approved_order_revision: String(state.order.order_revision), approved_gift_card_money: estimate.gift_card_money } : {}),
+        },
+        actionId,
+      );
       await afterSubmit(result);
     } catch (error) {
       local = 'idle';
@@ -760,6 +810,10 @@ async function run(root, boot) {
   const first = derivePhase(state);
   if (first === 'unavailable' || first === 'expired') {
     render();
+    return;
+  }
+  if (acceptsNewPayment(first) && isSettlement(state)) {
+    presentIdle();
     return;
   }
   if (acceptsNewPayment(first)) {

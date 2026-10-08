@@ -4,10 +4,18 @@ import { CredentialScanner } from './credential-scan.ts';
 import { accountRelayPath, preferenceRelayPath } from './email-links.ts';
 import type { LinkRole } from './email-links.ts';
 import { invariant, requestId } from './safe.ts';
+import { CHECKOUT_ORIGIN } from './email-links.ts';
 
-export function navigationDecision(raw: string, method: string, mainFrame: boolean, auditedRelays: Map<string, LinkRole> = new Map()): 'app-or-provider' | 'relay' | 'email-relay' | 'reject' {
+export function trustedChallengeUrl(raw:unknown):string|null {
+  if(typeof raw!=='string'||raw.length>2048)return null;
+  try{const u=new URL(raw);return u.href===raw&&u.origin===CHECKOUT_ORIGIN&&u.protocol==='https:'&&!u.username&&!u.password&&!u.search&&!u.hash&&/^\/gift-card-challenge\/[A-Za-z0-9_.-]{1,256}$/.test(u.pathname)?raw:null;}catch{return null;}
+}
+
+export function navigationDecision(raw: string, method: string, mainFrame: boolean, auditedRelays: Map<string, LinkRole> = new Map(),challengeUrls:ReadonlySet<string>=new Set(),frameUrl='',navigation=true): 'app-or-provider' | 'relay' | 'email-relay' | 'gift-frame' | 'gift-proof' | 'reject' {
   const u = new URL(raw);
   if (!/(^|\.)withflintpay\.com$/i.test(u.hostname)) return 'app-or-provider';
+  if(!mainFrame&&method==='GET'&&navigation&&challengeUrls.has(raw))return 'gift-frame';
+  if(!mainFrame&&method==='POST'&&challengeUrls.has(frameUrl)&&raw===`${frameUrl}/proof`)return 'gift-proof';
   if (u.origin === relayOrigin && relayPath.test(u.pathname) && !u.search && !u.hash && method === 'GET' && mainFrame) return 'relay';
   const role = auditedRelays.get(raw);
   if (u.origin === relayOrigin && method === 'GET' && mainFrame && !u.hash && (role === 'flint_account_link_relay' && accountRelayPath.test(u.pathname) || role === 'flint_email_preferences_relay' && preferenceRelayPath.test(u.pathname))) return 'email-relay';
@@ -28,8 +36,16 @@ export class BrowserGuard {
   readonly relays = new Map<Page, { timer: ReturnType<typeof setTimeout>; destination: string }>();
   consoleErrors = 0;
   readonly requestIds = new Set<string>();
+  readonly challengeUrls=new Set<string>();
+  private proofGate?:Promise<void>;
+  private releaseProof?:()=>void;
   readonly scanner: CredentialScanner; readonly appOrigins: string[]; readonly accountOrigin: string; readonly auditedRelays: Map<string, LinkRole>;
   constructor(scanner: CredentialScanner, appOrigins: string[], accountOrigin = appOrigins[0], auditedRelays = new Map<string, LinkRole>()) { this.scanner = scanner; this.appOrigins = appOrigins; this.accountOrigin = accountOrigin; this.auditedRelays = auditedRelays; }
+  allowGiftChallenge(url:string):void{invariant(trustedChallengeUrl(url)===url,'GIFT_CHALLENGE_URL_UNTRUSTED');this.challengeUrls.add(url);}
+  holdGiftProof():()=>void{
+    invariant(!this.proofGate,'CHALLENGE_PROOF_ALREADY_HELD');this.proofGate=new Promise(resolve=>{this.releaseProof=resolve;});
+    return ()=>{this.releaseProof?.();this.releaseProof=undefined;this.proofGate=undefined;};
+  }
   private work(p: Promise<unknown>): void {
     const safe = p.catch(() => { this.violations.add('GUARD_INSPECTION_FAILED'); });
     this.pending.add(safe); void safe.finally(() => this.pending.delete(safe));
@@ -40,8 +56,9 @@ export class BrowserGuard {
     context.on('request', request => {
       this.scanner.scan(request.url(), 'url');
       const u = new URL(request.url());
-      const gift = request.method() === 'POST' && this.appOrigins.includes(u.origin) && (/^\/checkout\/[^/]+\/gift-card$/.test(u.pathname) || u.pathname === '/gift-cards');
-      this.scanner.scan(request.postData() ?? '', 'request', { submittedGift: gift, stripeTransport: stripeOrigins.has(u.origin) });
+      const challengeProofSubmit=request.method()==='POST'&&this.appOrigins.includes(u.origin)&&(/^\/checkout\/[^/]+\/gift-card\/challenge$/.test(u.pathname)||u.origin===this.accountOrigin&&/^\/(invoices|returns)\/[^/]+\/pay\/gift-card\/challenge$/.test(u.pathname));
+      const gift = challengeProofSubmit || request.method() === 'POST' && this.appOrigins.includes(u.origin) && (/^\/checkout\/[^/]+\/gift-card$/.test(u.pathname) || u.origin===this.accountOrigin&&/^\/(invoices|returns)\/[^/]+\/pay\/gift-card$/.test(u.pathname) || u.pathname === '/gift-cards');
+      this.scanner.scan(request.postData() ?? '', 'request', { submittedGift: gift,challengeProofSubmit,stripeTransport: stripeOrigins.has(u.origin) });
       if ([...this.auditedRelays.keys()].some(url => request.headers()['referer']?.includes(url))) this.violations.add('EMAIL_RELAY_REFERRER_LEAK');
       this.scanner.scan(JSON.stringify(request.headers()), 'request', { stripeTransport: stripeOrigins.has(u.origin) });
     });
@@ -50,8 +67,9 @@ export class BrowserGuard {
       let frame;
       try { frame = request.frame(); } catch { /* service worker is forbidden */ }
       const main = !!frame && frame === frame.page().mainFrame() && request.isNavigationRequest();
-      const decision = navigationDecision(request.url(), request.method(), main, this.auditedRelays);
+      const decision = navigationDecision(request.url(), request.method(), main, this.auditedRelays,this.challengeUrls,frame?.url(),request.isNavigationRequest());
       if (decision === 'reject') { this.violations.add('FLINT_COMMERCE_REQUEST'); await route.abort('blockedbyclient'); return; }
+      if(decision==='gift-proof'&&this.proofGate)await this.proofGate;
       if ((decision === 'relay' || decision === 'email-relay') && frame) {
         const page = frame.page();
         if (this.relays.has(page)) { this.violations.add('RELAY_REENTERED'); await route.abort('blockedbyclient'); return; }
@@ -92,7 +110,7 @@ export class BrowserGuard {
         const raw = frame.url();
         if (raw === 'about:blank') return;
         this.scanner.scan(raw, 'url');
-        if (navigationDecision(raw, 'GET', frame === page.mainFrame(), this.auditedRelays) === 'reject') this.violations.add('FLINT_COMMERCE_NAVIGATION');
+        if (navigationDecision(raw, 'GET', frame === page.mainFrame(), this.auditedRelays,this.challengeUrls,raw) === 'reject') this.violations.add('FLINT_COMMERCE_NAVIGATION');
         const timer = this.relays.get(page);
         if (timer && frame === page.mainFrame() && this.appOrigins.includes(new URL(raw).origin)) { clearTimeout(timer.timer); this.relays.delete(page); }
       });
@@ -114,5 +132,5 @@ export class BrowserGuard {
     this.scanner.assertClean();
     invariant(this.violations.size === 0 && this.relays.size === 0, 'BROWSER_BOUNDARY_VIOLATION');
   }
-  close(): void { for (const timer of this.relays.values()) clearTimeout(timer.timer); this.relays.clear(); }
+  close(): void { this.releaseProof?.();for (const timer of this.relays.values()) clearTimeout(timer.timer); this.relays.clear(); }
 }

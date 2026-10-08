@@ -7,7 +7,7 @@ import { invariant } from '../support/safe.ts';
 import { pinnedFetch } from '../support/sdk.ts';
 import { runChild } from '../support/child.ts';
 import { checkoutRoot } from '../support/private-files.ts';
-import { syncAppAudit, revocationCheckpoint, assertFreshRevocation } from '../support/audit-feed.ts';
+import { syncAppAudit, revocationCheckpoint, assertFreshRevocation, currentAppFamily } from '../support/audit-feed.ts';
 
 export async function buyerClient(d: Driver, customerId: string, sandbox: 'A' | 'B' = 'A'): Promise<Client> {
   const step = { name: `buyer-${customerId.replace(/[^a-zA-Z0-9_-]/g, '').slice(-40)}`, sandbox, operation: 'customerSessions.create', args: [{ customer_id: customerId, expires_in_seconds: '300' }], creates: [{ path: 'customer_session_id', type: 'customer_session', cleanup: 'customer_session', reviewAt: new Date(Date.now() + 3600_000).toISOString() }], purpose: 'public-buyer-assertions' };
@@ -20,10 +20,10 @@ async function notFound(operation: Promise<unknown>): Promise<void> {
 export const crossApp: Record<string, Scenario> = {
   'X-01': async d => {
     const page = await d.page('combined'); await d.login(page, 'b1', d.sf()); await d.goto(page, d.config.origins.accountA, '/'); await expect(page.getByTestId('ac-home')).toBeVisible();
-    let before = await revocationCheckpoint(d); await d.form(page, '/sign-out'); await syncAppAudit(d); assertFreshRevocation(d, before, 'accountA', d.fixtures.buyers.b1.customerId);
+    let before = await revocationCheckpoint(d); let familyId = currentAppFamily(d, d.fixtures.buyers.b1.customerId); await d.form(page, '/sign-out'); await syncAppAudit(d); assertFreshRevocation(d, before, 'accountA', { sessionId: familyId });
     await d.goto(page, d.sf(), '/sign-in'); await expect(page.locator('form[action="/sign-in"]')).toBeVisible();
-    await d.login(page, 'b1', d.sf()); await d.goto(page, d.config.origins.accountA, '/'); await d.goto(page, d.sf(), '/'); before = await revocationCheckpoint(d);
-    await d.form(page, '/sign-out'); await syncAppAudit(d); assertFreshRevocation(d, before, 'storefrontA', d.fixtures.buyers.b1.customerId);
+    await d.login(page, 'b1', d.sf()); await d.goto(page, d.config.origins.accountA, '/'); await d.goto(page, d.sf(), '/'); before = await revocationCheckpoint(d); familyId = currentAppFamily(d, d.fixtures.buyers.b1.customerId);
+    await d.form(page, '/sign-out'); await syncAppAudit(d); assertFreshRevocation(d, before, 'storefrontA', { sessionId: familyId });
     await d.goto(page, d.config.origins.accountA, '/'); await expect(page.locator('form[action="/sign-in"]')).toBeVisible();
     return ['COMBINED_IDENTITY_BOTH_LOGOUTS_REAL_API_REVOCATION'];
   },

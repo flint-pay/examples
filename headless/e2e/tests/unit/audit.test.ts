@@ -59,11 +59,11 @@ test('unknown app mutation outcome fails final reconciliation and exact replay r
 test('feed handles partial writes and repeated reads without reusing old logout evidence', async () => temp(async dir => {
   const d = driver(dir), ready = lines({ kind: 'READY' }), revoked = lines({ kind: 'REVOCATION_ALL', customerId: 'cus_PLACEHOLDER', count: '1' });
   await consumeAppFeed(d, 'accountA', ready + revoked.slice(0, -2)); assert.equal(d.revocations.length, 0);
-  await consumeAppFeed(d, 'accountA', ready + revoked); assertFreshRevocation(d, 0, 'accountA', 'cus_PLACEHOLDER');
+  await consumeAppFeed(d, 'accountA', ready + revoked); assertFreshRevocation(d, 0, 'accountA', { customerId: 'cus_PLACEHOLDER' });
   const checkpoint = d.revocations.length; await consumeAppFeed(d, 'accountA', ready + revoked);
-  assert.throws(() => assertFreshRevocation(d, checkpoint, 'accountA', 'cus_PLACEHOLDER'));
-  await consumeAppFeed(d, 'accountA', ready + revoked + lines({ kind: 'REVOCATION', id: 'cses_PLACEHOLDER' })); assertFreshRevocation(d, checkpoint, 'accountA', 'cus_PLACEHOLDER');
-  assert.throws(() => assertFreshRevocation(d, checkpoint, 'storefrontA', 'cus_PLACEHOLDER'));
+  assert.throws(() => assertFreshRevocation(d, checkpoint, 'accountA', { customerId: 'cus_PLACEHOLDER' }));
+  await consumeAppFeed(d, 'accountA', ready + revoked + lines({ kind: 'REVOCATION', id: 'cses_PLACEHOLDER' })); assertFreshRevocation(d, checkpoint, 'accountA', { sessionId: 'cses_PLACEHOLDER' });
+  assert.throws(() => assertFreshRevocation(d, checkpoint, 'storefrontA', { sessionId: 'cses_PLACEHOLDER' }));
   await assert.rejects(() => consumeAppFeed(d, 'accountA', ready), { message: 'APP_AUDIT_FEED_REPLACED' });
 }));
 test('audit cannot turn supplied unowned fixture references into cleanup authority', async () => temp(async dir => {
@@ -86,3 +86,11 @@ test('durable responses redact credentials and restart replays the original key 
   const restarted = new Ledger(ledger.file, run); await restarted.load(); const response = await restarted.action('ephemeral', 'A', 'customerSessions.create', [], send, async () => {});
   assert.equal(response.secret, 'flint_cses_PLACEHOLDER'); assert.equal(keys.length, 2); assert.equal(keys[0], keys[1]);
 }));
+
+test('gift apply audit records checkout authority and proof presence without the code or header value',async()=>{
+ const entries:Record<string,unknown>[]=[],proof='gccp_'+ 'X'.repeat(30),code='GIFT-FIXTURE-SECRET';let calls=0;
+ const transport=auditedFetch(async()=>{calls++;return Response.json({data:{order_id:'ord_PLACEHOLDER'}});},async entry=>{entries.push(entry);});
+ await transport(`${API_ORIGIN}/v1/orders/ord_PLACEHOLDER/gift-cards`,{method:'POST',headers:{'X-Checkout-Session-ID':'cs_PLACEHOLDER','X-Checkout-Session-Secret':'ckat_PLACEHOLDER','Flint-Gift-Card-Challenge':proof,'idempotency-key':'key_PLACEHOLDER'},body:JSON.stringify({gift_card_code:code,order_revision:'1'})});
+ const entry=entries.find(entry=>entry.kind==='MUTATION');assert.equal(entry?.operation,'ORDER_APPLY_GIFT_CARD');assert.equal(entry?.authMode,'checkout');assert.equal(entry?.challengeProof,true);assert.equal(entry?.targetId,'ord_PLACEHOLDER');for(const value of [proof,code,'ckat_PLACEHOLDER'])assert.equal(JSON.stringify(entries).includes(value),false);
+ await assert.rejects(()=>transport(`${API_ORIGIN}/v1/orders/ord_PLACEHOLDER/gift-cards`,{method:'POST',headers:{authorization:'Bearer flint_test_PLACEHOLDER'},body:'{}'}),{code:'APP_GIFT_APPLY_MERCHANT_AUTH'});assert.equal(calls,1);
+});

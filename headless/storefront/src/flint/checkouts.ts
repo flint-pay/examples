@@ -1,11 +1,14 @@
 import type {Client,Order,CheckoutSession,BuyerDeliveryQuoteChoiceGroupResource,DeliveryAddressRequestInput,DeliveryBuyerLocationRequestInput,Subscription} from '@flintpay/node';
 import {createHash} from 'node:crypto';
 import type {Auth} from './auth.ts';
-import {LocalError,unknownOutcome} from './errors.ts';
+import {LocalError,unknownOutcome,appError} from './errors.ts';
 import {SdkError} from '@flintpay/node';
+import {challengeFromError,confirmWithSession,newChallengeId,sessionTag,applyWithProof} from './gift-challenge.ts';
+import type {GiftChallengeView} from '../views/types.ts';
+import {logGiftChallenge,logLaunchInvalid} from '../security/log.ts';
 import {buyerSafe,safeOrder,safeSession,safeAttempt} from './projection.ts';
 import {Store} from '../store/db.ts';
-import type {CheckoutRecord,ActionRecord} from '../store/db.ts';
+import type {CheckoutRecord,ActionRecord,GiftChallengeRecord} from '../store/db.ts';
 import {IdentityStore,randomReference} from '../identity/index.ts';
 import type {User,Session} from '../identity/index.ts';
 import {Carts} from '../store/cart.ts';
@@ -16,7 +19,7 @@ import type {PaymentResult} from '../payments/engine.ts';
 import {attemptOpen} from '../payments/next-step.ts';
 
 export type Quote={delivery_quote_id:string;choice_groups:BuyerDeliveryQuoteChoiceGroupResource[];expires_at:string;input_requirements:unknown[];buyer_reasons?:string[];status:string};
-export type Details={name?:string;contact?:{email?:string|null;phone?:string|null};delivery_quote?:Quote;delivery_selection?:{delivery_selection_id?:string;[key:string]:unknown};pickup_locations?:unknown[];quote_input?:{destination_address?:DeliveryAddressRequestInput;buyer_location?:DeliveryBuyerLocationRequestInput};verification?:{customer_verification_id:string;status:string;channel?:string;email?:string;phone_last_digits?:string};receipt_sent_at?:number};
+export type Details={name?:string;contact?:{email?:string|null;phone?:string|null};delivery_quote?:Quote;delivery_selection?:{delivery_selection_id?:string;[key:string]:unknown};pickup_locations?:unknown[];quote_input?:{destination_address?:DeliveryAddressRequestInput;buyer_location?:DeliveryBuyerLocationRequestInput};verification?:{customer_verification_id:string;status:string;channel?:string;email?:string;phone_last_digits?:string};receipt_sent_at?:number;gift_origin_replaced_at?:number};
 export type ReadCheckout={record:CheckoutRecord;session:CheckoutSession;order:Order;result:PaymentResult};
 export type MutationContext={order_revision?:string;delivery_selection_id:string|null;delivery_quote_id?:string;customer_verification_id?:string};
 const displayNotices=new Set(['checkout_refreshed','delivery_released','total_changed','gift_card_changed','affirm_incomplete','signed_in_mid_checkout','delivery_requoted']);
@@ -43,21 +46,22 @@ export class Checkouts {
       record.flash=JSON.stringify(remaining);this.store.run('UPDATE checkouts SET flash=? WHERE checkout_ref=?',record.flash,record.checkout_ref);
     });
   }
-  async action<T>(record:CheckoutRecord,kind:string,body:unknown,call:(key:string)=>Promise<T>,fixedKey?:string):Promise<T>{
+  async action<T>(record:CheckoutRecord,kind:string,body:unknown,call:(key:string)=>Promise<T>,fixedKey?:string,classifyError?:(error:unknown)=>'challenge'|undefined):Promise<T>{
     const hash=createHash('sha256').update(JSON.stringify(body)).digest('hex');
     const resource=`order:${record.order_id??record.checkout_ref}`;
     let row=fixedKey?this.store.get<ActionRecord>('SELECT * FROM actions WHERE idempotency_key=?',fixedKey):this.store.get<ActionRecord>("SELECT * FROM actions WHERE resource=? AND kind=? AND status IN ('pending','unknown')",resource,kind);
     if(row&&row.body_hash!==hash)throw new LocalError('ACTION_RECONCILIATION_REQUIRED',409);
     if(!row){const key=fixedKey??`${kind}-${record.checkout_ref}-${randomReference('')}`;this.store.run('INSERT INTO actions(action_id,resource,kind,idempotency_key,body,body_hash,created_at) VALUES(?,?,?,?,?,?,?)',key,resource,kind,key,JSON.stringify(body),hash,Date.now());row=this.store.get<ActionRecord>('SELECT * FROM actions WHERE action_id=?',key)!;}
     try{const response=await call(row.idempotency_key);this.store.run("UPDATE actions SET status='succeeded' WHERE action_id=?",row.action_id);return response;}
-    catch(error){const uncertain=unknownOutcome(error)||error instanceof SdkError&&(error.outcome!=='response'||[401,403].includes(error.status??0))||!(error instanceof SdkError||error instanceof LocalError);this.store.run('UPDATE actions SET status=? WHERE action_id=?',uncertain?'unknown':'rejected',row.action_id);throw error;}
+    catch(error){const uncertain=unknownOutcome(error)||error instanceof SdkError&&(error.outcome!=='response'||[401,403].includes(error.status??0))||!(error instanceof SdkError||error instanceof LocalError);this.store.run('UPDATE actions SET status=? WHERE action_id=?',classifyError?.(error)??(uncertain?'unknown':'rejected'),row.action_id);throw error;}
   }
   async launch(record:CheckoutRecord,customerId?:string):Promise<CheckoutRecord>{
-    const common={surface:'embedded' as const,customer_collection:{require_email:true,...(customerId?{customer_id:customerId}:{})},expiration:{expires_in_seconds:String(this.config.checkoutTtl)},redirects:{success_redirect_url:`${this.config.appOrigin}/checkout/${record.checkout_ref}/return`},external_reference_id:record.checkout_ref};
+    const common={surface:'embedded' as const,page_origin:this.config.appOrigin,customer_collection:{require_email:true,...(customerId?{customer_id:customerId}:{})},expiration:{expires_in_seconds:String(this.config.checkoutTtl)},redirects:{success_redirect_url:`${this.config.appOrigin}/checkout/${record.checkout_ref}/return`},external_reference_id:record.checkout_ref};
     const freshInput=record.order_id?{...common,order_id:record.order_id,...(record.checkout_session_id?{replace_checkout_session_id:record.checkout_session_id}:{})}:{...common,subscription_plan_id:record.subscription_plan_id!};
     const previous=this.store.get<ActionRecord>('SELECT * FROM actions WHERE idempotency_key=?',`session-${record.checkout_ref}-${record.generation}`);
     const input=previous?.body?JSON.parse(previous.body) as typeof freshInput:freshInput;
     const launched=await this.action(record,'session_create',input,key=>this.client.checkoutSessions.create(input,this.auth.merchant(key)),`session-${record.checkout_ref}-${record.generation}`);
+    if(input.page_origin&&launched.checkout_session.page_origin!==input.page_origin){logLaunchInvalid('page_origin_mismatch');throw new LocalError('CHECKOUT_LAUNCH_INVALID',503);}
     this.store.run('UPDATE checkouts SET order_id=?,checkout_session_id=?,checkout_auth_token=?,needs_replacement=0,updated_at=? WHERE checkout_ref=?',launched.checkout_session.order_id??record.order_id,launched.checkout_session.checkout_session_id,launched.checkout_access.checkout_auth_token,Date.now(),record.checkout_ref);
     return this.record(record.checkout_ref);
   }
@@ -179,7 +183,81 @@ export class Checkouts {
       const saved=pending?.body?JSON.parse(pending.body) as {input:unknown;context:MutationContext}:undefined;
       if(saved&&JSON.stringify(saved.input)!==JSON.stringify(body))throw new LocalError('ACTION_RECONCILIATION_REQUIRED',409);
       const context=saved?.context??{order_revision:order.order_revision,delivery_selection_id:details.delivery_selection?.delivery_selection_id??null,delivery_quote_id:details.delivery_quote?.delivery_quote_id,customer_verification_id:details.verification?.customer_verification_id};
+      if(kind==='gift_remove')this.store.abandonGiftChallenges(ref,`order:${record.order_id}`);
       return this.action(record,kind,{input:body,context},key=>call(record,key,context));
+    });
+  }
+  async giftOutcome(record:CheckoutRecord,action:ActionRecord,error:unknown,retry=false):Promise<GiftChallengeView>{
+    this.store.closeGiftChallenges(record.checkout_ref);
+    const parsed=challengeFromError(error,this.config.giftChallengeOrigin);
+    if(!parsed){
+      if(retry)logGiftChallenge({outcome:unknownOutcome(error)?'retry_unknown':'retry_rejected',cause:appError(error).code,checkout_ref:record.checkout_ref,flint_request_id:appError(error).request_id});
+      throw error;
+    }
+    let outcome;
+    try{outcome=await confirmWithSession(parsed,()=>this.client.checkoutSessions.get(record.checkout_session_id!,undefined,this.auth.checkout(record)),record.checkout_session_id!);}
+    catch(readError){this.store.run("UPDATE actions SET status='unknown' WHERE action_id=?",action.action_id);throw readError;}
+    if(outcome.kind==='challenge'){
+      const challengeId=newChallengeId();this.store.issueGiftChallenge(record.checkout_ref,action.action_id,record.checkout_session_id!,challengeId);
+      logGiftChallenge({outcome:'issued',checkout_ref:record.checkout_ref,flint_request_id:appError(error).request_id});
+      return {challenge_id:challengeId,url:outcome.url,session_tag:sessionTag(challengeId,record.checkout_session_id!),reason:outcome.reason,expires_in_seconds:900};
+    }
+    this.store.run("UPDATE actions SET status='rejected' WHERE action_id=?",action.action_id);
+    if(outcome.kind==='origin_required'){
+      const details=this.details(record),now=Date.now();
+      if(!details.gift_origin_replaced_at||now-details.gift_origin_replaced_at>=600000){
+        details.gift_origin_replaced_at=now;this.saveDetails(record,details);this.store.run('UPDATE checkouts SET needs_replacement=1 WHERE checkout_ref=?',record.checkout_ref);
+        logGiftChallenge({outcome:'origin_required',checkout_ref:record.checkout_ref,flint_request_id:appError(error).request_id});
+        throw new LocalError('GIFT_CARD_CHALLENGE_ORIGIN_REQUIRED',409);
+      }
+    }
+    logGiftChallenge({outcome:'unavailable',cause:outcome.kind==='unavailable'?outcome.cause:'origin_replacement_limit',checkout_ref:record.checkout_ref,flint_request_id:appError(error).request_id});
+    throw new LocalError('GIFT_CARD_CHALLENGE_UNAVAILABLE',503);
+  }
+  async applyGift(ref:string,giftCardCode:string):Promise<GiftChallengeView|undefined>{
+    const initial=this.record(ref);
+    return this.store.locked(`order:${initial.order_id}`,async()=>{
+      const record=this.record(ref),resource=`order:${record.order_id}`;
+      if(this.payments.unresolved(record))throw new LocalError('CHECKOUT_PAYMENT_RESOLVING',409);
+      const pending=this.store.get<ActionRecord>("SELECT * FROM actions WHERE resource=? AND kind NOT IN ('pay','resume','cancel') AND status IN ('pending','unknown')",resource);
+      if(pending&&pending.kind!=='gift')throw new LocalError('ACTION_RECONCILIATION_REQUIRED',409);
+      const order=await this.payments.read(record);if(attemptOpen(order.active_payment_attempt))throw new LocalError('PAYMENT_ATTEMPT_IN_PROGRESS',409);
+      const input={code_hash:createHash('sha256').update(giftCardCode).digest('hex')},details=this.details(record);
+      const saved=pending?.body?JSON.parse(pending.body) as {input:{code_hash:string};context:MutationContext}:undefined;
+      if(saved&&saved.input.code_hash!==input.code_hash)throw new LocalError('ACTION_RECONCILIATION_REQUIRED',409);
+      const context=saved?.context??{order_revision:order.order_revision,delivery_selection_id:details.delivery_selection?.delivery_selection_id??null,delivery_quote_id:details.delivery_quote?.delivery_quote_id,customer_verification_id:details.verification?.customer_verification_id};
+      if(!context.order_revision)throw new LocalError('ORDER_CHANGED_REFRESH_REQUIRED',409);
+      this.store.abandonGiftChallenges(ref,resource);
+      let action:ActionRecord|undefined;
+      try{
+        await this.action(record,'gift',{input,context},key=>{action=this.store.get<ActionRecord>('SELECT * FROM actions WHERE idempotency_key=?',key);return this.client.orders.applyGiftCard(record.order_id!,{gift_card_code:giftCardCode,order_revision:context.order_revision!},this.auth.checkout(record,key));},undefined,error=>challengeFromError(error,this.config.giftChallengeOrigin)?'challenge':undefined);
+      }catch(error){if(!action)throw error;return this.giftOutcome(record,action,error);}
+    });
+  }
+  async retryGift(ref:string,challengeId:string,giftCardCode:string,proof:string):Promise<GiftChallengeView|undefined>{
+    const initial=this.record(ref);
+    return this.store.locked(`order:${initial.order_id}`,async()=>{
+      const record=this.record(ref),row=this.store.get<GiftChallengeRecord>('SELECT * FROM gift_challenges WHERE challenge_id=? AND checkout_ref=?',challengeId,ref);
+      if(!row)throw new LocalError('GIFT_CHALLENGE_EXPIRED',409);
+      if(record.checkout_session_id!==row.checkout_session_id){this.store.run("UPDATE gift_challenges SET status='closed' WHERE challenge_id=? AND status IN ('open','retrying')",row.challenge_id);throw new LocalError('GIFT_CHALLENGE_SESSION_CHANGED',409);}
+      if(row.status!=='open'||row.expires_at<=Date.now())throw new LocalError('GIFT_CHALLENGE_EXPIRED',409);
+      const reject=(code:string):never=>{this.store.closeGiftChallenges(ref);this.store.run("UPDATE actions SET status='rejected' WHERE action_id=? AND status='challenge'",row.action_id);throw new LocalError(code,409);};
+      if(this.payments.unresolved(record))reject('CHECKOUT_PAYMENT_RESOLVING');
+      const action=this.store.get<ActionRecord>('SELECT * FROM actions WHERE action_id=?',row.action_id);
+      const saved=action?.body?JSON.parse(action.body) as {input:{code_hash:string};context:MutationContext}:undefined;
+      if(action?.kind!=='gift'||action.status!=='challenge'||saved?.input.code_hash!==createHash('sha256').update(giftCardCode).digest('hex'))reject('GIFT_CHALLENGE_CODE_CHANGED');
+      let order:Order;try{order=await this.payments.read(record);}catch(error){this.store.closeGiftChallenges(ref);throw error;}
+      if(attemptOpen(order.active_payment_attempt))reject('PAYMENT_ATTEMPT_IN_PROGRESS');
+      if(order.order_revision!==saved!.context.order_revision)reject('GIFT_CHALLENGE_ORDER_CHANGED');
+      this.store.claimGiftChallenge(row);
+      try{
+        await applyWithProof(this.client,this.auth,record,giftCardCode,saved!.context.order_revision!,action!.idempotency_key,proof);
+        this.store.run("UPDATE actions SET status='succeeded' WHERE action_id=?",action!.action_id);this.store.closeGiftChallenges(ref);
+        logGiftChallenge({outcome:'retry_applied',checkout_ref:ref});
+      }catch(error){
+        this.store.run('UPDATE actions SET status=? WHERE action_id=?',challengeFromError(error,this.config.giftChallengeOrigin)?'challenge':unknownOutcome(error)?'unknown':'rejected',action!.action_id);
+        return this.giftOutcome(record,action!,error,true);
+      }
     });
   }
   async editCart<T>(cart:Cart,edit:()=>Promise<T>):Promise<T>{

@@ -71,6 +71,7 @@ async function probe<T>(store:Store,name:string,create:(key:string)=>Promise<T>,
     throw error;
   }
 }
+export function affirmReady(capabilities:readonly {capability:string;status:string}[]):boolean{return capabilities.some(capability=>capability.capability==='accept_affirm_payments'&&capability.status==='ready');}
 export async function setup(args:string[]=process.argv.slice(2)){
   if(args.some(arg=>!['--apply','--check'].includes(arg)))throw new Error('Use --apply to create the sample store or --check to run readiness probes.');
   const apply=args.includes('--apply');const check=args.includes('--check');const config=readConfig();
@@ -80,7 +81,7 @@ export async function setup(args:string[]=process.argv.slice(2)){
   store.db.exec('CREATE TABLE IF NOT EXISTS setup_probes(name TEXT PRIMARY KEY,idempotency_key TEXT NOT NULL,resource_id TEXT); CREATE TABLE IF NOT EXISTS setup_readiness(sandbox_id TEXT PRIMARY KEY,ach INTEGER NOT NULL,affirm INTEGER NOT NULL,tax INTEGER NOT NULL,checked_at INTEGER NOT NULL)');
   try{await store.locked(`setup:${ready.sandboxId}`,async()=>{
     const existing=await inventory(client,auth);const settings=await client.settings.get(undefined,auth.merchant());
-    const affirm=(await client.capabilities.list({capability:'accept_affirm_payments'},auth.merchant())).data[0]?.status==='enabled';
+    const affirm=affirmReady((await client.capabilities.list({capability:'accept_affirm_payments'},auth.merchant())).data);
     let ach=false;let tax=false;
     const last=store.get<{ach:number;affirm:number;tax:number;checked_at:number}>('SELECT * FROM setup_readiness WHERE sandbox_id=?',ready.sandboxId);
     if(last&&last.checked_at>Date.now()-24*60*60_000){ach=!!last.ach;tax=!!last.tax;}
