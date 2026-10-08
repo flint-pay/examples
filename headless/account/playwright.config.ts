@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import { browserEnvironment } from './tests/browser/support/browser-environment.ts';
 
 // Two kinds of browser tests live here and they are different things:
 //
@@ -37,6 +38,7 @@ export default defineConfig({
   reporter: [['list']],
   outputDir: 'test-results',
   use: {
+    launchOptions: { env: browserEnvironment() },
     baseURL: staging ? process.env.ACCOUNT_BASE_URL : `http://127.0.0.1:${harnessPort}`,
     trace: 'off',
     screenshot: 'off',
