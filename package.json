@@ -1,0 +1,15 @@
+{
+  "name": "@flintpay/examples",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "check": "node scripts/validate-manifests.mjs && node scripts/generate-index.mjs --check && node scripts/check-identity-copies.mjs && node scripts/check-punctuation.mjs",
+    "test": "node --test scripts/*.test.mjs",
+    "index": "node scripts/generate-index.mjs",
+    "matrix": "node scripts/examples-matrix.mjs",
+    "check:publication": "node scripts/check-publication.mjs --index"
+  }
+}

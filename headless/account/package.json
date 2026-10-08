@@ -1,0 +1,29 @@
+{
+  "name": "flint-headless-account-example",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env --watch src/server.ts",
+    "start": "node --env-file-if-exists=.env src/server.ts",
+    "setup": "node --env-file-if-exists=.env scripts/setup.ts",
+    "check": "tsc --noEmit && node --test tests/unit/*.test.ts",
+    "test": "node --test tests/unit/*.test.ts",
+    "test:integration": "node --test tests/integration/*.test.ts",
+    "test:browser": "playwright test",
+    "check:backend": "tsc --noEmit -p tsconfig.backend.json && node --test tests/unit/*.test.ts tests/integration/*.test.ts"
+  },
+  "dependencies": {
+    "@flintpay/node": "3.0.0-beta.20261007031000",
+    "@hono/node-server": "^1.19.0",
+    "hono": "^4.10.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3"
+  }
+}

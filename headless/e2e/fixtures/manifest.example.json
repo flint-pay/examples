@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "run": "20000101T000000Z-00000000",
+  "readiness": {
+    "A": {
+      "merchantId": "mer_PLACEHOLDER",
+      "sandboxId": "test_PLACEHOLDER_A",
+      "providerId": "acct_PLACEHOLDER_A",
+      "mode": "test",
+      "checkedAt": "<parent-verified-rfc3339-time>",
+      "cards": false,
+      "affirm": false,
+      "achSettlement": false,
+      "achDebitEmails": false,
+      "automaticTax": false,
+      "worker": false,
+      "publicGiftChallenge": false
+    },
+    "B": {
+      "merchantId": "mer_PLACEHOLDER",
+      "sandboxId": "test_PLACEHOLDER_B",
+      "providerId": "acct_PLACEHOLDER_B",
+      "mode": "test",
+      "checkedAt": "<parent-verified-rfc3339-time>",
+      "cards": false,
+      "affirm": false,
+      "achSettlement": false,
+      "achDebitEmails": false,
+      "automaticTax": false,
+      "worker": false,
+      "publicGiftChallenge": false
+    }
+  },
+  "buyers": {
+    "b1": {
+      "email": "b1@example.invalid",
+      "password": "<private-run-password>",
+      "verified": false
+    },
+    "b2": {
+      "email": "b2@example.invalid",
+      "password": "<private-run-password>",
+      "verified": false
+    },
+    "d": {
+      "email": "d@example.invalid",
+      "password": "<private-run-password>",
+      "verified": false
+    },
+    "b1b": {
+      "email": "b1b@example.invalid",
+      "password": "<private-run-password>",
+      "verified": false
+    }
+  },
+  "resources": [],
+  "settingsAuthority": {},
+  "products": {
+    "house-blend": {
+      "productId": "prod_PLACEHOLDER",
+      "variantId": "var_PLACEHOLDER",
+      "unitPrice": {
+        "amount": "1800",
+        "currency": "USD"
+      }
+    }
+  },
+  "plans": {
+    "coffee-club-monthly": "sp_PLACEHOLDER",
+    "coffee-club-trial": "sp_PLACEHOLDER_TRIAL"
+  },
+  "values": {
+    "shippingAddress": {
+      "line1": "<designated-test-address>",
+      "city": "<test-city>",
+      "state": "TX",
+      "postal_code": "<test-postal-code>",
+      "country": "US"
+    },
+    "serviceOwnership": {
+      "coordinated": false
+    },
+    "providerSteps": {},
+    "plans": {},
+    "emailSubjects": {},
+    "giftFundingBuyerEmail": "funding-buyer@example.invalid"
+  },
+  "operatorPlan": []
+}

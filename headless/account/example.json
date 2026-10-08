@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "kind": "example",
+  "id": "headless/account",
+  "area": "headless",
+  "title": "Headless customer account",
+  "summary": "A merchant-owned customer account with its own sign-in: orders and delivery tracking, invoices and return balances paid on the merchant's page, subscriptions, saved cards, profile, addresses, gift cards, email preferences, account deletion, and guest order linking.",
+  "language": "typescript",
+  "runtime": {
+    "node": ">=24"
+  },
+  "status": "beta",
+  "status_note": "Uses the @flintpay/node 3.0.0 beta.",
+  "guides": [
+    {
+      "title": "Build your own customer account",
+      "url": "https://developers.withflintpay.com/docs/guides/headless-customer-accounts"
+    },
+    {
+      "title": "Customer sessions",
+      "url": "https://developers.withflintpay.com/docs/guides/customer-sessions"
+    },
+    {
+      "title": "Build your own checkout: collect an invoice or a return balance",
+      "url": "https://developers.withflintpay.com/docs/guides/headless-checkout#collect-an-invoice-or-a-return-balance"
+    }
+  ],
+  "requires": {
+    "flint_sdk": {
+      "package": "@flintpay/node",
+      "version": "3.0.0-beta.20261007031000"
+    },
+    "stripe_js": true,
+    "stripe_test_mode": true,
+    "sandbox": "dedicated",
+    "second_sandbox": false,
+    "customer_account_mode": "merchant_hosted",
+    "webhooks": "none",
+    "inbox": "required",
+    "capabilities": [
+      {
+        "name": "accept_card_payments",
+        "required": true
+      }
+    ],
+    "sandbox_setup": [
+      {
+        "id": "customer_account_merchant_hosted",
+        "required": true,
+        "how": "npm run setup -- --apply points the sandbox's account links at this app"
+      }
+    ]
+  },
+  "commands": {
+    "install": "npm ci",
+    "setup": "npm run setup -- --apply",
+    "dev": "npm run dev",
+    "check": "npm run check",
+    "test": "npm test",
+    "test_integration": "npm run test:integration",
+    "test_browser": "npm run test:browser"
+  },
+  "ports": [
+    4200
+  ],
+  "env": {
+    "file": ".env.example",
+    "required": [
+      "FLINT_API_KEY",
+      "FLINT_API_BASE_URL",
+      "APP_ORIGIN",
+      "PORT"
+    ],
+    "optional": [
+      "FLINT_SANDBOX_ID",
+      "IDENTITY_DATABASE_PATH",
+      "APP_DATABASE_PATH",
+      "SESSION_COOKIE_NAME",
+      "STOREFRONT_ORIGIN",
+      "CUSTOMER_SESSION_TTL_SECONDS",
+      "STORE_NAME"
+    ]
+  },
+  "ci": {
+    "check": true,
+    "integration": "nightly",
+    "browser": "nightly",
+    "e2e": "none"
+  }
+}

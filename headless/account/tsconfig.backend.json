@@ -1,0 +1,23 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/app.ts",
+    "src/server.ts",
+    "src/config.ts",
+    "src/flint/**/*.ts",
+    "src/identity/**/*.ts",
+    "src/store/**/*.ts",
+    "src/security/**/*.ts",
+    "src/payments/**/*.ts",
+    "scripts/**/*.ts",
+    "tests/unit/**/*.ts",
+    "tests/integration/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ],
+  "compilerOptions": {
+    "checkJs": false,
+    "allowJs": true
+  }
+}

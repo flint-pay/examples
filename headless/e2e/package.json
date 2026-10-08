@@ -1,0 +1,35 @@
+{
+  "name": "@flintpay/examples-headless-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "check": "tsc --noEmit && node scripts/check.ts",
+    "test": "node --test tests/unit/*.test.ts",
+    "fixtures:check": "node scripts/fixtures.ts --check",
+    "fixtures": "node scripts/fixtures.ts",
+    "apps": "node scripts/apps.ts",
+    "e2e": "node scripts/e2e.ts",
+    "browser:staging": "node scripts/single-app.ts"
+  },
+  "dependencies": {
+    "@axe-core/playwright": "4.10.2",
+    "@flintpay/node": "3.0.0-beta.20261007031000",
+    "@playwright/test": "1.56.1",
+    "domutils": "3.2.2",
+    "htmlparser2": "10.0.0",
+    "imapflow": "1.0.195",
+    "mailparser": "3.7.4"
+  },
+  "devDependencies": {
+    "@types/mailparser": "3.4.6",
+    "@types/node": "24.10.0",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "playwright-core": "1.56.1"
+  }
+}

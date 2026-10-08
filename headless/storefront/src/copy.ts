@@ -1,0 +1,583 @@
+// All buyer-facing strings for the storefront live here so reviewers and the
+// punctuation check see them in one place. Flat `messages` are also embedded in
+// the checkout page so public/js can show the same text without a second copy.
+
+export type Params = Record<string, string | number | undefined>;
+
+export function fill(template: string, params: Params = {}): string {
+  return template.replace(/\{(\w+)\}/g, (whole, key: string) => {
+    const value = params[key];
+    return value === undefined ? whole : String(value);
+  });
+}
+
+export type Tone = 'info' | 'success' | 'warning' | 'error';
+
+export const messages = {
+  // Generic and transport failures
+  generic_error: 'Something went wrong on our side. Try again.',
+  reference_id: 'Reference ID {id}',
+  rate_limited: 'That was too many tries in a short time. Wait a minute, then try again.',
+  session_ended: 'Your session ended. Sign in again to continue.',
+  unavailable: 'This is unavailable right now. Try again in a minute.',
+  not_found: "We couldn't find that.",
+  unknown_outcome: "We're still checking what happened. Don't pay again yet. Check again in a moment.",
+  network_error: "We couldn't reach the store. Check your connection, then try again.",
+
+  // Codes the app reports, lower case
+  invalid_sign_in: 'Email or password is incorrect.',
+  email_already_registered: 'An account already uses this email. Sign in instead.',
+  invalid_email: 'Enter a valid email address.',
+  invalid_input: 'Check what you entered and try again.',
+  invalid_phone: 'Enter a valid phone number, or leave it blank.',
+  invalid_tip: 'Enter a tip amount in dollars, like 3.50.',
+  invalid_quantity: 'Choose a quantity from 1 to 20.',
+  invalid_delivery_selection: 'Choose a delivery option.',
+  customer_already_bound: 'This email is already connected to another account.',
+  csrf_token_rejected: 'Your session expired. Reload the page and try again.',
+  csrf_origin_rejected: 'Your session expired. Reload the page and try again.',
+  product_unavailable: "That product isn't available right now.",
+  cart_empty: 'Your cart is empty. Browse coffee and gear to get started.',
+  cart_reconciliation_required: 'Your payment is still being confirmed. You can change your cart after it finishes.',
+  action_reconciliation_required: 'We are still finishing your last change. Wait a moment, then try again.',
+  action_body_mismatch: 'We are still finishing your last change. Wait a moment, then try again.',
+  checkout_payment_resolving: 'Your payment is still being confirmed. You can change your cart after it finishes.',
+  payment_attempt_in_progress: 'Your payment is still being confirmed. You can change your cart after it finishes.',
+  payment_source_required: 'Enter your payment details to pay.',
+  setup_payment_source_required: 'Enter your payment details to start the trial.',
+  unknown_payment_outcome: "We're still checking what happened. Don't pay again yet. Check again in a moment.",
+  gift_card_allocation_changed: 'Your gift card balance changed. Check the amounts, then confirm.',
+  gift_card_changed: 'Your gift card balance changed. Check the amounts, then confirm.',
+  delivery_requoted: 'Delivery prices changed. Choose an updated option.',
+  settlement_discount: 'Your discounts cover this order. Nothing will be charged.',
+  settlement_gift_card: 'Your gift card covers this order. {gift_card_money} will come off your gift card balance.',
+  gift_card_split: 'Gift card: {gift_card_money}. Card or other payment: {processor_money}.',
+  receipt_just_sent: 'We just sent a receipt. Check your inbox.',
+
+  // Cart
+  added_to_cart: 'Added to cart',
+  cart_locked_payment: 'Your payment is still being confirmed. You can change your cart after it finishes.',
+  cart_quantity_invalid: 'Choose a quantity from 1 to 20.',
+  cart_line_missing: 'That item is no longer in your cart.',
+  checkout_start_failed: "We couldn't start checkout. Try again.",
+  automatic_tax_connection_required:
+    "Automatic tax isn't connected for this sandbox. Connect it in the Flint dashboard, then check out again.",
+  fulfillment_method_assignment_unsatisfiable:
+    "Delivery isn't set up for this sandbox. Run npm run setup -- --apply in headless/storefront, then check out again.",
+  fulfillment_method_unavailable:
+    "Delivery isn't set up for this sandbox. Run npm run setup -- --apply in headless/storefront, then check out again.",
+
+  // Checkout notices
+  checkout_refreshed: 'Your checkout was refreshed. Choose delivery again if asked, then check the total before you pay.',
+  delivery_released: 'Your discount changed the order, so choose delivery again.',
+  total_changed: 'Your total changed to {amount}. Check it, then pay.',
+  finishing_payment: "We're finishing your payment. Don't close this page.",
+  still_confirming: "Your payment is taking longer than usual to confirm. Check again in a moment. You won't be charged twice.",
+  checkout_expired: 'This checkout expired. Your cart is saved.',
+  payments_unavailable: "Payments aren't available right now. Contact {store} for help.",
+  affirm_incomplete: "Your Affirm application isn't finished. Continue with Affirm or choose another way to pay.",
+  signed_in_mid_checkout: "You're signed in. This checkout continues as a guest, and the order will show in your account after you pay.",
+  bug_checkout: "Checkout hit a problem we can't fix here. Contact {store} and share the reference ID.",
+
+  // Contact
+  contact_name_required: 'Enter your full name.',
+  contact_email_required: 'Enter your email address.',
+  contact_email_invalid: 'Enter a valid email address.',
+  contact_phone_invalid: 'Enter a valid phone number, or leave it blank.',
+  contact_phone_required: 'Add a phone number for delivery updates.',
+  contact_signed_in_as: 'Signed in as {email}',
+  returning_code_email: 'Enter the code we emailed to {email}',
+  returning_code_sms: 'Enter the code Flint Pay texted to ••• {digits}',
+  returning_code_invalid: "That code isn't right. Use the latest code or skip.",
+  customer_verification_code_invalid: "That code isn't right. Use the code from the latest email, or send a new one.",
+  customer_verification_expired: 'That code expired. Send a new code.',
+  customer_verification_rate_limited: 'Too many codes were sent. Wait a few minutes, then send a new code.',
+  customer_verification_unavailable: "We can't send or check codes right now. Try again in a few minutes.",
+  invalid_customer_account_request: 'Your email changed while confirming. Send a new code.',
+
+  // Discount
+  discount_invalid: "That code can't be used on this order.",
+  discount_required: 'Enter a discount code.',
+
+  // Gift cards
+  gift_card_unavailable: "That gift card code isn't valid for this order. Check the code and try again.",
+  gift_card_challenge_required: "We can't check gift card codes right now. Try again later, or pay another way.",
+  invalid_gift_card_selection: 'You can use up to 20 gift cards on one order.',
+  gift_card_apply_again: 'Your order changed. Apply the gift card again.',
+  gift_card_required: 'Enter a gift card code.',
+
+  // Tip
+  tip_invalid: 'Enter a tip amount in dollars, like 3.50.',
+
+  // Delivery
+  delivery_prices_changed: 'Delivery prices changed. Choose an updated option.',
+  delivery_phone_needed: 'Add a phone number for delivery updates.',
+  delivery_unavailable: "We can't deliver to this address. Try another address or pick up at the roastery.",
+  pickup_none_nearby: 'No pickup locations near {postal_code}. Try another ZIP code or ship to an address.',
+  delivery_address_incomplete: 'Enter the full address to see delivery options.',
+  delivery_postal_code_required: 'Enter a 5-digit postal code.',
+  delivery_choice_required: 'Choose a delivery option.',
+  delivery_service_unavailable: "Delivery options aren't loading right now. Try again.",
+  delivery_selection_required: 'Choose a delivery option to continue.',
+  fulfillment_selection_required: 'Choose a delivery option to continue.',
+  delivery_recipient_required: 'Add a phone number for delivery updates.',
+  delivery_quote_expired: 'Delivery prices changed. Choose an updated option.',
+  delivery_quote_stale: 'Delivery prices changed. Choose an updated option.',
+
+  // Payment blockers (shown as text below the Pay button)
+  contact_email_missing: 'Enter your email address to pay.',
+  delivery_selection_missing: 'Choose a delivery option to pay.',
+  delivery_input_required: 'Add the missing delivery details to pay.',
+  elements_incomplete: 'Finish your payment details to pay.',
+  sections_locked: "Changes are paused until your payment finishes confirming.",
+  attempt_open:'Your payment is still being confirmed.',
+  session_not_open: "This checkout isn't open.",
+  total_changed_blocker: 'Check the new total, then pay.',
+
+  // Payment errors by Flint code (lower case)
+  payment_source_unavailable: 'This payment method was already used. Enter your details again.',
+  payment_action_window_too_short: 'Affirm needs more time than this checkout has left. Pay by card, or start checkout again.',
+  ach_billing_details_required: 'Enter your full name and email to pay from a bank account.',
+  payment_option_unavailable: "That payment method isn't available for this order. Choose another.",
+  payment_option_not_allowed: "That payment method isn't available for this order. Choose another.",
+  save_payment_method_failed: "We couldn't save this card. Your payment wasn't affected.",
+  payment_processing_unavailable: 'Payments are briefly unavailable. Try again in a minute.',
+  checkout_recovery_restricted: "We're finishing your payment. Don't close this page.",
+  payment_attempt_still_processing: 'Your payment is still being confirmed. Check again in a moment.',
+  stripe_error_generic: "Your payment couldn't be processed. Check your details and try again.",
+  stripe_not_loaded: "Payment form didn't load. Reload the page, or disable content blockers for this site.",
+
+  // Declines (keys match Flint failure codes)
+  incorrect_cvc: "The security code doesn't match. Check it and try again.",
+  expired_card: 'This card has expired. Check the date or use another card.',
+  payment_method_unavailable: 'Check your card details, or use another card.',
+  processing_error: "Your payment couldn't be processed. Try again in a moment.",
+  payment_method_temporarily_unavailable: "Your payment couldn't be processed. Try again in a moment.",
+  authentication_required: "Your payment wasn't completed. Try again.",
+  payment_not_completed: "Your payment wasn't completed. Try again.",
+  payment_action_expired: "Your payment wasn't completed. Try again.",
+  payment_method_declined: "Affirm didn't approve this purchase. Pay another way.",
+  bank_account_closed: "Your bank couldn't complete this payment. Use another bank account or pay by card.",
+  bank_account_not_found: "Your bank couldn't find this account. Check the account and routing numbers, or pay by card.",
+  bank_debit_not_authorized: "Your bank couldn't complete this payment. Use another bank account or pay by card.",
+  bank_account_restricted: "Your bank couldn't complete this payment. Use another bank account or pay by card.",
+  bank_debit_limit_exceeded: "Your bank couldn't complete this payment. Use another bank account or pay by card.",
+  decline_default: 'Your payment was declined. Try another card or payment method.',
+
+  // Partial payment
+  pay_remaining: 'We took {paid}. The remaining {remaining} did not go through. Pay the remaining amount to finish.',
+
+  // Receipt
+  order_receipt_recipient_limit_reached: "We can't send more receipts for this order. Contact us for a copy.",
+  receipt_recently_sent: 'We just sent a receipt. Check your inbox.',
+  receipt_sent: 'We emailed your receipt to {email}.',
+
+  // Identity
+  signed_out: "You're signed out.",
+  email_confirmed: 'Your email is confirmed.',
+  email_confirmed_linked: 'Your email is confirmed. We added {n} earlier orders to your account.',
+  verification_sent: 'We emailed a 6-digit code to {email}.',
+  sign_in_failed: 'Email or password is incorrect.',
+  account_closed: 'This account was closed.',
+  email_already_used: 'An account already uses this email. Sign in instead.',
+  email_connected_elsewhere: 'This email is already connected to another account.',
+  name_required: 'Enter your name.',
+  email_required: 'Enter your email address.',
+  email_invalid: 'Enter a valid email address.',
+  password_required: 'Enter your password.',
+  password_too_short: 'Use at least 10 characters.',
+  code_required: 'Enter the 6-digit code.',
+} as const;
+
+export type MessageKey = keyof typeof messages;
+
+const tones: Partial<Record<string, Tone>> = {
+  added_to_cart: 'success',
+  signed_out: 'success',
+  email_confirmed: 'success',
+  email_confirmed_linked: 'success',
+  verification_sent: 'info',
+  receipt_sent: 'success',
+  receipt_recently_sent: 'info',
+  checkout_refreshed: 'info',
+  delivery_released: 'info',
+  total_changed: 'warning',
+  finishing_payment: 'info',
+  still_confirming: 'warning',
+  checkout_expired: 'warning',
+  payments_unavailable: 'warning',
+  affirm_incomplete: 'warning',
+  signed_in_mid_checkout: 'info',
+  cart_locked_payment: 'warning',
+  delivery_requoted: 'warning',
+  gift_card_changed: 'warning',
+  cart_reconciliation_required: 'warning',
+  action_reconciliation_required: 'warning',
+  automatic_tax_connection_required: 'warning',
+  fulfillment_method_assignment_unsatisfiable: 'warning',
+  fulfillment_method_unavailable: 'warning',
+};
+
+export function toneFor(key: string): Tone {
+  return tones[key] ?? 'error';
+}
+
+export function hasMessage(key: string): key is MessageKey {
+  return Object.hasOwn(messages, key);
+}
+
+export function message(key: string, params: Params = {}): string {
+  const template = hasMessage(key) ? messages[key] : messages.generic_error;
+  return fill(template, params);
+}
+
+/** Notices arrive as copy keys. `key:value` carries one parameter, for example `email_confirmed_linked:3`. */
+export function parseNotice(raw: string): { key: string; param?: string } {
+  const at = raw.indexOf(':');
+  return at === -1 ? { key: raw } : { key: raw.slice(0, at), param: raw.slice(at + 1) };
+}
+
+const kindFallback: Record<string, string> = {
+  rate_limited: 'rate_limited',
+  auth: 'session_ended',
+  unavailable: 'unavailable',
+  unknown_outcome: 'unknown_outcome',
+  not_found: 'not_found',
+};
+
+/** Resolves the copy key for a backend error: exact key, then Flint code, then error kind. */
+export function errorKey(error: { kind?: string; code?: string; message_key?: string } | undefined | null): string {
+  if (!error) return 'generic_error';
+  for (const candidate of [error.message_key, error.code?.toLowerCase()]) {
+    if (candidate && hasMessage(candidate)) return candidate;
+  }
+  if (error.code?.toLowerCase().startsWith('save_payment_method_')) return 'save_payment_method_failed';
+  return (error.kind && kindFallback[error.kind]) || 'generic_error';
+}
+
+export function declineMessage(code: string | undefined | null): string {
+  const key = (code ?? '').toLowerCase();
+  return hasMessage(key) && key in declineKeys ? messages[key] : messages.decline_default;
+}
+
+const declineKeys: Record<string, true> = {
+  incorrect_cvc: true,
+  expired_card: true,
+  payment_method_unavailable: true,
+  processing_error: true,
+  payment_method_temporarily_unavailable: true,
+  authentication_required: true,
+  payment_not_completed: true,
+  payment_action_expired: true,
+  payment_method_declined: true,
+  bank_account_closed: true,
+  bank_account_not_found: true,
+  bank_debit_not_authorized: true,
+  bank_account_restricted: true,
+  bank_debit_limit_exceeded: true,
+};
+
+/** Browser-side copy: the checkout page embeds this record as JSON. */
+export const browserMessages: Record<string, string> = { ...messages };
+
+export const copy = {
+  testBanner: 'Test mode: payments use Stripe test cards and no money moves.',
+  skipLink: 'Skip to main content',
+  nav: {
+    label: 'Main',
+    shop: 'Shop',
+    club: 'Coffee club',
+    cartName: 'Cart, {count} items',
+    cartNameOne: 'Cart, 1 item',
+    account: 'Your account',
+    signIn: 'Sign in',
+    signOut: 'Sign out',
+    signedInAs: 'Signed in as {name}',
+  },
+  footer: {
+    note: 'Cedar & Stone is a fictional coffee roaster used to show a Flint Pay integration.',
+    emailNote: 'Emails from Flint Pay show the business name of the test sandbox, which can differ from this store.',
+  },
+  home: {
+    heroTitle: 'Small-batch coffee, roasted in Austin.',
+    heroBody: 'Order beans and brewing gear, or join the coffee club for a delivery every month.',
+    shopHeading: 'Shop',
+    clubHeading: 'Coffee club',
+    clubBody: 'Fresh coffee on a schedule. Cancel anytime from your account.',
+    subscribe: 'Subscribe',
+    trialNote: '{days}-day free trial',
+    from: 'From {price}',
+    perInterval: '{price} every {count} {unit}',
+    perIntervalOne: '{price} every {unit}',
+    afterTrial: '{price} every {unit} after {days} days',
+    afterTrialMany: '{price} every {count} {unit} after {days} days',
+    setupNeededTitle: 'Set up the sample store',
+    setupNeededBody: 'Run npm run setup -- --apply in headless/storefront to create the sample catalog in this sandbox.',
+    errorBody: "We couldn't load the shop. Try again.",
+    tryAgain: 'Try again',
+    cardsNotReady: "This sandbox can't take card payments yet. Check accept_card_payments in your Flint capabilities.",
+    setupNeededBanner: 'Setup needed',
+    viewProduct: 'View {name}',
+  },
+  product: {
+    price: 'Price',
+    variant: 'Variant',
+    quantity: 'Quantity',
+    addToCart: 'Add to cart',
+    inCart: 'View cart',
+    notFoundTitle: "We couldn't find that product.",
+    notFoundBody: 'It may have been removed. Browse the rest of the shop.',
+    backToShop: 'Back to the shop',
+    errorBody: "We couldn't load this product. Try again.",
+    tryAgain: 'Try again',
+    unavailable: 'This product is not available right now.',
+    addedStatusLabel: 'Cart status',
+  },
+  cart: {
+    title: 'Your cart',
+    item: 'Item',
+    unitPrice: 'Price',
+    quantity: 'Quantity',
+    lineTotal: 'Total',
+    update: 'Update',
+    remove: 'Remove',
+    removeLabel: 'Remove {name} from your cart',
+    updateLabel: 'Update quantity for {name}',
+    subtotal: 'Subtotal before delivery, discounts, and tax',
+    checkOut: 'Check out',
+    returnToPayment: 'Return to your payment',
+    emptyBody: 'Your cart is empty. Browse coffee and gear to get started.',
+    shop: 'Shop',
+    summary: 'Cart summary',
+    lockedBody: 'Quantities and items are locked until your payment is confirmed.',
+  },
+  subscribe: {
+    title: 'Join the coffee club',
+    confirmLead: 'Review the plan, then continue to payment.',
+    plan: 'Plan',
+    billing: 'Billing',
+    continue: 'Continue to payment',
+    notFoundTitle: "We couldn't find that plan.",
+    notFoundBody: 'Browse the plans on the home page.',
+    errorBody: "We couldn't load this plan. Try again.",
+    backToClub: 'Back to the coffee club',
+    cancelNote: 'Cancel anytime from your account.',
+  },
+  checkout: {
+    title: 'Checkout',
+    subscriptionTitle: 'Subscribe',
+    noscript: 'Checkout needs JavaScript to take your payment. Turn it on for this site, then reload.',
+    orderSummary: 'Order summary',
+    orderTotal: 'Order total {amount}',
+    contactHeading: 'Contact',
+    fullName: 'Full name',
+    email: 'Email',
+    phone: 'Phone (optional)',
+    phoneDelivery: 'Phone',
+    phoneHint: 'Used only for delivery updates.',
+    emailLocked: 'You can change your email in your account.',
+    returningSkip: 'Skip',
+    returningEmailInstead: 'Email the code instead',
+    returningConfirm: 'Confirm code',
+    returningCode: 'Code',
+    discountHeading: 'Discount',
+    discountCode: 'Discount code',
+    discountApply: 'Apply',
+    discountApplied: 'Applied discounts',
+    discountRemove: 'Remove',
+    discountRemoveLabel: 'Remove discount {name}',
+    deliveryHeading: 'Delivery',
+    deliveryModeLegend: 'How do you want to get your order?',
+    modeShip: 'Ship to an address',
+    modePickup: 'Pick up at the roastery',
+    recipientName: 'Recipient name',
+    line1: 'Address line 1',
+    line2: 'Address line 2 (optional)',
+    city: 'City',
+    state: 'State',
+    postalCode: 'Postal code',
+    country: 'Country',
+    countryUs: 'United States',
+    showDeliveryOptions: 'Show delivery options',
+    findPickup: 'Find pickup locations',
+    pickupSelect: 'Pick up here',
+    pickupPostal: 'Postal code near you',
+    optionsLegend: 'Delivery options',
+    pickupLegend: 'Pickup locations',
+    groupLegend: 'Choose one option',
+    groupLegendItems: 'Choose one for {items}',
+    arrives: 'Arrives {earliest} to {latest}',
+    arrivesOn: 'Arrives {date}',
+    free: 'Free',
+    choose: 'Use this option',
+    chooseAll: 'Use these options',
+    selectedHeading: 'Selected',
+    change: 'Change',
+    pickupAt: 'Pick up at {name}',
+    shipTo: 'Ship to {name}, {address}',
+    giftCardHeading: 'Gift card',
+    giftCardCode: 'Gift card code',
+    giftCardApply: 'Apply',
+    giftCardApplied: 'Applied gift cards',
+    giftCardEnding: 'Gift card ending {last}',
+    giftCardRemove: 'Remove',
+    giftCardRemoveLabel: 'Remove gift card ending {last}',
+    giftCardAmount: 'Applied {amount}',
+    tipHeading: 'Tip',
+    tipLegend: 'Add a tip for the roastery',
+    tipNone: 'No tip',
+    tipCustom: 'Custom amount',
+    tipCustomLabel: 'Tip amount in dollars',
+    tipApply: 'Apply tip',
+    paymentHeading: 'Payment',
+    savedLegend: 'Saved payment methods',
+    savedMethod: '{brand} ending {last4}, expires {month}/{year}',
+    useNewMethod: 'Use a new payment method',
+    walletsLabel: 'Pay with a digital wallet',
+    orPayWithCard: 'Or pay another way',
+    paymentElementLabel: 'Payment details',
+    saveCard: 'Save my details for faster checkout at {store}',
+    saveCardConsent: 'We store this payment method with Flint Pay so you can use it next time. You can remove it any time.',
+    savePhone: 'Mobile phone number to confirm your saved card (optional)',
+    savePhoneHint: 'US or Canada numbers only.',
+    payOrder: 'Pay {amount}',
+    paySubscription: 'Subscribe for {amount}',
+    payTrial: 'Start free trial',
+    payConfirmOrder: 'Confirm order',
+    payBusy: 'Working',
+    tryAgainButton: 'Try again',
+    viewConfirmation: 'View confirmation',
+    continueAffirm: 'Continue with Affirm',
+    payAnotherWay: 'Pay another way',
+    checkAgain: 'Check again',
+    startAgain: 'Start again',
+    returnToCart: 'Return to your cart',
+    subscriptionTerms: '{total} every {count} {unit}, before tax.',
+    subscriptionTermsOne: '{total} every {unit}, before tax.',
+    trialTerms: '{days}-day free trial.',
+    cancelNote: 'Cancel anytime from your account.',
+    contractTerm: '{months}-month contract.',
+    earlyTerminationFee: 'Ending the contract early costs {fee}.',
+    affirmMessaging: 'Pay over time with Affirm on orders of $50 or more.',
+    stateLoading: 'Loading payment form',
+    stateUnavailable: "Payments aren't available right now.",
+    stateWaiting: 'Confirming your payment',
+    stateAuthenticating: 'Complete the verification from your bank or card issuer',
+    stateResuming: 'Finishing your payment',
+    stateBankProcessing: 'Your bank payment is processing',
+    stateRecovery: 'Finishing your payment',
+    stateExpired: 'This checkout expired',
+    supportHeading: 'Need help?',
+    supportContact: 'Contact {store}',
+    subtotal: 'Subtotal',
+    discounts: 'Discounts',
+    delivery: 'Delivery and other charges',
+    tip: 'Tip',
+    tax: 'Tax',
+    taxPending: 'Calculated after you choose delivery',
+    total: 'Total',
+    giftCards: 'Gift cards applied',
+    amountDue: 'Amount due now',
+    paid: 'Paid',
+    quantity: 'Qty {n}',
+    freeTrialLine: 'Free for {days} days',
+    liveRegionLabel: 'Checkout updates',
+    sectionStep: 'Step {n}',
+    errorSummary: 'Fix these to continue',
+    summaryLines: 'Items',
+    supportEmail: 'Email {email}',
+    supportPhone: 'Call {phone}',
+    supportWebsite: 'Visit {url}',
+    dialogTitle: 'Pay another way?',
+    dialogBody: 'This stops your Affirm application. You can pick a different payment method next.',
+    dialogConfirm: 'Stop Affirm and pay another way',
+    dialogCancel: 'Keep Affirm',
+  },
+  returnElsewhere: {
+    title: "We couldn't find your checkout",
+    body: "We couldn't find your checkout in this browser. If you were paying with Affirm, go back to the browser where you started. We'll email your receipt when the payment is confirmed.",
+    home: 'Back to the shop',
+  },
+  complete: {
+    paidTitle: 'Order confirmed',
+    orderNumber: 'Order number',
+    items: 'Items',
+    deliveryTo: 'Delivery',
+    pickupAt: 'Pickup',
+    amounts: 'Amounts',
+    emailReceipt: 'Email my receipt',
+    receiptHint: 'We send it to the email you used at checkout.',
+    trackOrder: 'Track this order in your account',
+    createAccount: 'Create an account to track this order',
+    continueShopping: 'Keep shopping',
+    flintSignal: 'Payment confirmed by Flint',
+    bankTitle: 'Your bank payment is processing',
+    bankBody: "Bank payments take a few business days to clear. We'll email your receipt when it clears. You can close this page.",
+    activeTitle: "You're subscribed",
+    trialTitle: 'Your free trial has started',
+    plan: 'Plan',
+    status: 'Status',
+    nextCharge: 'Next charge',
+    trialEnds: 'Trial ends',
+    firstCharge: 'First charge',
+    paymentMethod: 'Payment method',
+    cardEnding: '{brand} ending {last4}',
+    manage: 'Manage your subscription in your account',
+    confirmingTitle: "We're confirming your payment.",
+    confirmingBody: 'Your confirmation updates on its own. It can take up to a minute.',
+    checkAgain: 'Check again',
+    partialTitle: 'Part of your payment is still due',
+    partialBody: 'We received {paid}. {remaining} is still due.',
+    partialSupport: 'Contact {store} to finish paying for this order.',
+    subscriptionPending: 'We are setting up your subscription. Check again in a moment.',
+    statusActive: 'Active',
+    statusTrialing: 'Free trial',
+    statusOther: '{status}',
+    paidAmount: 'Paid',
+    paidWithGiftCard: 'Paid with gift card',
+    coveredByDiscounts: 'Covered by discounts',
+  },
+  identity: {
+    signInTitle: 'Sign in',
+    signInLead: 'Sign in to check out faster and see your orders.',
+    email: 'Email',
+    password: 'Password',
+    passwordHint: 'At least 10 characters.',
+    signInButton: 'Sign in',
+    noAccount: 'New here?',
+    createAccountLink: 'Create an account',
+    signUpTitle: 'Create an account',
+    signUpLead: 'Your account connects your orders and saved details.',
+    name: 'Name',
+    signUpButton: 'Create account',
+    haveAccount: 'Already have an account?',
+    signInLink: 'Sign in',
+    verifyTitle: 'Confirm your email',
+    verifyIdle: "We'll email a code to {email} to connect your orders to this account.",
+    verifyCodeSent: 'We emailed a 6-digit code to {email}.',
+    sendCode: 'Send code',
+    code: '6-digit code',
+    confirm: 'Confirm',
+    sendNewCode: 'Send a new code',
+    resendWait: 'You can send a new code in {seconds} seconds.',
+    resendReady: 'You can send a new code now.',
+    useDifferentAccount: 'Use a different account',
+    errorSummary: 'Fix these to continue',
+  },
+  errors: {
+    notFoundTitle: 'Page not found',
+    notFound: "We couldn't find that page.",
+    notFoundLink: 'Go to the shop',
+    serverTitle: 'Something went wrong',
+    server: 'Something went wrong on our side. Try again.',
+    serverLink: 'Back to the shop',
+    cartLink: 'Your cart',
+  },
+} as const;
+
+/** Unit words for billing intervals (Flint `billing_interval` values). */
+export function intervalUnit(interval: string, count: number): string {
+  const base: Record<string, string> = { day: 'day', week: 'week', month: 'month', year: 'year' };
+  const word = base[interval] ?? interval;
+  return count === 1 ? word : `${word}s`;
+}

@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "kind": "example",
+  "id": "headless/storefront",
+  "area": "headless",
+  "title": "Headless storefront",
+  "summary": "A merchant-owned catalog, cart, and embedded checkout with delivery, pickup, discounts, gift cards, tips, saved cards, wallets, ACH debit, Affirm, and subscription signup.",
+  "language": "typescript",
+  "runtime": {
+    "node": ">=24"
+  },
+  "status": "beta",
+  "status_note": "Uses the @flintpay/node 3.0.0 beta.",
+  "guides": [
+    {
+      "title": "Build your own checkout",
+      "url": "https://developers.withflintpay.com/docs/guides/headless-checkout"
+    },
+    {
+      "title": "Securing a headless checkout",
+      "url": "https://developers.withflintpay.com/docs/guides/headless-checkout-security"
+    },
+    {
+      "title": "Declines and payment attempts",
+      "url": "https://developers.withflintpay.com/docs/guides/declines-and-payment-attempts"
+    },
+    {
+      "title": "Build a headless storefront",
+      "url": "https://developers.withflintpay.com/docs/guides/headless-storefront"
+    }
+  ],
+  "requires": {
+    "flint_sdk": {
+      "package": "@flintpay/node",
+      "version": "3.0.0-beta.20261007031000"
+    },
+    "stripe_js": true,
+    "stripe_test_mode": true,
+    "sandbox": "dedicated",
+    "second_sandbox": false,
+    "customer_account_mode": "any",
+    "webhooks": "optional",
+    "inbox": "optional",
+    "capabilities": [
+      {
+        "name": "accept_card_payments",
+        "required": true
+      },
+      {
+        "name": "accept_affirm_payments",
+        "required": false
+      }
+    ],
+    "sandbox_setup": [
+      {
+        "id": "ach_debit",
+        "required": false,
+        "how": "Ask Flint support to activate ACH debit for the sandbox"
+      },
+      {
+        "id": "automatic_tax_connection",
+        "required": false,
+        "how": "Connect automatic tax for the sandbox in the dashboard"
+      }
+    ]
+  },
+  "commands": {
+    "install": "npm ci",
+    "setup": "npm run setup -- --apply",
+    "dev": "npm run dev",
+    "check": "npm run check",
+    "test": "npm test",
+    "test_integration": "npm run test:integration",
+    "test_browser": "npm run test:browser"
+  },
+  "ports": [
+    4100
+  ],
+  "env": {
+    "file": ".env.example",
+    "required": [
+      "FLINT_API_KEY",
+      "FLINT_API_BASE_URL",
+      "APP_ORIGIN",
+      "PORT"
+    ],
+    "optional": [
+      "FLINT_SANDBOX_ID",
+      "FLINT_WEBHOOK_SECRET",
+      "IDENTITY_DATABASE_PATH",
+      "APP_DATABASE_PATH",
+      "SESSION_COOKIE_NAME",
+      "ACCOUNT_APP_ORIGIN",
+      "CHECKOUT_SESSION_TTL_SECONDS",
+      "STORE_NAME"
+    ]
+  },
+  "ci": {
+    "check": true,
+    "integration": "nightly",
+    "browser": "nightly",
+    "e2e": "none"
+  }
+}

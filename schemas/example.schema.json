@@ -1,0 +1,362 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Flint example manifest",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "enum": [
+        "example",
+        "e2e"
+      ]
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*(?:/[a-z0-9]+(?:-[a-z0-9]+)*)+$"
+    },
+    "area": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "language": {
+      "const": "typescript"
+    },
+    "runtime": {
+      "type": "object",
+      "properties": {
+        "node": {
+          "const": ">=24"
+        }
+      },
+      "required": [
+        "node"
+      ],
+      "additionalProperties": false
+    },
+    "status": {
+      "enum": [
+        "stable",
+        "beta"
+      ]
+    },
+    "status_note": {
+      "type": "string"
+    },
+    "guides": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          }
+        },
+        "required": [
+          "title",
+          "url"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "covers": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "requires": {
+      "type": "object",
+      "required": [
+        "flint_sdk",
+        "stripe_js",
+        "stripe_test_mode",
+        "sandbox",
+        "second_sandbox",
+        "customer_account_mode",
+        "webhooks",
+        "inbox",
+        "capabilities",
+        "sandbox_setup"
+      ],
+      "properties": {
+        "flint_sdk": {
+          "type": "object",
+          "required": [
+            "package",
+            "version"
+          ],
+          "properties": {
+            "package": {
+              "const": "@flintpay/node"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "stripe_js": {
+          "type": "boolean"
+        },
+        "stripe_test_mode": {
+          "const": true
+        },
+        "sandbox": {
+          "enum": [
+            "any",
+            "dedicated"
+          ]
+        },
+        "second_sandbox": {
+          "type": "boolean"
+        },
+        "customer_account_mode": {
+          "enum": [
+            "any",
+            "merchant_hosted",
+            "flint_hosted"
+          ]
+        },
+        "webhooks": {
+          "enum": [
+            "none",
+            "optional",
+            "required"
+          ]
+        },
+        "inbox": {
+          "enum": [
+            "none",
+            "optional",
+            "required"
+          ]
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "required"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "required": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "sandbox_setup": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "required",
+              "how"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "required": {
+                "type": "boolean"
+              },
+              "how": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "commands": {
+      "type": "object",
+      "required": [
+        "install",
+        "setup",
+        "dev",
+        "check",
+        "test"
+      ],
+      "properties": {
+        "install": {
+          "type": "string"
+        },
+        "setup": {
+          "type": "string"
+        },
+        "dev": {
+          "type": "string"
+        },
+        "check": {
+          "type": "string"
+        },
+        "test": {
+          "type": "string"
+        },
+        "test_integration": {
+          "type": "string"
+        },
+        "test_browser": {
+          "type": "string"
+        },
+        "e2e": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ports": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 65535
+      }
+    },
+    "env": {
+      "type": "object",
+      "required": [
+        "file",
+        "required",
+        "optional"
+      ],
+      "properties": {
+        "file": {
+          "const": ".env.example"
+        },
+        "required": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]*$"
+          }
+        },
+        "optional": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]*$"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "ci": {
+      "type": "object",
+      "required": [
+        "check",
+        "integration",
+        "browser",
+        "e2e"
+      ],
+      "properties": {
+        "check": {
+          "const": true
+        },
+        "integration": {
+          "enum": [
+            "none",
+            "nightly"
+          ]
+        },
+        "browser": {
+          "enum": [
+            "none",
+            "nightly"
+          ]
+        },
+        "e2e": {
+          "enum": [
+            "none",
+            "nightly"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "kind",
+    "id",
+    "area",
+    "title",
+    "summary",
+    "language",
+    "runtime",
+    "status",
+    "guides",
+    "requires",
+    "commands",
+    "ports",
+    "env",
+    "ci"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "beta"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "required": [
+          "status_note"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "e2e"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "required": [
+          "covers"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,230 @@
+name: Examples
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 7 * * *'
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Acceptance suite
+        type: choice
+        options: [standard, extended]
+        default: standard
+
+permissions:
+  contents: read
+
+# All staging suites use the same sandbox pair. Serialize complete workflows,
+# then jobs and matrix entries, so queued entries cannot replace each other.
+concurrency:
+  group: examples-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      static: ${{ steps.matrix.outputs.static }}
+      integration: ${{ steps.matrix.outputs.integration }}
+      browser: ${{ steps.matrix.outputs.browser }}
+      e2e: ${{ steps.matrix.outputs.e2e }}
+      has-integration: ${{ steps.matrix.outputs.has-integration }}
+      has-browser: ${{ steps.matrix.outputs.has-browser }}
+      has-e2e: ${{ steps.matrix.outputs.has-e2e }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - id: matrix
+        run: node scripts/examples-matrix.mjs --github-output
+
+  repo-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: jdx/mise-action@v2
+        with:
+          install: false
+      - run: node scripts/check-publication.mjs --head
+      - run: node --test scripts/*.test.mjs
+      - run: node scripts/validate-manifests.mjs
+      - run: node scripts/generate-index.mjs --check
+      - run: node scripts/check-identity-copies.mjs
+      - run: node scripts/check-punctuation.mjs
+
+  static:
+    needs: discover
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.static) }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ${{ matrix.id }}/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run build --if-present
+      - name: Local injected account integration
+        if: matrix.id == 'headless/account'
+        run: npm run test:integration
+
+  integration:
+    needs: [discover, repo-checks, static]
+    if: >-
+      github.repository == 'flint-pay/examples' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+      needs.discover.outputs.has-integration == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.discover.outputs.integration) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ${{ matrix.id }}/package-lock.json
+      - run: node scripts/check-staging-event.mjs
+      - run: npm ci
+        working-directory: headless/storefront
+      - run: npm ci
+        working-directory: headless/account
+      - run: npm ci
+        working-directory: headless/e2e
+      - run: node scripts/prepare-staging-context.mjs
+        env:
+          E2E_FIXTURE_JSON: ${{ secrets.FLINT_E2E_FIXTURE_JSON }}
+      - run: node scripts/run-staging-check.mjs "$EXAMPLE_DIRECTORY" test:integration
+        env: &staging-environment
+          EXAMPLE_DIRECTORY: ${{ matrix.id }}
+          E2E_FLINT_API_BASE_URL: https://api.staging.withflintpay.com
+          E2E_SANDBOX_A_ID: ${{ secrets.FLINT_E2E_SANDBOX_A_ID }}
+          E2E_SANDBOX_A_API_KEY: ${{ secrets.FLINT_E2E_SANDBOX_A_API_KEY }}
+          E2E_SANDBOX_B_ID: ${{ secrets.FLINT_E2E_SANDBOX_B_ID }}
+          E2E_SANDBOX_B_API_KEY: ${{ secrets.FLINT_E2E_SANDBOX_B_API_KEY }}
+          E2E_OPERATOR_A_API_KEY: ${{ secrets.FLINT_E2E_OPERATOR_A_API_KEY }}
+          E2E_OPERATOR_B_API_KEY: ${{ secrets.FLINT_E2E_OPERATOR_B_API_KEY }}
+          E2E_SANDBOX_A_MERCHANT_ID: ${{ secrets.FLINT_E2E_SANDBOX_A_MERCHANT_ID }}
+          E2E_SANDBOX_A_PROVIDER_ID: ${{ secrets.FLINT_E2E_SANDBOX_A_PROVIDER_ID }}
+          E2E_SANDBOX_B_MERCHANT_ID: ${{ secrets.FLINT_E2E_SANDBOX_B_MERCHANT_ID }}
+          E2E_SANDBOX_B_PROVIDER_ID: ${{ secrets.FLINT_E2E_SANDBOX_B_PROVIDER_ID }}
+          E2E_TARGET_COMMIT: ${{ github.sha }}
+          E2E_API_TARGET_COMMIT: ${{ vars.FLINT_E2E_API_TARGET_COMMIT }}
+          E2E_STOREFRONT_A_ARTIFACT_ID: ${{ github.sha }}:headless/storefront
+          E2E_STOREFRONT_B_ARTIFACT_ID: ${{ github.sha }}:headless/storefront
+          E2E_ACCOUNT_A_ARTIFACT_ID: ${{ github.sha }}:headless/account
+          E2E_API_ARTIFACT_ID: ${{ vars.FLINT_E2E_API_ARTIFACT_ID }}
+          E2E_INBOX: imap
+          E2E_INBOX_ADDRESS: ${{ secrets.FLINT_E2E_INBOX_ADDRESS }}
+          E2E_IMAP_HOST: ${{ secrets.FLINT_E2E_IMAP_HOST }}
+          E2E_IMAP_PORT: '993'
+          E2E_IMAP_USER: ${{ secrets.FLINT_E2E_IMAP_USER }}
+          E2E_IMAP_PASSWORD: ${{ secrets.FLINT_E2E_IMAP_PASSWORD }}
+          E2E_SUITE: ${{ inputs.suite || 'standard' }}
+
+  browser:
+    needs: [discover, repo-checks, static, integration]
+    if: >-
+      github.repository == 'flint-pay/examples' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+      needs.discover.outputs.has-browser == 'true' && always() && !cancelled() &&
+      needs.static.result == 'success' && needs.repo-checks.result == 'success' &&
+      needs.integration.result != 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.discover.outputs.browser) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ${{ matrix.id }}/package-lock.json
+      - run: node scripts/check-staging-event.mjs
+      - run: npm ci
+        working-directory: headless/storefront
+      - run: npm ci
+        working-directory: headless/account
+      - run: npm ci
+        working-directory: headless/e2e
+      - run: npx --no-install playwright install --with-deps chromium
+        working-directory: headless/e2e
+      - run: node scripts/prepare-staging-context.mjs
+        env:
+          E2E_FIXTURE_JSON: ${{ secrets.FLINT_E2E_FIXTURE_JSON }}
+      - run: node scripts/run-staging-check.mjs "$EXAMPLE_DIRECTORY" test:browser
+        env: *staging-environment
+
+  e2e:
+    needs: [discover, repo-checks, static, integration, browser]
+    if: >-
+      github.repository == 'flint-pay/examples' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+      needs.discover.outputs.has-e2e == 'true' && always() && !cancelled() &&
+      needs.static.result == 'success' && needs.repo-checks.result == 'success' &&
+      needs.integration.result != 'failure' && needs.browser.result != 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.discover.outputs.e2e) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ${{ matrix.id }}/package-lock.json
+      - run: node scripts/check-staging-event.mjs
+      - run: npm ci
+        working-directory: headless/storefront
+      - run: npm ci
+        working-directory: headless/account
+      - run: npm ci
+        working-directory: ${{ matrix.id }}
+      - run: npx --no-install playwright install --with-deps chromium
+        working-directory: ${{ matrix.id }}
+      - run: node scripts/prepare-staging-context.mjs
+        env:
+          E2E_FIXTURE_JSON: ${{ secrets.FLINT_E2E_FIXTURE_JSON }}
+      - run: node scripts/run-staging-check.mjs "$EXAMPLE_DIRECTORY" fixtures:check
+        env: *staging-environment
+      - run: node scripts/run-staging-check.mjs "$EXAMPLE_DIRECTORY" e2e
+        env: *staging-environment

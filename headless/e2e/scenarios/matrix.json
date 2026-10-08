@@ -1,0 +1,640 @@
+[
+  {
+    "id": "SF-01",
+    "plan": "Part 5",
+    "apps": "storefront",
+    "buyer": "guest",
+    "sandbox": "A",
+    "tier": "browser",
+    "schedule": "nightly",
+    "prq": [],
+    "assert": "Browse, product detail, add with variant, change quantity, remove, empty cart state; prices equal Flint catalog."
+  },
+  {
+    "id": "SF-02",
+    "plan": "Part 5",
+    "apps": "storefront",
+    "buyer": "b1 guest",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [
+      "PRQ-INBOX"
+    ],
+    "assert": "Ship to address, card 4242, confirmation paid; one attempt succeeded (operator read); receipt email arrives; its links pass link_audit and open /orders/{id} after sign-in. Receipt links classify as flint_account_link_relay, open through the relay rule, and land on /orders/{id} after sign-in."
+  },
+  {
+    "id": "SF-03",
+    "plan": "Part 5",
+    "apps": "storefront",
+    "buyer": "guest",
+    "sandbox": "A",
+    "tier": "browser",
+    "schedule": "nightly",
+    "prq": [],
+    "assert": "Pickup by postal code, 15 percent tip, selection kept after tip, paid; requested_tip_money equals 15 percent of the order per Flint read."
+  },
+  {
+    "id": "SF-04",
+    "plan": "Part 5",
+    "apps": "storefront",
+    "buyer": "guest",
+    "sandbox": "A",
+    "tier": "browser",
+    "schedule": "nightly",
+    "prq": [],
+    "assert": "WELCOME10 before delivery reduces discount_money; invalid code shows copy; applying a code after delivery shows delivery_released and pay is blocked until reselected."
+  },
+  {
+    "id": "SF-05",
+    "plan": "Part 5",
+    "apps": "storefront",
+    "buyer": "guest",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [],
+    "assert": "Operator gift card $25 applied with order_revision; outstanding reduced; card pays remainder; exactly one invalid code attempt per run shows GIFT_CARD_UNAVAILABLE copy."
+  },
+  {
+    "id": "SF-06",
+    "plan": "Part 5",
+    "apps": "storefront",
+    "buyer": "guest",
+    "sandbox": "A",
+    "tier": "browser",
+    "schedule": "nightly",
+    "prq": [
+      "PRQ-TAX"
+    ],
+    "assert": "Tax line shows Calculated after delivery before selection (requires_location), then tax_money from Flint after shipping to a taxable Texas address; UI equals order read."
+  },
+  {
+    "id": "SF-07",
+    "plan": "Part 5",
+    "apps": "storefront",
+    "buyer": "guest",
+    "sandbox": "A",
+    "tier": "browser",
+    "schedule": "nightly",
+    "prq": [],
+    "assert": "4000 0000 0000 9995 shows default decline copy; retry with 4242 succeeds; operator sees two attempts (failed, succeeded) and one settled payment."
+  },
+  {
+    "id": "SF-08",
+    "plan": "Part 5",
+    "apps": "storefront",
+    "buyer": "guest",
+    "sandbox": "A",
+    "tier": "browser",
+    "schedule": "nightly",
+    "prq": [],
+    "assert": "4000 0025 0000 3155 challenge completed succeeds; challenge failed returns authentication_required copy; retry with 4242 succeeds."
+  },
+  {
+    "id": "SF-09",
+    "plan": "Part 5",
+    "apps": "storefront",
+    "buyer": "guest",
+    "sandbox": "A",
+    "tier": "browser",
+    "schedule": "nightly",
+    "prq": [],
+    "assert": "Interrupted payment: reload during requires_action restores the challenge from the attempt; aborting the browser's pay response after the server sent it shows waiting then the true outcome; no second charge (operator attempts list)."
+  },
+  {
+    "id": "SF-10",
+    "plan": "Part 5",
+    "apps": "storefront",
+    "buyer": "guest",
+    "sandbox": "A",
+    "tier": "browser",
+    "schedule": "nightly",
+    "prq": [],
+    "assert": "Double click and Enter on Pay create one attempt."
+  },
+  {
+    "id": "SF-11",
+    "plan": "Part 5",
+    "apps": "storefront",
+    "buyer": "guest",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [],
+    "assert": "Operator adds a line mid-checkout: next state read shows checkout_refreshed and the new total; pay succeeds on the replacement session. Second tab applies a discount; first tab's Pay shows total_changed and requires a new click."
+  },
+  {
+    "id": "SF-12",
+    "plan": "Part 5",
+    "apps": "storefront, account",
+    "buyer": "b1 signed in",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [],
+    "assert": "Order created with customer_id; saved card added in the account (AC-09) is listed and pays; order appears in the account immediately."
+  },
+  {
+    "id": "SF-13",
+    "plan": "H4",
+    "apps": "storefront",
+    "buyer": "guest",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [
+      "PRQ-ACH"
+    ],
+    "assert": "ACH 110000000 / 000123456789: bank_processing page, no retry or cancel offered; order paid within 10 minutes (operator poll) or extended suite waits longer."
+  },
+  {
+    "id": "SF-14",
+    "plan": "H4",
+    "apps": "storefront",
+    "buyer": "guest",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [
+      "PRQ-ACH"
+    ],
+    "assert": "000000000009 stays processing and unpaid; 000222222227 later fails and revisiting checkout shows the bank decline copy with a payment form."
+  },
+  {
+    "id": "SF-15",
+    "plan": "H4",
+    "apps": "storefront",
+    "buyer": "guest",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [
+      "PRQ-AFFIRM"
+    ],
+    "assert": "Affirm approve on the Stripe test page; only allowed Flint navigation is the relay; lands on /checkout/{ref}/return then complete; order paid."
+  },
+  {
+    "id": "SF-16",
+    "plan": "H4",
+    "apps": "storefront",
+    "buyer": "guest",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [
+      "PRQ-AFFIRM"
+    ],
+    "assert": "Affirm decline: payment_method_declined copy, Affirm removed, card pays."
+  },
+  {
+    "id": "SF-17",
+    "plan": "H4",
+    "apps": "storefront",
+    "buyer": "guest",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [
+      "PRQ-AFFIRM"
+    ],
+    "assert": "Affirm abandoned (cancel on test page or back): payment_not_completed or affirm_incomplete; Continue with Affirm and Pay another way both work; one charge."
+  },
+  {
+    "id": "SF-18",
+    "plan": "H4, CD1 regression",
+    "apps": "storefront",
+    "buyer": "guest",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [
+      "PRQ-AFFIRM"
+    ],
+    "assert": "Reload the return URL three times after approval: one attempt succeeded, no new attempts."
+  },
+  {
+    "id": "SF-19",
+    "plan": "Part 5, H5",
+    "apps": "storefront",
+    "buyer": "b1 signed in",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [],
+    "assert": "Coffee club monthly: off_session wallet and card groups; subscription_terms shown beside button; subscription active read with checkout auth on the confirmation page; appears in account."
+  },
+  {
+    "id": "SF-20",
+    "plan": "Part 5",
+    "apps": "storefront",
+    "buyer": "guest",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [
+      "PRQ-INBOX"
+    ],
+    "assert": "Trial plan: setup collection, action setup, subscription trialing; subscription_lifecycle email link opens /subscriptions/{id}. The subscription_lifecycle link opens through the relay rule and lands on /subscriptions/{id}."
+  },
+  {
+    "id": "SF-21",
+    "plan": "Part 5",
+    "apps": "storefront",
+    "buyer": "guest",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "extended",
+    "prq": [],
+    "assert": "CHECKOUT_SESSION_TTL_SECONDS at the API minimum: expiry without attempt bootstraps a replacement with checkout_refreshed; expiry during a 3D Secure challenge enters recovery and resume completes."
+  },
+  {
+    "id": "SF-22",
+    "plan": "Part 4",
+    "apps": "storefront",
+    "buyer": "guest",
+    "sandbox": "A",
+    "tier": "browser",
+    "schedule": "nightly",
+    "prq": [],
+    "assert": "Headless Chromium: wallet region hidden, card form usable, no console errors."
+  },
+  {
+    "id": "SF-22M",
+    "plan": "Part 4",
+    "apps": "storefront",
+    "buyer": "tester",
+    "sandbox": "A",
+    "tier": "manual",
+    "schedule": "manual",
+    "prq": [
+      "PRQ-WALLET-DEVICE"
+    ],
+    "assert": "Apple Pay in Safari and Google Pay in Chrome on a registered tunnel hostname pay an order and a subscription."
+  },
+  {
+    "id": "SF-23",
+    "plan": "Part 5",
+    "apps": "storefront",
+    "buyer": "guest",
+    "sandbox": "A",
+    "tier": "integration",
+    "schedule": "nightly",
+    "prq": [],
+    "assert": "CSRF rejection, cross-session /checkout/{ref} 404, credential scan clean, rate limits return 429."
+  },
+  {
+    "id": "SF-24",
+    "plan": "Part 5",
+    "apps": "storefront",
+    "buyer": "b1b",
+    "sandbox": "B (flint_hosted)",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [
+      "PRQ-INBOX",
+      "PRQ-SANDBOX-B"
+    ],
+    "assert": "Save card with email code before pay (save_payment_method_requires_verification); next checkout recognizes the email (channel auto), code confirms, saved card pays; phone save path uses sandbox SMS rules (any six digits except 000000 and 999999)."
+  },
+  {
+    "id": "SF-25",
+    "plan": "Part 5",
+    "apps": "storefront",
+    "buyer": "guest",
+    "sandbox": "A",
+    "tier": "browser",
+    "schedule": "nightly",
+    "prq": [],
+    "assert": "Online brewing class (service) checkout skips delivery and pays."
+  },
+  {
+    "id": "SF-26",
+    "plan": "Part 5",
+    "apps": "storefront",
+    "buyer": "guest",
+    "sandbox": "A",
+    "tier": "integration",
+    "schedule": "nightly",
+    "prq": [],
+    "assert": "Webhook handler accepts a correctly signed order.paid built with a run-generated whsec secret, rejects a bad signature, deduplicates webhook-id."
+  },
+  {
+    "id": "SF-26X",
+    "plan": "A7-adjacent",
+    "apps": "storefront",
+    "buyer": "guest",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "extended",
+    "prq": [
+      "PRQ-FLINT-CLI"
+    ],
+    "assert": "flint listen forwards real order.paid; confirmation shows Payment confirmed by Flint."
+  },
+  {
+    "id": "AC-01",
+    "plan": "A3",
+    "apps": "storefront, account",
+    "buyer": "b1",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [
+      "PRQ-INBOX",
+      "PRQ-ACH"
+    ],
+    "assert": "Guest card order (auto-linked to email customer at settlement) and guest ACH order left processing (customer_id null) exist; sign-up, Flint code from inbox, confirm, linkGuestPurchases count >= 1; both orders visible; b2 cannot see them."
+  },
+  {
+    "id": "AC-02",
+    "plan": "A3",
+    "apps": "account",
+    "buyer": "b1, b2",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [
+      "PRQ-INBOX"
+    ],
+    "assert": "Wrong code copy; resend after 30 s; API-level negative checks: link with a verification for another customer returns CUSTOMER_VERIFICATION_CUSTOMER_MISMATCH; second link with a new key returns CUSTOMER_VERIFICATION_USED."
+  },
+  {
+    "id": "AC-03",
+    "plan": "A4",
+    "apps": "account",
+    "buyer": "b1",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [],
+    "assert": "After operator shipOrder: tracking timeline shows events newest first; package tracking number shown; receipt resend works; printable receipt renders."
+  },
+  {
+    "id": "AC-04",
+    "plan": "A1",
+    "apps": "account",
+    "buyer": "b1, b2",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [
+      "PRQ-INBOX"
+    ],
+    "assert": "For each email family received in the run (order_receipts, fulfillment_updates, subscription_lifecycle, dunning when present, returns, invoices): signed-out open, sign-in, land on the resource, clean URL. b2 opening b1's link sees not_in_account. A hint with flint_environment_id replaced by sandbox B's ID shows wrong_environment (crafted input: hints are untrusted). Unknown flint_resource_type lands on home. Replace `link_audit has no Flint links except GAP-2` with `every link classifies under link_audit with no failures; each opened link goes through the account link relay rule and lands on the resource`."
+  },
+  {
+    "id": "AC-05",
+    "plan": "H1, H3",
+    "apps": "account",
+    "buyer": "b1",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [
+      "PRQ-INBOX",
+      "PRQ-STAGING-RUNTIME"
+    ],
+    "assert": "Operator invoice: email Pay link opens /invoices/{id} on the app; embedded pay with 4242 succeeds; invoice paid; reused_existing true on a second launch before paying; operator hosted idle session is replaced by embedded (reused_existing false); operator hosted session with payment in progress makes the app show surface_conflict; PDF downloads from the app origin."
+  },
+  {
+    "id": "AC-05A",
+    "plan": "H1, H4",
+    "apps": "account",
+    "buyer": "b1",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [
+      "PRQ-AFFIRM",
+      "PRQ-ACH"
+    ],
+    "assert": "Second invoice paid with Affirm through the relay to /invoices/{id}/pay/return; third invoice with ACH shows processing."
+  },
+  {
+    "id": "AC-06",
+    "plan": "H2, H3",
+    "apps": "account",
+    "buyer": "b1",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [
+      "PRQ-STAGING-RUNTIME"
+    ],
+    "assert": "Buyer starts a return in UI on a delivered order; operator approves as exchange to travel mug; pay_balance appears; embedded balance payment succeeds; return credit shown; resolution leaves buyer_payment_pending. Another return is withdrawn."
+  },
+  {
+    "id": "AC-07",
+    "plan": "Part 5",
+    "apps": "account",
+    "buyer": "b1",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [],
+    "assert": "With demo buyer_capabilities: pause 2 cycles then resume; schedule cancel with reason then Keep my subscription; cancel now on a second subscription; change payment method to another off_session card; retention offer shown."
+  },
+  {
+    "id": "AC-08",
+    "plan": "A5",
+    "apps": "account",
+    "buyer": "b1",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "extended",
+    "prq": [
+      "PRQ-INBOX"
+    ],
+    "assert": "Operator makePastDue; dunning email link opens the subscription; buyer changes card and retries; retry succeeds and status active; SUBSCRIPTION_PAYMENT_RETRY_IN_PROGRESS copy on double start."
+  },
+  {
+    "id": "AC-09",
+    "plan": "Part 5",
+    "apps": "account",
+    "buyer": "b1",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [],
+    "assert": "Add 4242 card: pending then active; add 3D Secure card completes challenge; set default; remove with confirmation."
+  },
+  {
+    "id": "AC-10",
+    "plan": "A1 decision",
+    "apps": "account",
+    "buyer": "b2",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [
+      "PRQ-INBOX"
+    ],
+    "assert": "Name and phone update; email change with both codes from inbox (emails contain codes, no links); sign out and sign in with new email."
+  },
+  {
+    "id": "AC-11",
+    "plan": "Part 5",
+    "apps": "account, storefront",
+    "buyer": "b1",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [],
+    "assert": "First address becomes both defaults; edit; set default shipping; storefront checkout prefills it; delete."
+  },
+  {
+    "id": "AC-12",
+    "plan": "Part 5 account gift cards; H5 boundary",
+    "apps": "account",
+    "buyer": "b1",
+    "sandbox": "A (merchant_hosted)",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [
+      "PRQ-INBOX"
+    ],
+    "steps": [
+      "Operator issues one run gift card with external funding and notification to b1's gift alias. Only the e2e operator key holds commerce.gift_cards.secrets.write; the account app's key never does. The issuance code stays in memory and is registered with the credential scanner.",
+      "Wait for the email with family gift_card_notification. link_audit must find exactly one flint_hosted_gift_recipient_access link and no failures.",
+      "Signed in as b1, open /gift-cards/add with the link tab, paste the link, submit. Expect the card detail with available balance 2500 and a funding entry in history. This proves the recipient proof path on its own.",
+      "Remove the card; it leaves the list.",
+      "Save the same card by code with a new save key; it returns with the same gift_card_id. Remove it again.",
+      "Submit one invalid code (at most one per run) and expect the invalid copy.",
+      "Paste a malformed link once and expect the parse failure copy with no BFF save request."
+    ],
+    "assert": "All steps above; B-01 records zero Flint navigations; the credential scan finds neither the code nor the recipient token outside the submitting request bodies."
+  },
+  {
+    "id": "AC-13",
+    "plan": "A2",
+    "apps": "account",
+    "buyer": "b1",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [
+      "PRQ-INBOX"
+    ],
+    "assert": "From the fulfillment_updates email unsubscribe link while signed out: fragment removed from URL, lookup shows email and shipping updates, unsubscribe sets enabled false (operator lookup confirms), reload shows token-missing; signed-in toggles reflect the change."
+  },
+  {
+    "id": "AC-14",
+    "plan": "Part 5",
+    "apps": "account",
+    "buyer": "b2, d",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [],
+    "assert": "b2 request shows pending_review, duplicate request returns the same request, operator reject shows rejected. d request approved by operator: completed, sign-in shows closed."
+  },
+  {
+    "id": "AC-15",
+    "plan": "Part 5",
+    "apps": "account",
+    "buyer": "b1",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "extended",
+    "prq": [],
+    "assert": "CUSTOMER_SESSION_TTL_SECONDS=300: after 6 minutes pages load through refresh. Harness replays a superseded refresh token read from the account database: next page signs out with session_ended."
+  },
+  {
+    "id": "AC-16",
+    "plan": "Part 5",
+    "apps": "account",
+    "buyer": "b1",
+    "sandbox": "A",
+    "tier": "integration",
+    "schedule": "nightly",
+    "prq": [],
+    "assert": "Sign-out revokes the customer session (old secret returns INVALID_CUSTOMER_SESSION via SDK); credential-boundary unit test passes; CSRF and credential scans clean."
+  },
+  {
+    "id": "AC-17",
+    "plan": "A3",
+    "apps": "account",
+    "buyer": "b1",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [
+      "PRQ-INBOX",
+      "PRQ-ACH"
+    ],
+    "assert": "After verification, a new guest ACH order with b1's email stays unlinked while processing; Find earlier guest orders links it (count 1)."
+  },
+  {
+    "id": "X-01",
+    "plan": "Part 5",
+    "apps": "both",
+    "buyer": "b1",
+    "sandbox": "A",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [],
+    "assert": "Combined identity: sign in once at the storefront, account shows signed in; sign out in either signs out both and revokes the customer session."
+  },
+  {
+    "id": "I-01",
+    "plan": "Part 4",
+    "apps": "harness",
+    "buyer": "b1, b1b",
+    "sandbox": "A, B",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [
+      "PRQ-SANDBOX-B"
+    ],
+    "assert": "Sandbox B key reading sandbox A order, customer, invoice returns 404; b1b customer session reading b1's order ID returns 404; same Idempotency-Key in A and B creates two resources."
+  },
+  {
+    "id": "I-02",
+    "plan": "Part 4, A2",
+    "apps": "harness",
+    "buyer": "b1",
+    "sandbox": "A, B",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [
+      "PRQ-INBOX"
+    ],
+    "assert": "Sandbox A email preference token with sandbox B key returns 404 EMAIL_PREFERENCE_LINK_INVALID."
+  },
+  {
+    "id": "I-03",
+    "plan": "A3",
+    "apps": "harness",
+    "buyer": "b1b",
+    "sandbox": "B",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [
+      "PRQ-INBOX"
+    ],
+    "assert": "Linking in B for the same email attaches none of A's guest orders."
+  },
+  {
+    "id": "B-01",
+    "plan": "Part 5",
+    "apps": "both",
+    "buyer": "all",
+    "sandbox": "A, B",
+    "tier": "e2e",
+    "schedule": "nightly",
+    "prq": [],
+    "assert": "flint_boundary and credential_leak guards report zero violations for the whole run; axe states clean."
+  },
+  {
+    "id": "U-01",
+    "plan": "Part 5",
+    "apps": "both",
+    "buyer": "none",
+    "sandbox": "none",
+    "tier": "unit",
+    "schedule": "ci",
+    "prq": [],
+    "assert": "nextStep table, decline copy mapping, money formatting, return-path validation, hint parsing, recipient link parsing, password hashing, CSRF, rate limiter, redaction, credential-boundary scan, identity copies identical, manifests valid, index fresh, punctuation clean."
+  }
+]

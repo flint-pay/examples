@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "kind": "e2e",
+  "id": "headless/e2e",
+  "area": "headless",
+  "title": "Headless storefront and account journeys",
+  "summary": "Browser journeys across both apps against two staging sandboxes, with a guard that fails on any Flint checkout or account page.",
+  "language": "typescript",
+  "runtime": {
+    "node": ">=24"
+  },
+  "status": "beta",
+  "status_note": "Runs against Flint staging for Flint's own release checks.",
+  "covers": [
+    "headless/storefront",
+    "headless/account"
+  ],
+  "guides": [
+    {
+      "title": "Testing",
+      "url": "https://developers.withflintpay.com/docs/guides/testing"
+    }
+  ],
+  "requires": {
+    "flint_sdk": {
+      "package": "@flintpay/node",
+      "version": "3.0.0-beta.20261007031000"
+    },
+    "stripe_js": true,
+    "stripe_test_mode": true,
+    "sandbox": "dedicated",
+    "second_sandbox": true,
+    "customer_account_mode": "merchant_hosted",
+    "webhooks": "optional",
+    "inbox": "required",
+    "capabilities": [
+      {
+        "name": "accept_card_payments",
+        "required": true
+      },
+      {
+        "name": "accept_affirm_payments",
+        "required": true
+      }
+    ],
+    "sandbox_setup": [
+      {
+        "id": "ach_debit",
+        "required": true,
+        "how": "Flint support"
+      },
+      {
+        "id": "automatic_tax_connection",
+        "required": true,
+        "how": "Dashboard"
+      }
+    ]
+  },
+  "commands": {
+    "install": "npm ci && npx playwright install chromium",
+    "setup": "npm run fixtures:check",
+    "dev": "npm run apps -- --apply",
+    "check": "npm run check",
+    "test": "npm test",
+    "e2e": "npm run e2e"
+  },
+  "ports": [
+    4100,
+    4110,
+    4200
+  ],
+  "env": {
+    "file": ".env.example",
+    "required": [
+      "E2E_FLINT_API_BASE_URL",
+      "E2E_SANDBOX_A_ID",
+      "E2E_SANDBOX_A_API_KEY",
+      "E2E_SANDBOX_B_ID",
+      "E2E_SANDBOX_B_API_KEY",
+      "E2E_INBOX",
+      "E2E_INBOX_ADDRESS",
+      "E2E_SANDBOX_A_MERCHANT_ID",
+      "E2E_SANDBOX_A_PROVIDER_ID",
+      "E2E_SANDBOX_B_MERCHANT_ID",
+      "E2E_SANDBOX_B_PROVIDER_ID",
+      "E2E_TARGET_COMMIT",
+      "E2E_API_TARGET_COMMIT",
+      "E2E_STOREFRONT_A_ARTIFACT_ID",
+      "E2E_STOREFRONT_B_ARTIFACT_ID",
+      "E2E_ACCOUNT_A_ARTIFACT_ID",
+      "E2E_API_ARTIFACT_ID",
+      "E2E_PRIVATE_RUN_DIR",
+      "E2E_FIXTURE_FILE",
+      "E2E_OPERATOR_A_API_KEY"
+    ],
+    "optional": [
+      "E2E_IMAP_HOST",
+      "E2E_IMAP_PORT",
+      "E2E_IMAP_USER",
+      "E2E_IMAP_PASSWORD",
+      "E2E_SUITE",
+      "E2E_WEBHOOK_SECRET",
+      "E2E_RUN_ID",
+      "E2E_STOREFRONT_A_ORIGIN",
+      "E2E_STOREFRONT_B_ORIGIN",
+      "E2E_ACCOUNT_A_ORIGIN",
+      "E2E_STOREFRONT_A_HEALTH_PATH",
+      "E2E_STOREFRONT_B_HEALTH_PATH",
+      "E2E_ACCOUNT_A_HEALTH_PATH",
+      "E2E_API_HEALTH_PATH",
+      "E2E_OPERATOR_B_API_KEY"
+    ]
+  },
+  "ci": {
+    "check": true,
+    "integration": "none",
+    "browser": "none",
+    "e2e": "nightly"
+  },
+  "$schema": "../../schemas/example.schema.json"
+}
