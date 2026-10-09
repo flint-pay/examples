@@ -37,9 +37,12 @@ test('SF-04 discount before delivery applies; an invalid code shows copy; a code
   await expect(page.getByTestId('sf-discount-applied-1')).toBeVisible({ timeout: 30_000 });
   const discount = Number(await page.getByTestId('sf-summary-discounts').getAttribute('data-amount-minor'));
   expect(discount).toBeGreaterThan(0);
+  await page.getByRole('button', { name: /Remove discount/ }).click();
+  await expect(page.getByTestId('sf-discount-applied-1')).toHaveCount(0);
   await fillContact(page);
   await shipToTexas(page);
-  await page.getByRole('button', { name: /Remove discount/ }).click();
+  await page.getByTestId('sf-discount-code').fill('WELCOME10');
+  await page.getByTestId('sf-discount-apply').click();
   await expect(page.getByTestId('sf-notice-delivery_released')).toBeVisible({ timeout: 30_000 });
   await expect(page.getByTestId('sf-pay-blocker')).toHaveAttribute('data-blocker', 'delivery_selection_missing');
 });

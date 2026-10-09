@@ -66,7 +66,7 @@ export async function addToCart(page: Page, slug: string, quantity = 1) {
 export async function startCheckout(page: Page) {
   await page.goto('/cart');
   await page.getByTestId('sf-checkout-start').click();
-  await expect(page).toHaveURL(/\/checkout\/chk_[a-z0-9]+$/);
+  await expect(page).toHaveURL(/\/checkout\/chk_[0-9A-HJKMNP-TV-Z]{20}$/);
   await expect(page.getByTestId('sf-payment')).not.toHaveAttribute('data-state', 'loading', { timeout: 30_000 });
 }
 

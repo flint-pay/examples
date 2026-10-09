@@ -1,5 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import {fileURLToPath} from 'node:url';
 import type {Client,Order,CheckoutSession,OrderPaymentAttempt} from '@flintpay/node';
 import {createApp} from '../../src/app.ts';
 import type {Config} from '../../src/config.ts';
@@ -41,6 +42,18 @@ function inputValue(html:string,name:string):string{
   const tag=html.match(new RegExp(`<input\\b(?=[^>]*\\bname="${name}")[^>]*>`))?.[0];assert.ok(tag,`missing ${name} field`);
   return (tag.match(/\bvalue="([^"]*)"/)?.[1]??'').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&');
 }
+test('browser assets are served when launched from the repository root',async()=>{
+  const cwd=process.cwd();process.chdir(fileURLToPath(new URL('../../../../',import.meta.url)));
+  let app:ReturnType<typeof fixture>|undefined;try{
+    app=fixture();
+    for(const [path,type] of [['/js/site.js','javascript'],['/styles.css','css'],['/images/stoneware-mug.svg','svg']] as const){
+      const response=await app.get(path);assert.equal(response.status,200,path);
+      assert.ok(response.headers.get('content-type')?.includes(type),path);
+      assert.ok((await response.text()).length>0,path);
+    }
+    assert.equal(app.remote.mutations,0);
+  }finally{app?.close();process.chdir(cwd);}
+});
 test('the non-JavaScript add-to-cart redirect supplies its settled notice to the real renderer',async()=>{
   const app=fixture();try{
     const added=await app.post('/cart/items',{product_slug:'house-blend',variant_id:'fixture-variant',quantity:'1'});assert.equal(added.status,303);assert.equal(added.headers.get('location'),'/products/house-blend?notice=added_to_cart');
