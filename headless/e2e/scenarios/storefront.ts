@@ -98,7 +98,7 @@ export const storefront: Record<string, Scenario> = {
   },
   'SF-06': async d => {
     const c = await d.checkout(await d.page('tax')); await expect(c.page.getByTestId('sf-summary-tax')).toContainText('Calculated'); await d.delivery(c); await d.summary(c);
-    invariant(BigInt(money(c.state.order.pricing_amounts.tax_money).amount) > 0n, 'TEXAS_TAX_NOT_CALCULATED'); return ['AUTOMATIC_TAX_EQUALS_FLINT'];
+    invariant(BigInt(money(c.state.order.pricing_amounts.tax_money).amount) > 0n, 'REGISTERED_JURISDICTION_TAX_NOT_CALCULATED'); return ['AUTOMATIC_TAX_EQUALS_FLINT'];
   },
   'SF-07': async d => {
     const c = await normal(d, 'decline'); await d.pay(c, '4000000000009995'); await expect(c.page.getByTestId('sf-payment')).toHaveAttribute('data-state', 'declined');

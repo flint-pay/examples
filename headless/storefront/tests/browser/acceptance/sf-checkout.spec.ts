@@ -7,7 +7,7 @@
 import { expect, test } from '@playwright/test';
 import {
   addToCart, CARDS, completeChallenge, ensureTestMode, enterCard, fillContact, payNow, pickUpAtRoastery,
-  requireAcceptance, shipToTexas, startCheckout, watchConsole, watchFlintHosts,
+  requireAcceptance, shipToAddress, shipToTexas, startCheckout, watchConsole, watchFlintHosts,
 } from './support/staging.ts';
 
 requireAcceptance();
@@ -75,9 +75,11 @@ test('SF-06 tax is pending until delivery, then comes from the order (needs the 
   if (!(await tax.getAttribute('data-state'))) test.skip(true, 'PRQ-TAX: automatic tax is not connected for this sandbox, so there is no pending tax state to observe');
   await expect(tax).toHaveText('Calculated after you choose delivery');
   await fillContact(page);
-  await shipToTexas(page);
+  await shipToAddress(page, { line1: '123 Example Street', city: 'New York', state: 'NY', postal: '10001' });
   await expect(page.getByTestId('sf-summary-tax')).not.toHaveAttribute('data-state', 'requires_location');
-  expect(Number(await page.getByTestId('sf-summary-tax').getAttribute('data-amount-minor'))).toBeGreaterThan(0);
+  const taxMinor = await page.getByTestId('sf-summary-tax').getAttribute('data-amount-minor');
+  expect(Number(taxMinor)).toBeGreaterThan(0);
+  test.info().annotations.push({ type: 'sf06-tax-minor', description: taxMinor! });
 });
 
 test('SF-07 a declined card shows the default copy and a retry with 4242 succeeds', async ({ page }) => {

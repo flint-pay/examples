@@ -67,7 +67,7 @@
     "prq": [
       "PRQ-TAX"
     ],
-    "assert": "Tax line shows Calculated after delivery before selection (requires_location), then tax_money from Flint after shipping to a taxable Texas address; UI equals order read."
+    "assert": "Tax line shows Calculated after delivery before selection (requires_location), then tax_money from Flint after shipping to an address in the sandbox's registered tax jurisdiction; UI equals order read."
   },
   {
     "id": "SF-07",
