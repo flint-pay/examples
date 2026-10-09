@@ -41,7 +41,11 @@ test('SF-04 discount before delivery applies; an invalid code shows copy; a code
   await expect(page.getByTestId('sf-discount-applied-0')).toBeVisible({ timeout: 30_000 });
   const discount = Number(await page.getByTestId('sf-summary-discounts').getAttribute('data-amount-minor'));
   expect(discount).toBeGreaterThan(0);
-  await page.getByRole('button', { name: /Remove discount/ }).click();
+  const [removedDiscount] = await Promise.all([
+    page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith('/discount/remove')),
+    page.getByRole('button', { name: /Remove discount/ }).click(),
+  ]);
+  expect(removedDiscount.status()).toBe(200);
   await expect(page.getByTestId('sf-discount-applied-0')).toHaveCount(0);
   await fillContact(page);
   await shipToTexas(page);
