@@ -49,12 +49,18 @@ const app = {
   verifiedEmail: '',
   quoteRetries: 0,
   autoRequoted: '',
-  contactDirty: false,
   /** True while a payment is being finished and the order must not change. */
   locked: false,
+  /** Pay requests this page has sent. A job queued before the next one still runs under the submitting lock. */
+  paysSent: 0,
   /** Message to show once an automatic re-quote finishes. */
   afterQuote: '',
 };
+/** Every mutation goes through this queue. Payment reads and resumes do not. */
+const uiJobs = logic.createUiJobQueue();
+const contactEdits = logic.createContactEdits();
+/** Submitted job forms still waiting in or running through `uiJobs`, counted by kind. */
+const queuedForms = /** @type {Map<string, number>} */ (new Map());
 
 /**
  * The gift card verification. States (data-challenge-state on the gift card section): none, loading,
@@ -67,6 +73,8 @@ const gift = {
   view: /** @type {GiftChallengeView | null} */ (null),
   /** A fresh challenge Flint sent back after it rejected a proof. Try again uses it without a request. */
   held: /** @type {GiftChallengeView | null} */ (null),
+  /** The code the open check is for, as Apply sent it. A region swap before the check began may have emptied the field. */
+  code: '',
   frame: /** @type {{ unmount(): void } | null} */ (null),
   /** Changes whenever a frame is mounted or the check ends, so a late answer for an old one is dropped. */
   generation: 0,
@@ -406,6 +414,7 @@ async function refreshRegions(options = {}) {
   applyState(next.state);
   wireRegions();
   renderGift();
+  holdQueuedForms();
   const due = `${boot.labels.amountDue} ${formatMoney(logic.outstandingOf(app.state))}`;
   announce(options.announcePrefix ? `${options.announcePrefix} ${due}` : due);
   maybeAutoRequote();
@@ -597,21 +606,76 @@ async function onJobSubmit(event) {
   const button = /** @type {HTMLElement | null} */ ($('button[type="submit"]', target));
   const path = kind === 'gift-card-remove' ? `/gift-card/${encodeURIComponent(target.action.split('/gift-card/')[1]?.split('/')[0] ?? '')}/remove` : paths[kind];
   if (!path) return;
-  setBusy(button, true);
-  if (button instanceof HTMLButtonElement) button.disabled = true;
+  holdJobButton(button);
   const body = bodies[kind]?.(target) ?? {};
-  const result = await request('POST', path, body);
-  setBusy(button, false);
-  if (button instanceof HTMLButtonElement) button.disabled = false;
-  if (!result.ok) {
-    await onJobError(kind, result, target);
-    return;
+  queuedForms.set(kind, (queuedForms.get(kind) ?? 0) + 1);
+  const paysSent = app.paysSent;
+  try {
+    await uiJobs.run(() => runJob(kind, path, body, target, paysSent));
+  } finally {
+    const left = (queuedForms.get(kind) ?? 1) - 1;
+    if (left > 0) queuedForms.set(kind, left);
+    else queuedForms.delete(kind);
+    // An earlier job's swap may have replaced this form, so its live replacement is released too.
+    if (left <= 0) for (const live of [button, ...jobButtons(kind)]) releaseJobButton(live);
+    if (kind === 'gift-card') renderGift();
   }
+}
+
+/** @param {string} kind */
+function jobButtons(kind) {
+  return $$(`form[data-job-form="${kind}"] button[type="submit"]`);
+}
+
+/**
+ * Disables a job's submit button while its job waits or runs. A button the server rendered
+ * disabled, or one held by the payment lock, is left alone.
+ * @param {Element | null} button
+ */
+function holdJobButton(button) {
+  if (!(button instanceof HTMLButtonElement) || (button.disabled && !button.hasAttribute('data-job-queued'))) return;
+  setBusy(button, true);
+  button.disabled = true;
+  button.setAttribute('data-job-queued', '');
+}
+
+/** @param {Element | null} button */
+function releaseJobButton(button) {
+  if (!(button instanceof HTMLButtonElement) || !button.hasAttribute('data-job-queued')) return;
+  button.removeAttribute('data-job-queued');
+  setBusy(button, false);
+  // A payment that started meanwhile keeps it disabled until the sections unlock.
+  if (app.locked) button.setAttribute('data-locked-by-payment', '');
+  else button.disabled = false;
+}
+
+/** A region swap renders fresh forms. Those with a job still queued stay busy so they are not sent twice. */
+function holdQueuedForms() {
+  for (const kind of queuedForms.keys()) for (const button of jobButtons(kind)) holdJobButton(button);
+}
+
+/**
+ * Sends one job. Runs inside `uiJobs`, so it must not wait for another queued job.
+ * The body was read when the form was submitted; the form itself may have been replaced since.
+ * A job submitted before Pay still runs while Pay waits behind it. Once a pay request has gone out, the lock holds.
+ * @param {string} kind @param {string} path @param {unknown} body @param {HTMLFormElement} target @param {number} paysSent
+ */
+async function runJob(kind, path, body, target, paysSent) {
+  /** @type {JobResult} */
+  let result;
+  do {
+    if (app.locked && app.paysSent !== paysSent) {
+      showJobError(errorTargets[kind] ?? 'payment', msg('sections_locked'));
+      return;
+    }
+    result = await request('POST', path, body);
+  } while (!result.ok && (await onJobError(kind, result)) === 'retry');
+  if (!result.ok) return;
   app.quoteRetries = 0;
   if (kind === 'gift-card' && result.gift_challenge) {
     // Flint wants a check first. The code stays in the field and the order is unchanged.
     if (result.state) applyState(result.state);
-    beginGiftChallenge(result.gift_challenge);
+    beginGiftChallenge(result.gift_challenge, /** @type {{ gift_card_code: string }} */ (body).gift_card_code);
     return;
   }
   if (kind === 'gift-card') {
@@ -638,9 +702,9 @@ function focusAfter(kind) {
 /**
  * @param {string} kind
  * @param {JobResult} result
- * @param {HTMLFormElement} form
+ * @returns {Promise<'retry' | void>} `retry` sends the same request again within the same job
  */
-async function onJobError(kind, result, form) {
+async function onJobError(kind, result) {
   const code = result.error?.code ?? '';
   const target = errorTargets[kind] ?? 'payment';
   if (result.state) applyState(result.state);
@@ -668,8 +732,8 @@ async function onJobError(kind, result, form) {
     app.quoteRetries += 1;
     showJobError(target, msg('delivery_service_unavailable'));
     await new Promise((resolve) => window.setTimeout(resolve, 2000));
-    form.requestSubmit();
-    return;
+    showJobError(target, '');
+    return 'retry';
   }
   showJobError(target, errorText(result.error, fallbackKeys[kind]));
 }
@@ -740,9 +804,16 @@ function mountGiftFrame() {
   );
 }
 
-/** @param {GiftChallengeView} view */
-function beginGiftChallenge(view) {
+/**
+ * @param {GiftChallengeView} view
+ * @param {string} code
+ */
+function beginGiftChallenge(view, code) {
   gift.view = view;
+  gift.code = code;
+  // The field shows the code being checked, as it would had no earlier job replaced the region.
+  const input = giftInput();
+  if (input) input.value = code;
   gift.held = null;
   gift.mounts = 1;
   gift.state = 'loading';
@@ -788,10 +859,11 @@ function onGiftFrameEvent(event) {
  */
 async function submitGiftProof(proof) {
   const view = gift.view;
-  const code = giftInput()?.value.trim() ?? '';
+  const code = gift.code;
   // The frame is gone. Keep focus on the instruction if it was inside the frame.
   gift.frame = null;
-  if (app.locked) {
+  // A payment still waiting for earlier jobs yields to this check; see payWith.
+  if (app.locked && app.paymentState !== 'submitting') {
     leaveGift('none');
     return;
   }
@@ -803,8 +875,9 @@ async function submitGiftProof(proof) {
   renderGift();
   if (!document.activeElement || document.activeElement === document.body) focusElement($('#gift-challenge-intro'));
   const generation = gift.generation;
-  const result = await request('POST', '/gift-card/challenge', { challenge_id: view.challenge_id, gift_card_code: code, proof });
-  if (generation !== gift.generation) return;
+  // A check that ended while this waited for its turn sends nothing.
+  const result = await uiJobs.run(() => (generation === gift.generation ? request('POST', '/gift-card/challenge', { challenge_id: view.challenge_id, gift_card_code: code, proof }) : null));
+  if (!result || generation !== gift.generation) return;
   await onGiftProofResult(result);
 }
 
@@ -860,6 +933,7 @@ function leaveGift(next) {
   gift.frame = null;
   gift.view = null;
   gift.held = null;
+  gift.code = '';
   gift.mounts = 0;
   gift.state = next;
   renderGift();
@@ -902,7 +976,7 @@ function retryGiftChallenge() {
   } else if (state === 'expired') {
     const held = gift.held;
     if (held) {
-      beginGiftChallenge(held);
+      beginGiftChallenge(held, gift.code);
       return;
     }
     // Apply the same code again. This starts a new check and drops the old one.
@@ -936,25 +1010,36 @@ function wireGiftChallenge() {
 // ----- Contact -----
 
 async function saveContact() {
-  if (!app.contactDirty && app.state.order.buyer_contact?.email) return;
-  const c = contact();
-  if (c.email && !logic.looksLikeEmail(c.email)) return;
-  const result = await request('POST', '/contact', { name: c.name || undefined, email: c.email || undefined, phone: c.phone || undefined });
-  if (result.ok) {
-    app.contactDirty = false;
-    if (result.state) app.state = { ...result.state };
-  }
-  refreshPayControls();
-  maybeStartVerification(c.email);
+  await uiJobs.coalesce('contact', async () => {
+    if (!contactEdits.dirty && app.state.order.buyer_contact?.email) return;
+    const c = contact();
+    if (c.email && !logic.looksLikeEmail(c.email)) return;
+    const revision = contactEdits.snapshot();
+    const result = await request('POST', '/contact', { name: c.name || undefined, email: c.email || undefined, phone: c.phone || undefined });
+    if (result.ok) {
+      contactEdits.acknowledge(revision);
+      if (result.state) app.state = { ...result.state };
+    }
+    refreshPayControls();
+    maybeStartVerification(c.email);
+  });
 }
 
 /** @param {string} email */
 function maybeStartVerification(email) {
   if (!app.state.session.save_payment_method_requires_verification) return;
-  if (!logic.looksLikeEmail(email) || app.verifiedEmail === email.toLowerCase()) return;
-  app.verifiedEmail = email.toLowerCase();
-  void request('POST', '/verification', { purpose: 'use_saved_payment_methods', channel: 'auto', email }).then((result) => {
-    if (result.ok) void refreshRegions();
+  const key = email.toLowerCase();
+  if (!logic.looksLikeEmail(email) || app.verifiedEmail === key) return;
+  app.verifiedEmail = key;
+  void uiJobs.run(async () => {
+    // This waited behind other jobs. If the buyer changed the email or started paying, it is dropped,
+    // and a later save of the same email may start it again.
+    if (value('contact-email').toLowerCase() !== key || app.locked || app.busy) {
+      if (app.verifiedEmail === key) app.verifiedEmail = '';
+      return;
+    }
+    const result = await request('POST', '/verification', { purpose: 'use_saved_payment_methods', channel: 'auto', email });
+    if (result.ok) await refreshRegions();
     // CUSTOMER_VERIFICATION_NOT_SENT and other failures show nothing: this never holds payment.
   });
 }
@@ -965,7 +1050,7 @@ function wireContact() {
     if (!(input instanceof HTMLInputElement) || input.dataset.wired) continue;
     input.dataset.wired = 'true';
     input.addEventListener('input', () => {
-      app.contactDirty = true;
+      contactEdits.mark();
       refreshPayControls();
     });
     input.addEventListener('blur', () => {
@@ -1045,11 +1130,15 @@ function wireRegions() {
     if (!(button instanceof HTMLButtonElement) || button.dataset.wired) continue;
     button.dataset.wired = 'true';
     button.addEventListener('click', async () => {
+      if (button.getAttribute('aria-busy') === 'true') return;
       setBusy(button, true);
-      const result = await request('POST', '/verification', { purpose: 'use_saved_payment_methods', channel: 'email', email: value('contact-email') });
-      setBusy(button, false);
-      if (result.ok) await refreshRegions();
-      else showJobError('verification', errorText(result.error, 'customer_verification_unavailable'));
+      await uiJobs.run(async () => {
+        // The email is read at its turn, after the contact save that leaving the field queued.
+        const result = await request('POST', '/verification', { purpose: 'use_saved_payment_methods', channel: 'email', email: value('contact-email') });
+        setBusy(button, false);
+        if (result.ok) await refreshRegions();
+        else showJobError('verification', errorText(result.error, 'customer_verification_unavailable'));
+      });
     });
   }
   for (const radio of $$('[data-saved-methods] input[name="payment-source"]')) {
@@ -1226,27 +1315,50 @@ async function collectCredential() {
   return app.flow.createCredential();
 }
 
-/**
- * @param {{ kind: string, value: string } | null} credential
- * @returns {Promise<boolean>} true when the job was accepted
- */
-async function payWith(credential) {
-  const c = contact();
+/** The amounts the buyer sees next to the Pay button. Pressing Pay or confirming a wallet approves them. */
+function approvalOf() {
   const order = app.state.order;
   const giftCards = (order.gift_cards?.length ?? 0) > 0;
-  const body = {
-    ...(credential ? { credential } : {}),
+  return {
     approved_outstanding_money: app.approved,
     approved_collection_kind: logic.collectionKindOf(app.state),
     ...(giftCards && order.order_revision !== undefined ? { approved_order_revision: String(order.order_revision) } : {}),
     ...(giftCards && order.gift_card_estimate?.gift_card_money ? { approved_gift_card_money: order.gift_card_estimate.gift_card_money } : {}),
+  };
+}
+
+/**
+ * @param {{ kind: string, value: string } | null} credential
+ * @param {ReturnType<typeof approvalOf>} [approval] taken when the buyer pressed Pay
+ * @returns {Promise<boolean>} true when the job was accepted
+ */
+async function payWith(credential, approval = approvalOf()) {
+  const c = contact();
+  const body = {
+    ...(credential ? { credential } : {}),
+    ...approval,
     buyer_contact: { email: c.email, ...(c.phone ? { phone: c.phone } : {}) },
     ...(($('#save-card') instanceof HTMLInputElement && /** @type {HTMLInputElement} */ ($('#save-card')).checked && !/** @type {HTMLInputElement} */ ($('#save-card')).disabled)
       ? { save_payment_method: true, ...(value('save-phone') ? { save_payment_method_phone: value('save-phone') } : {}) }
       : {}),
   };
-  const result = await request('POST', '/pay', body);
-  return handlePayResult(result);
+  // Edits submitted before Pay reach the app first. Only the request is queued: recovery reads and resumes are not.
+  const outcome = await uiJobs.run(async () => {
+    // One of those edits started a gift card check. It needs the buyer, so this payment waits for another press.
+    if (GIFT_ACTIVE.has(gift.state)) return 'check_open';
+    // One of them changed what the buyer approved. Ask for a fresh press instead of paying a different amount.
+    const now = approvalOf();
+    if (!sameMoney(now.approved_outstanding_money, approval.approved_outstanding_money) || now.approved_collection_kind !== approval.approved_collection_kind) return 'total_changed';
+    if (now.approved_order_revision !== approval.approved_order_revision || !sameMoney(now.approved_gift_card_money ?? null, approval.approved_gift_card_money ?? null)) return 'gift_changed';
+    app.paysSent += 1;
+    return request('POST', '/pay', body);
+  });
+  if (outcome === 'check_open') {
+    setPaymentState('ready', { message: '', focus: false });
+    return false;
+  }
+  if (outcome === 'total_changed' || outcome === 'gift_changed') return totalChanged(outcome === 'gift_changed');
+  return handlePayResult(outcome);
 }
 
 /** @param {Event} event */
@@ -1259,6 +1371,7 @@ async function onPay(event) {
     return;
   }
   app.busy = true;
+  const approval = approvalOf();
   setPaymentState('submitting', { message: '' });
   try {
     await saveContactIfDirty();
@@ -1267,14 +1380,14 @@ async function onPay(event) {
       setPaymentState('ready', { message: collected.error.message || msg('stripe_error_generic') });
       return;
     }
-    await payWith(collected.credential ?? null);
+    await payWith(collected.credential ?? null, approval);
   } finally {
     app.busy = false;
   }
 }
 
 async function saveContactIfDirty() {
-  if (app.contactDirty) await saveContact();
+  if (contactEdits.dirty) await saveContact();
 }
 
 /**
@@ -1304,14 +1417,8 @@ async function handlePayError(result) {
   }
   switch (code) {
     case 'ORDER_CHANGED_REFRESH_REQUIRED':
-    case 'EXPECTED_AMOUNT_REQUIRED': {
-      await refreshRegions();
-      app.approved = logic.outstandingOf(app.state);
-      app.flow?.updateAmount(logic.processorMoney(app.state));
-      const giftChanged = error?.message_key === 'gift_card_changed' || error?.message_key === 'gift_card_allocation_changed';
-      setPaymentState('total_changed', { message: giftChanged ? msg('gift_card_changed') : msg('total_changed', { amount: formatMoney(app.approved) }) });
-      return false;
-    }
+    case 'EXPECTED_AMOUNT_REQUIRED':
+      return totalChanged(error?.message_key === 'gift_card_changed' || error?.message_key === 'gift_card_allocation_changed');
     case 'FULFILLMENT_SELECTION_REQUIRED':
     case 'DELIVERY_RECIPIENT_REQUIRED': {
       await refreshRegions({ focusRegion: 'delivery' });
@@ -1353,6 +1460,19 @@ async function handlePayError(result) {
     app.excludeAffirm = code === 'PAYMENT_METHOD_DECLINED';
   }
   setPaymentState('ready', { message: errorText(error) });
+  return false;
+}
+
+/**
+ * Shows the new amount and waits for a fresh press of Pay.
+ * @param {boolean} giftChanged
+ * @returns {Promise<false>}
+ */
+async function totalChanged(giftChanged) {
+  await refreshRegions();
+  app.approved = logic.outstandingOf(app.state);
+  app.flow?.updateAmount(logic.processorMoney(app.state));
+  setPaymentState('total_changed', { message: giftChanged ? msg('gift_card_changed') : msg('total_changed', { amount: formatMoney(app.approved) }) });
   return false;
 }
 
@@ -1557,7 +1677,7 @@ async function continueAffirm() {
 }
 
 async function cancelAttemptAndPayAnotherWay() {
-  const result = await request('POST', '/cancel-attempt', {});
+  const result = await uiJobs.run(() => request('POST', '/cancel-attempt', {}));
   if (!result.ok) {
     showMessage(errorText(result.error), true);
     return;
@@ -1612,7 +1732,7 @@ async function start() {
   syncSummaryPanel();
   wireStatic();
   wireRegions();
-  void request('POST', '/timezone', { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+  void uiJobs.run(() => request('POST', '/timezone', { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }));
   const resting = logic.derivePaymentState(app.state);
   switch (resting) {
     case 'ready':

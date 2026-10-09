@@ -157,6 +157,74 @@ test('pickup with a 15 percent tip keeps the selection', async ({ page }) => {
   await expect(page.locator('[data-job-error="tip"]')).toContainText('Enter a tip amount in dollars');
 });
 
+async function pickupSelected(page: any) {
+  await page.getByTestId('sf-delivery-mode-pickup').check();
+  await page.getByTestId('sf-pickup-postal').fill('78701');
+  await page.getByTestId('sf-pickup-search').click();
+  await page.getByTestId('sf-pickup-location-0').check();
+  await page.getByTestId('sf-pickup-select').click();
+  await expect(page.getByTestId('sf-delivery-selected')).toBeVisible();
+}
+
+/** Holds one job at the app until released, so later jobs and Pay queue behind it. */
+async function hold(page: any, ref: string, job: string) {
+  let open!: () => void;
+  const released = new Promise<void>((resolve) => (open = resolve));
+  await page.route(`**/checkout/${ref}/${job}`, async (route: any) => {
+    await released;
+    await route.continue();
+  });
+  const sent = page.waitForRequest(`**/checkout/${ref}/${job}`);
+  return { sent, release: async () => (open(), page.unroute(`**/checkout/${ref}/${job}`)) };
+}
+
+test('a tip still queued when Pay is pressed is applied, and Pay asks again at the new total', async ({ page, request }) => {
+  await readyOrder(page, 'pickup');
+  await pickupSelected(page);
+  await typeCard(page, 'ok');
+  const pay = page.getByTestId('sf-pay-button');
+  await expect(pay).toHaveText('Pay $73.61');
+  const contact = await hold(page, 'chk_pickup', 'contact');
+  await page.getByTestId('sf-contact-name').fill('Test Buyer Two');
+  await page.getByTestId('sf-contact-name').blur();
+  await contact.sent;
+  await page.getByTestId('sf-tip-15').check();
+  await expect(page.getByTestId('sf-tip-apply')).toHaveAttribute('aria-busy', 'true');
+  await pay.click();
+  await waitForPayment(page, 'submitting');
+  await contact.release();
+  await waitForPayment(page, 'total_changed');
+  await expect(page.getByTestId('sf-summary-tip')).toHaveAttribute('data-amount-minor', '1020');
+  await expect(page.getByTestId('sf-payment-message')).toContainText('Your total changed to $83.81');
+  await expect(page.locator('[data-job-error="tip"]')).toBeHidden();
+  let fixture = await fixtureLog(request, 'chk_pickup');
+  expect(fixture.log.filter((entry) => entry.path === 'tip').map((entry) => entry.body)).toEqual([{ percent: 15 }]);
+  expect(fixture.payCount).toBe(0);
+  await expect(pay).toHaveText('Pay $83.81');
+  await pay.click();
+  await expect(page).toHaveURL(/complete$/);
+  fixture = await fixtureLog(request, 'chk_pickup');
+  expect(fixture.payCount).toBe(1);
+  expect(fixture.log.find((entry) => entry.path === 'pay')!.body.approved_outstanding_money).toEqual({ amount: '8381', currency: 'USD' });
+});
+
+test('a wallet confirmed while a tip is still saving fails the sheet and asks again at the new total', async ({ page, request }) => {
+  await readyOrder(page, 'wallet');
+  await pickupSelected(page);
+  const tip = await hold(page, 'chk_wallet', 'tip');
+  await page.getByTestId('sf-tip-15').check();
+  await tip.sent;
+  await page.getByTestId('fake-wallet-button').click();
+  await tip.release();
+  await waitForPayment(page, 'total_changed');
+  await expect(page.getByTestId('sf-summary-tip')).toHaveAttribute('data-amount-minor', '900');
+  await expect(page.getByTestId('sf-payment-message')).toContainText('Your total changed to $73.95');
+  expect((await stripeCalls(page)).filter((call) => call.name === 'paymentFailed')).toHaveLength(1);
+  const fixture = await fixtureLog(request, 'chk_wallet');
+  expect(fixture.log.filter((entry) => entry.path === 'tip')).toHaveLength(1);
+  expect(fixture.payCount).toBe(0);
+});
+
 test('a service order has no delivery section and pays', async ({ page }) => {
   await readyOrder(page, 'service');
   await expect(page.getByTestId('sf-delivery')).toHaveCount(0);

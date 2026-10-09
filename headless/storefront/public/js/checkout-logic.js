@@ -1,5 +1,5 @@
 // @ts-check
-// Pure checkout derivations. The server views and public/js/checkout.js both
+// Pure checkout state and job coordination. The server views and public/js/checkout.js both
 // import this file so the first paint and every later update follow the same
 // rules. No DOM or Node APIs here.
 
@@ -7,6 +7,62 @@ import { isZero } from './money.js';
 
 /** @typedef {import('../../src/views/types.ts').CheckoutState} CheckoutState */
 /** @typedef {import('../../src/views/types.ts').Money} Money */
+
+/**
+ * Runs the page's mutations one at a time, in the order they were asked for. The app holds a
+ * per-order lock for every mutation, so overlapping requests would only queue there and time out.
+ * A job may queue another job but must not wait for it: that job starts only after this one ends.
+ */
+export function createUiJobQueue() {
+  /** @type {Promise<unknown>} */
+  let tail = Promise.resolve();
+  /** @type {Map<string, Promise<void>>} */
+  const waiting = new Map();
+  /**
+   * @template T
+   * @param {() => Promise<T> | T} job
+   * @returns {Promise<T>}
+   */
+  function run(job) {
+    const result = tail.then(job);
+    tail = result.catch(() => {});
+    return result;
+  }
+  /**
+   * Joins a job with the same key that has not started yet. A job that is already running
+   * may have read stale input, so a later call queues one follow-up instead.
+   * @param {string} key
+   * @param {() => Promise<void>} job
+   * @returns {Promise<void>}
+   */
+  function coalesce(key, job) {
+    const existing = waiting.get(key);
+    if (existing) return existing;
+    const result = run(async () => {
+      waiting.delete(key);
+      await job();
+    });
+    waiting.set(key, result);
+    return result;
+  }
+  return { run, coalesce };
+}
+
+/**
+ * Contact edit revisions. A save acknowledges the revision it read, so an edit made while
+ * the request was in flight stays dirty and is sent by the next save.
+ */
+export function createContactEdits() {
+  let revision = 0;
+  let savedRevision = 0;
+  return {
+    get dirty() { return revision !== savedRevision; },
+    mark() { revision += 1; },
+    snapshot() { return revision; },
+    /** @param {number} saved */
+    acknowledge(saved) { if (saved === revision) savedRevision = saved; },
+  };
+}
 
 /**
  * States the payment region can rest in. `loading`, `submitting`,

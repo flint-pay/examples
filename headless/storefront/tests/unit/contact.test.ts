@@ -6,6 +6,7 @@ import {createApp} from '../../src/app.ts';
 import type {Config} from '../../src/config.ts';
 import {Store} from '../../src/store/db.ts';
 import {IdentityStore} from '../../src/identity/index.ts';
+import {createContactEdits,createUiJobQueue} from '../../public/js/checkout-logic.js';
 
 type Contact={email?:string|null;phone?:string|null};
 const origin='http://localhost:4100';
@@ -80,4 +81,50 @@ for(const [label,error] of [
     assert.equal(app.store.get<{status:string}>("SELECT status FROM actions WHERE kind='contact'")?.status,'unknown');
     assert.equal((await app.quote()).status,409);assert.equal(app.remote.quotes,0);
   }finally{app.close();}
+});
+
+const turn=()=>new Promise(resolve=>setImmediate(resolve));
+function gate(){let open!:()=>void;const opened=new Promise<void>(resolve=>{open=resolve;});return {opened,open};}
+
+test('checkout jobs reach the app one at a time in order, and a failed job does not stall the next',{timeout:2000},async()=>{
+  const jobs=createUiJobQueue();const log:string[]=[];let active=0,peak=0;
+  const job=(name:string,fail=false)=>async()=>{active++;peak=Math.max(peak,active);log.push(`start ${name}`);await turn();log.push(`end ${name}`);active--;if(fail)throw new Error(name);return name;};
+  const results=await Promise.allSettled([jobs.run(job('timezone')),jobs.run(job('contact',true)),jobs.run(job('delivery-quote')),jobs.run(job('pay'))]);
+  assert.equal(peak,1);
+  assert.deepEqual(log,['start timezone','end timezone','start contact','end contact','start delivery-quote','end delivery-quote','start pay','end pay']);
+  assert.deepEqual(results.map(result=>result.status),['fulfilled','rejected','fulfilled','fulfilled']);
+  assert.equal(await jobs.run(async()=>'after failure'),'after failure');
+});
+
+test('overlapping contact blurs send one follow-up with the newest edit and never acknowledge it early',{timeout:2000},async()=>{
+  const jobs=createUiJobQueue(),edits=createContactEdits(),fields={name:'',email:''},sent:{name:string;email:string}[]=[],server=[gate(),gate()];
+  // Mirrors saveContact in public/js/checkout.js: the form is read when the job starts, and only that revision is acknowledged.
+  const save=()=>jobs.coalesce('contact',async()=>{if(!edits.dirty)return;const body={...fields},revision=edits.snapshot();sent.push(body);await server[sent.length-1]!.opened;edits.acknowledge(revision);});
+  fields.name='Example buyer';edits.mark();const first=save();await turn();
+  assert.equal(sent.length,1);
+  fields.email='first@example.test';edits.mark();fields.email='buyer@example.test';edits.mark();
+  const blurEmail=save(),blurPhone=save(),beforePay=save();
+  assert.equal(blurEmail,blurPhone);assert.equal(blurPhone,beforePay);assert.notEqual(first,blurEmail);
+  server[0]!.open();await first;
+  assert.equal(edits.dirty,true,'the first response must not acknowledge the email typed while it was in flight');
+  await turn();assert.equal(sent.length,2);
+  fields.name='Example buyer two';edits.mark();const queuedBehind=save();
+  server[1]!.open();await beforePay;
+  assert.deepEqual(sent,[{name:'Example buyer',email:''},{name:'Example buyer',email:'buyer@example.test'}]);
+  assert.equal(edits.dirty,true);
+  server.push(gate());server[2]!.open();await queuedBehind;
+  assert.deepEqual(sent[2],{name:'Example buyer two',email:'buyer@example.test'});assert.equal(edits.dirty,false);
+  await save();assert.equal(sent.length,3,'a blur with nothing new sends nothing');
+});
+
+test('a job may queue optional verification without waiting for it, and that job sees edits made meanwhile',{timeout:2000},async()=>{
+  const jobs=createUiJobQueue(),log:string[]=[];let email='first@example.test';
+  const contact=jobs.run(async()=>{
+    log.push(`contact ${email}`);const saved=email;await turn();
+    // Awaiting this here would deadlock: it can only start after the contact job ends.
+    void jobs.run(async()=>{log.push(email===saved?`verify ${saved}`:`drop stale ${saved}`);});
+  });
+  const quote=jobs.run(async()=>{log.push('delivery-quote');email='buyer@example.test';});
+  await contact;await quote;await jobs.run(async()=>{});
+  assert.deepEqual(log,['contact first@example.test','delivery-quote','drop stale first@example.test']);
 });
