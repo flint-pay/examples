@@ -30,7 +30,11 @@ test('SF-04 discount before delivery applies; an invalid code shows copy; a code
   await addToCart(page, 'stoneware-mug');
   await startCheckout(page);
   await page.getByTestId('sf-discount-code').fill('NOT-A-CODE');
-  await page.getByTestId('sf-discount-apply').click();
+  const [rejectedDiscount] = await Promise.all([
+    page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith('/discount')),
+    page.getByTestId('sf-discount-apply').click(),
+  ]);
+  expect(rejectedDiscount.status()).toBe(400);
   await expect(page.locator('[data-job-error="discount"]')).toHaveText("That code can't be used on this order.");
   await page.getByTestId('sf-discount-code').fill('WELCOME10');
   await page.getByTestId('sf-discount-apply').click();
