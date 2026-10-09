@@ -8,7 +8,7 @@
 
 import { expect, test, type Page } from '@playwright/test';
 import {
-  CARDS, ensureTestMode, enterCard, fillBillingAddressIfRequired, fillContact, payNow,
+  CARDS, ensureTestMode, enterCard, fillBillingAddressIfRequired, fillContact,
   requireAcceptance, watchFlintHosts,
 } from './support/staging.ts';
 
@@ -33,7 +33,10 @@ test('SF-19-native monthly subscription: a guest pays by card and the subscripti
   await expect(page.getByTestId('sf-subscription-terms')).toBeVisible();
   await expect(page.getByTestId('sf-payment')).toHaveAttribute('data-collection', 'processor');
   await enterCard(page, CARDS.success);
-  await payNow(page);
+  // Standard keyboard activation of the pay button, so the form's own submit handler runs.
+  await expect(page.getByTestId('sf-pay-button')).toBeEnabled({ timeout: 30_000 });
+  await page.getByTestId('sf-pay-button').focus();
+  await page.keyboard.press('Enter');
   await expect(page.getByTestId('sf-complete')).toHaveAttribute('data-state', 'subscription_active', { timeout: 60_000 });
   await expect(page.getByTestId('sf-subscription-status')).toHaveAttribute('data-status', 'active');
   flint.assertClean();
