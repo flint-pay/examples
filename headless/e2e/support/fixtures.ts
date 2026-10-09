@@ -37,8 +37,9 @@ export async function loadFixtures(config: Config): Promise<Fixtures> {
   return f;
 }
 export function atPath(value: any, path: string): any {
-  invariant(/^[a-zA-Z0-9_.]+$/.test(path), 'RESPONSE_PATH_INVALID');
-  return path.split('.').reduce((v, key) => v?.[key], value);
+  const keys = path.split('.');
+  invariant(keys.every(key => /^[a-zA-Z0-9_-]+$/.test(key) && !['__proto__', 'prototype', 'constructor'].includes(key)), 'RESPONSE_PATH_INVALID');
+  return keys.reduce((v, key) => v != null && Object.hasOwn(v, key) ? v[key] : undefined, value);
 }
 
 export function validateFixtureShape(f: Fixtures): void {
