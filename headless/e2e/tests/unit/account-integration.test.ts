@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { SdkError } from '@flintpay/node';
 import { exerciseAccountApi } from '../../support/account-integration.ts';
 import { Operator } from '../../support/operator.ts';
 import { Ledger } from '../../support/ledger.ts';
@@ -11,7 +12,7 @@ import type { VerifiedClients } from '../../support/sdk.ts';
 import type { Fixtures } from '../../support/fixtures.ts';
 
 const run = '20000101T000000Z-00000000', customer = 'cus_UNIT_FAKE';
-async function fixture(dir: string, options: { owned?: boolean; wrongCustomer?: boolean; lostRefresh?: boolean; stillValid?: boolean } = {}) {
+async function fixture(dir: string, options: { owned?: boolean; wrongCustomer?: boolean; lostRefresh?: boolean; stillValid?: boolean; revokedError?: Error } = {}) {
   const ledger = new Ledger(join(dir, 'ledger.json'), run);
   await ledger.record({ resource: customer, type: 'customer', mode: 'test', sandbox: 'A', merchant: 'mer_UNIT_FAKE', sandboxId: 'test_UNIT_FAKE', createdBy: run, purpose: 'synthetic-unit', cleanup: 'review', owner: 'unit', reviewAt: '2000-02-01T00:00:00Z', owned: options.owned ?? true });
   let writes = 0, revoked = false;
@@ -29,7 +30,7 @@ async function fixture(dir: string, options: { owned?: boolean; wrongCustomer?: 
     if (options.lostRefresh) throw new Error('synthetic transport interrupted'); return second;
   } } }, buyer: (secret: string) => {
     secrets.push(secret);
-    const me: Record<string, unknown> = { get: async () => { seen.push('get'); if (revoked && !options.stillValid) throw Object.assign(new Error('synthetic session revoked'), { code: 'INVALID_CUSTOMER_SESSION' }); return { customer_id: customer }; } };
+    const me: Record<string, unknown> = { get: async () => { seen.push('get'); if (revoked && !options.stillValid) throw options.revokedError ?? new SdkError('not_found', 'Synthetic session revoked', 'response', false, { status: 404, headers: {}, attempts: 1, durationMs: 1 }, 'CUSTOMER_SESSION_NOT_FOUND'); return { customer_id: customer }; } };
     for (const method of ['listOrders', 'listSubscriptions', 'listInvoices', 'listReturns', 'listPaymentMethods', 'listAddresses', 'listGiftCards']) me[method] = async () => { seen.push(method); return { data: [] }; };
     return { me, close: async () => {} };
   } } as unknown as AccountClients;
@@ -57,4 +58,11 @@ test('lost refresh remains unreconciled and a usable revoked session fails accep
   const lost = await fixture(dir, { lostRefresh: true }); await assert.rejects(() => exerciseAccountApi(lost.operator, customer, lost.injected));
   assert.equal(lost.ledger.state.actions['A:account-api-refresh'].phase, 'unknown'); await assert.rejects(() => lost.operator.cleanup(), { message: 'UNRECONCILED_CREATION_OR_MUTATION' });
   const valid = await fixture(dir, { stillValid: true }); await assert.rejects(() => exerciseAccountApi(valid.operator, customer, valid.injected), { message: 'ACCOUNT_REVOKED_SESSION_MUST_BE_INVALID' });
+}));
+
+test('revocation requires the public session-not-found response, not an unrelated error', async () => temp(async dir => {
+  for (const [status, code] of [[400, 'INVALID_CUSTOMER_SESSION'], [503, 'CUSTOMER_SESSION_NOT_FOUND']] as const) {
+    const f = await fixture(dir, { revokedError: new SdkError('api', 'Synthetic unrelated error', 'response', false, { status, headers: {}, attempts: 1, durationMs: 1 }, code) });
+    await assert.rejects(() => exerciseAccountApi(f.operator, customer, f.injected), { message: 'ACCOUNT_REVOKED_SESSION_MUST_BE_INVALID' });
+  }
 }));

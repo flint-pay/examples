@@ -23,7 +23,7 @@ test('own public session reuse checks do not extract application authority or st
     } };
     const clients = { config: { apiOrigin: 'https://api.staging.withflintpay.com', pins: { A: { merchantId: 'mer_PLACEHOLDER', sandboxId: 'test_PLACEHOLDER' } } }, clients: { A: client }, writable: async () => client } as unknown as VerifiedClients;
     const op = new Operator(clients, ledger, {} as Fixtures);
-    const evidence = await exerciseOwnSessionRefresh(op, customerId, secret => ({ me: { get: async () => { assert.equal(secret, second.secret); if (revoked) throw Object.assign(new Error('INVALID_CUSTOMER_SESSION'), { code: 'INVALID_CUSTOMER_SESSION' }); return { customer_id: customerId }; } } } as any), client as any);
+    const evidence = await exerciseOwnSessionRefresh(op, customerId, secret => ({ me: { get: async () => { assert.equal(secret, second.secret); if (revoked) throw Object.assign(new Error('CUSTOMER_SESSION_NOT_FOUND'), { status: 404, code: 'CUSTOMER_SESSION_NOT_FOUND' }); return { customer_id: customerId }; } } } as any), client as any);
     assert.deepEqual(evidence, ['PUBLIC_OWN_SESSION_REFRESH_ROTATION_REUSE_FAMILY_REVOCATION']); assert.notEqual(keys[0], keys[1]);
     assert.equal(ledger.state.resources.filter(r => r.type === 'customer_session').length, 2);
     const persisted = await readFile(ledger.file, 'utf8'); for (const value of [first.secret, first.refresh_token, second.secret, second.refresh_token]) assert.equal(persisted.includes(value), false);

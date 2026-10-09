@@ -549,7 +549,7 @@
     "tier": "integration",
     "schedule": "nightly",
     "prq": [],
-    "assert": "Sign-out revokes the customer session (old secret returns INVALID_CUSTOMER_SESSION via SDK); credential-boundary unit test passes; CSRF and credential scans clean."
+    "assert": "Sign-out revokes the customer session (old secret returns 404 CUSTOMER_SESSION_NOT_FOUND via SDK); credential-boundary unit test passes; CSRF and credential scans clean."
   },
   {
     "id": "AC-17",

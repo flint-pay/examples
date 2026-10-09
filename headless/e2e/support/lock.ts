@@ -6,7 +6,7 @@ import type { Config } from './config.ts';
 
 const heldLocks = new Map<string, Awaited<ReturnType<typeof open>>>();
 export async function acquirePairLock(config: Config): Promise<() => Promise<void>> {
-  const root = `/tmp/flint-headless-e2e-${process.getuid?.()}`; await mkdir(root, { mode: 0o700 });
+  const root = `/tmp/flint-headless-e2e-${process.getuid?.()}`; await mkdir(root, { mode: 0o700, recursive: true });
   await privateDirectory(root);
   const file = join(root, `${digest(Object.values(config.pins).map(p => [p.merchantId, p.sandboxId]).sort()).slice(0, 32)}.lock`);
   let handle;

@@ -199,13 +199,13 @@ for(const status of [409,503] as const) test(`ambiguous HTTP ${status} replay is
   assert.equal(/flint_(?:cses|cref)_/.test(await readFile(r.ledger.file,'utf8')),false);
 }));
 test('current app authority must fail with exact API status and code after revocation',async()=>{
-  for(const response of [Response.json({data:{customer_id:customer,email:'unit@example.invalid',version:'1'}}),Response.json({error:{code:'OTHER',message:'synthetic'}},{status:401})]) {
+  for(const response of [Response.json({data:{customer_id:customer,email:'unit@example.invalid',version:'1'}}),Response.json({error:{code:'INVALID_CUSTOMER_SESSION',message:'synthetic'}},{status:401}),Response.json({error:{code:'CUSTOMER_SESSION_NOT_FOUND',message:'synthetic'}},{status:503})]) {
     const anon=anonymousSessionClient(undefined,async(input,init)=>{assert.equal(new Request(input,init).headers.get('authorization'),'Bearer flint_cses_PLACEHOLDER');return response;});
     await assert.rejects(()=>assertAppSecretInvalid(anon,new SealedCredential('flint_cses_PLACEHOLDER'),'OLD_APP_SECRET_STILL_VALID'),{code:'OLD_APP_SECRET_STILL_VALID'});
   }
-  const anon=anonymousSessionClient(undefined,async()=>Response.json({error:{code:'INVALID_CUSTOMER_SESSION',message:'synthetic'}},{status:401}));await assertAppSecretInvalid(anon,new SealedCredential('flint_cses_PLACEHOLDER'),'UNIT');
-  const failure=await sessionCall(async()=>{throw Object.assign(new Error('raw flint_cses_PLACEHOLDER'),{code:'INVALID_CUSTOMER_SESSION',meta:{status:401},request:{headers:{authorization:'flint_cses_PLACEHOLDER'}}});}).catch(e=>e);
-  assert.deepEqual(failure,{status:401,code:'INVALID_CUSTOMER_SESSION',requestId:undefined});assert.equal(JSON.stringify(failure).includes('flint_cses_'),false);
+  const anon=anonymousSessionClient(undefined,async()=>Response.json({error:{code:'CUSTOMER_SESSION_NOT_FOUND',message:'synthetic'}},{status:404}));await assertAppSecretInvalid(anon,new SealedCredential('flint_cses_PLACEHOLDER'),'UNIT');
+  const failure=await sessionCall(async()=>{throw Object.assign(new Error('raw flint_cses_PLACEHOLDER'),{code:'CUSTOMER_SESSION_NOT_FOUND',meta:{status:404},request:{headers:{authorization:'flint_cses_PLACEHOLDER'}}});}).catch(e=>e);
+  assert.deepEqual(failure,{status:404,code:'CUSTOMER_SESSION_NOT_FOUND',requestId:undefined});assert.equal(JSON.stringify(failure).includes('flint_cses_'),false);
 });
 test('refresh evidence needs exactly one resolved automatic refresh in the same family',()=>{
   const event={app:'accountA',operation:'CUSTOMER_SESSION_REFRESH',fingerprint:'unit',timestamp:100,status:200,resolvedAt:200};
@@ -255,7 +255,7 @@ async function flowFixture(dir: string, options: {early?: boolean; changedFamily
     const request=new Request(input,init);
     if(request.url.endsWith('/customer-sessions/refresh')){assert.equal(request.headers.get('authorization'),null);revoked=true;return Response.json({error:{code:'CUSTOMER_SESSION_REFRESH_REUSED',message:'synthetic'}},{status:401});}
     assert.ok(request.headers.get('authorization')?.startsWith('Bearer flint_cses_'));
-    return revoked&&!options.oldAccepted?Response.json({error:{code:'INVALID_CUSTOMER_SESSION',message:'synthetic'}},{status:401}):Response.json({data:{customer_id:customer,email:'unit@example.invalid',version:'1'}});
+    return revoked&&!options.oldAccepted?Response.json({error:{code:'CUSTOMER_SESSION_NOT_FOUND',message:'synthetic'}},{status:404}):Response.json({data:{customer_id:customer,email:'unit@example.invalid',version:'1'}});
   });
   let boundaryCalls=0,verifyCalls=0,scanCalls=0;
   const ports={reader,anonymous,now:()=>clock,wait:async(ms:number)=>{clock+=ms;if(options.early&&!d.appMutations.length)d.appMutations.push({app:'accountA',operation:'CUSTOMER_SESSION_REFRESH',fingerprint:'early',timestamp:clock});},sync:async()=>{},verify:async()=>{verifyCalls++;},scan:async()=>{scanCalls++;for(const name of ['ledger.json','ledger.md'])assert.equal(/flint_(?:cses|cref)_/.test(await readFile(join(dir,name),'utf8')),false);d.scanner.assertClean();},boundary:async()=>{boundaryCalls++;}};
@@ -266,7 +266,7 @@ test('full injected app replay and sign-out transitions produce only nonsecret e
   process.stdout.write=((value:any)=>{captured.push(String(value));return true;}) as typeof process.stdout.write;
   try{
     const replay=await runAppRefreshTransition(flow.d,flow.ports);assert.ok(replay.includes('APP_CURRENT_SECRET_INVALID_AFTER_REUSE'));
-    flow.reset();const signout=await runAppSignoutTransition(flow.d,flow.ports);assert.ok(signout.includes('OLD_APP_SECRET_INVALID_CUSTOMER_SESSION'));
+    flow.reset();const signout=await runAppSignoutTransition(flow.d,flow.ports);assert.ok(signout.includes('OLD_APP_SECRET_CUSTOMER_SESSION_NOT_FOUND'));
     assert.equal(flow.counts().boundaryCalls,1);assert.equal(flow.counts().verifyCalls,3);assert.equal(flow.counts().scanCalls,3);
     for(const name of ['ledger.json','ledger.md'])assert.equal(/flint_(?:cses|cref)_/.test(await readFile(join(dir,name),'utf8')),false);
     assert.equal(/flint_(?:cses|cref)_/.test(captured.join('')),false);
