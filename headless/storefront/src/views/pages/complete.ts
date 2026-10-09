@@ -1,6 +1,6 @@
 import { html, raw } from 'hono/html';
 import { copy, fill, message } from '../../copy.ts';
-import { csrfField, money, noticeList, type Html } from '../components.ts';
+import { csrfField, field, money, noticeList, type Html } from '../components.ts';
 import { addressLine, formatDay, formatMoney, isPositive } from '../format.ts';
 import { jsonForScript } from '../scrub.ts';
 import { shell } from '../layout.ts';
@@ -20,6 +20,18 @@ export function deriveCompleteState(state: CheckoutState): CompleteState {
   if (paymentStatus === 'paid') return 'paid';
   if (paymentStatus === 'partially_paid') return 'partially_paid';
   return 'confirming';
+}
+
+/**
+ * A $0 trial is paid from creation, so a missing subscription with nothing in flight means the card
+ * setup never ran. `next` is `new_payment` only when no attempt is open and none has an unknown outcome.
+ */
+export function trialSetupNotStarted(state: CheckoutState): boolean {
+  return state.kind === 'subscription'
+    && !state.order.subscription_id
+    && BigInt(state.order.settlement_amounts?.outstanding_money?.amount ?? '1') === 0n
+    && state.next === 'new_payment'
+    && !['paid', 'partially_paid'].includes(state.session.status ?? '');
 }
 
 function accountLink(ctx: PageContext<CompleteData>, state: CheckoutState): Html {
@@ -68,6 +80,56 @@ function receiptForm(ctx: PageContext<CompleteData>, state: CheckoutState): Html
     <div class="actions"><button class="button" type="submit" data-testid="sf-send-receipt">${copy.complete.emailReceipt}</button></div>
     <p class="receipt-status" role="status" data-receipt-status data-testid="sf-receipt-status"></p>
   </form>`;
+}
+
+/**
+ * Confirms a card the buyer chose to save at checkout. Flint keeps it pending until a code sent after
+ * payment is entered here. Only a card saved with a phone number reaches this state, so nothing shows
+ * for signed-in buyers, buyers the merchant named, or buyers who saved no phone.
+ */
+export function saveCardPanel(ctx: PageContext<CompleteData>, state: CheckoutState): Html {
+  const save = state.session.payment_method_save;
+  if (!save) return html``;
+  const ref = encodeURIComponent(state.checkout_ref);
+  const heading = html`<h3 id="save-card-title">${copy.complete.saveCardHeading}</h3>`;
+  const wrap = (status: string, body: Html, extra: Html = html``): Html =>
+    html`<section class="stack" aria-labelledby="save-card-title" data-save-card data-status="${status}" data-checkout-ref="${state.checkout_ref}" ${extra} data-testid="sf-save-confirm">${heading}${body}</section>`;
+  if (save.status === 'saved') {
+    const text = save.saved_with === 'email' ? copy.complete.saveCardSavedEmail : copy.complete.saveCardSavedText;
+    return wrap('saved', html`<p role="status" data-testid="sf-save-confirm-saved">${text}</p>`);
+  }
+  if (save.status === 'expired') return wrap('expired', html`<p data-testid="sf-save-confirm-expired">${copy.complete.saveCardExpired}</p>`);
+  if (save.status !== 'pending') return html``;
+
+  const v = state.verification;
+  const sent = v?.status === 'code_sent' && v.purpose === 'confirm_saved_payment_method';
+  const emailOnly = save.email_confirmation_required;
+  const status = html`<p class="receipt-status" role="status" data-save-card-status data-testid="sf-save-confirm-status"></p>`;
+  if (!sent) {
+    return wrap('pending', html`
+      <p class="hint">${emailOnly ? copy.complete.saveCardEmailStep : copy.complete.saveCardIntro}</p>
+      <div class="actions">
+        ${emailOnly
+          ? html`<button class="button" type="button" data-save-send="email" data-testid="sf-save-confirm-email">${copy.complete.saveCardSendEmail}</button>`
+          : html`<button class="button" type="button" data-save-send="sms" data-testid="sf-save-confirm-text">${copy.complete.saveCardSendText}</button>
+            <button class="button button-quiet" type="button" data-save-send="email" data-testid="sf-save-confirm-email">${copy.complete.saveCardEmailInstead}</button>`}
+      </div>
+      ${status}`, emailOnly ? html`` : html`data-auto-send="sms"`);
+  }
+  const bySms = v.delivery_channel === 'sms';
+  const prompt = bySms ? message('returning_code_sms', { digits: v.phone_last_digits ?? save.phone_last_digits }) : message('returning_code_email', { email: v.masked_email });
+  return wrap('code_sent', html`
+    <form method="post" action="/checkout/${ref}/verification/confirm" data-save-card-form novalidate data-testid="sf-save-confirm-form">
+      ${csrfField(ctx)}
+      <p id="save-card-prompt">${prompt}</p>
+      ${field({ id: 'save-card-code', name: 'code', label: copy.complete.saveCardCode, required: true, autocomplete: 'one-time-code', inputmode: 'numeric', maxlength: 6, testid: 'sf-save-confirm-code', sensitive: true })}
+      <div class="actions">
+        <button class="button" type="submit" data-testid="sf-save-confirm-confirm">${copy.complete.saveCardConfirm}</button>
+        <button class="button button-quiet" type="button" data-save-send="${bySms ? 'sms' : 'email'}" data-testid="sf-save-confirm-resend">${copy.complete.saveCardResend}</button>
+        ${bySms && !emailOnly ? html`<button class="button button-quiet" type="button" data-save-send="email" data-testid="sf-save-confirm-email">${copy.complete.saveCardEmailInstead}</button>` : ''}
+      </div>
+    </form>
+    ${status}`);
 }
 
 function subscriptionBody(ctx: PageContext<CompleteData>, state: CheckoutState, trialing: boolean): Html {
@@ -125,6 +187,7 @@ export function completePage(ctx: PageContext<CompleteData>): Html {
                 ${paymentLine(state)}
                 ${paid && isPositive(paid) ? html`<p class="summary-row summary-strong"><span>${copy.complete.paidAmount}</span> ${money(paid, formatMoney(paid))}</p>` : ''}
                 ${ctx.data.paidSignal ? html`<p class="hint" data-testid="sf-paid-signal">${copy.complete.flintSignal}</p>` : ''}
+                ${saveCardPanel(ctx, state)}
                 ${receiptForm(ctx, state)}
                 ${accountLink(ctx, state)}
                 <p><a class="button-link" href="/">${copy.complete.continueShopping}</a></p>
@@ -144,6 +207,11 @@ export function completePage(ctx: PageContext<CompleteData>): Html {
     generic_error: message('generic_error'),
     network_error: message('network_error'),
     still_confirming: message('still_confirming'),
+    rate_limited: message('customer_verification_rate_limited'),
+    code_invalid: message('save_card_code_invalid'),
+    text_unavailable: message('customer_verification_text_unavailable'),
+    email_unavailable: message('payment_method_save_email_unavailable'),
+    not_ready: message('payment_method_save_not_ready'),
   };
   const withData = html`${main}<script type="application/json" id="complete-messages">${raw(jsonForScript(strings))}</script>`;
   return shell(ctx, { pageId: 'sf-complete', title: heading, main: withData, testid: 'sf-complete', state: view, scripts: ['/js/complete.js'] });

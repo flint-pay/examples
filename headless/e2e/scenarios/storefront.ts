@@ -6,8 +6,20 @@ import { bank, affirm } from './provider.ts';
 import { walletScenario } from './wallets.ts';
 
 export type Scenario = (d: Driver) => Promise<string[]>;
+/** Enters the billing address a no-delivery checkout asks for before automatic tax can be calculated, then reads the taxed order. */
+async function billing(d: Driver, c: Checkout): Promise<void> {
+  const section = c.page.getByTestId('sf-billing');
+  if (!await section.isVisible() || await section.getAttribute('data-state') !== 'needed') return;
+  await c.page.getByTestId('sf-bill-line1').fill('11 Wall Street'); await c.page.getByTestId('sf-bill-city').fill('New York');
+  await c.page.getByTestId('sf-bill-state').fill('NY'); await c.page.getByTestId('sf-bill-postal').fill('10005');
+  await c.page.getByTestId('sf-billing-save').click();
+  await expect(c.page.getByTestId('sf-billing')).toHaveAttribute('data-state', 'set', { timeout: 30_000 });
+  await expect(c.page.getByTestId('sf-pay-form')).toBeVisible({ timeout: 30_000 });
+  await expect(c.page.getByTestId('sf-payment')).toHaveAttribute('data-state', 'ready', { timeout: 30_000 });
+  await d.state(c);
+}
 async function normal(d: Driver, name: string, product = 'house-blend'): Promise<Checkout> {
-  const c = await d.checkout(await d.page(name), product); await d.delivery(c); return c;
+  const c = await d.checkout(await d.page(name), product); await d.delivery(c); await billing(d, c); return c;
 }
 async function subscription(d: Driver, trial: boolean): Promise<any> {
   const page = await d.page(trial ? 'trial' : 'b1');
@@ -16,7 +28,7 @@ async function subscription(d: Driver, trial: boolean): Promise<any> {
   await d.goto(page, d.sf(), `/subscribe/${slug}`); await d.form(page, `/subscribe/${slug}`);
   await page.waitForURL(/\/checkout\/[^/]+$/);
   const c: Checkout = { page, ref: new URL(page.url()).pathname.split('/')[2], origin: d.sf(), sandbox: 'A', orderId: '', state: null };
-  await d.state(c);
+  await d.state(c); await billing(d, c);
   const email = page.getByTestId('sf-contact-email'); if (await email.isEditable()) { await email.fill(d.fixtures.buyers.b1.email); await email.blur(); }
   await page.getByTestId('sf-contact-name').fill('Acceptance buyer');
   if (trial) invariant(c.state.setup_collection && money(c.state.order.settlement_amounts.outstanding_money).amount === '0', 'TRIAL_SETUP_COLLECTION_REQUIRED');
@@ -194,5 +206,5 @@ export const storefront: Record<string, Scenario> = {
     }
     return ['HOSTED_MODE_EMAIL_AND_SMS_SAVED_METHOD'];
   },
-  'SF-25': async d => { const c = await d.checkout(await d.page('service'), 'brewing-class'); await expect(c.page.getByTestId('sf-delivery')).toBeHidden(); await d.pay(c); await d.settled(c); return ['SERVICE_WITHOUT_DELIVERY_SETTLED']; },
+  'SF-25': async d => { const c = await d.checkout(await d.page('service'), 'brewing-class'); await expect(c.page.getByTestId('sf-delivery')).toBeHidden(); await billing(d, c); await d.pay(c); await d.settled(c); return ['SERVICE_WITHOUT_DELIVERY_SETTLED']; },
 };

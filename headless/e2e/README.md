@@ -6,7 +6,7 @@ This package holds the acceptance harness for the headless storefront and accoun
 
 ## What it covers
 
-The inventory has 58 entries: the 52 settled acceptance rows in `scenarios/matrix.json` and six supplemental entries (`SF-05Z1`, `SF-05Z2`, `SF-05Z3`, `SF-GIFTCHALLENGE`, `SF-ACH-MICRODEP`, `AC-15API`). Every row ends in one of `PASS`, `FAIL`, `BLOCKED`, or `NOT RUN`. A row that depends on an unresolved prerequisite is `NOT RUN`. A skipped test is never `PASS`, and a run that leaves rows unexecuted exits unsuccessfully. Only a user-accepted exception recorded in the private fixture file can exclude a row. This README records none.
+The inventory has 59 entries: the 52 settled acceptance rows in `scenarios/matrix.json` and seven supplemental entries (`SF-05Z1`, `SF-05Z2`, `SF-05Z3`, `SF-GIFTCHALLENGE`, `SF-ACH-MICRODEP`, `AC-15API`, `AC-GIFTCHALLENGE`). Every row ends in one of `PASS`, `FAIL`, `BLOCKED`, or `NOT RUN`. A row that depends on an unresolved prerequisite is `NOT RUN`. A skipped test is never `PASS`, and a run that leaves rows unexecuted exits unsuccessfully. Only a user-accepted exception recorded in the private fixture file can exclude a row. This README records none.
 
 Two rows stay gated by design:
 
@@ -106,7 +106,7 @@ No trace, screenshot, video, HAR, HTML report, or raw JSON reporter is enabled, 
 These are recorded once as prerequisites. Rows that depend on them are `NOT RUN`.
 
 - **Runtime, source, and SDK:** a reachable staging runtime at the candidate build, a clean reviewed source checkout at the target commit, and the pinned SDK installed.
-- **Null account settings restoration:** the pinned SDK cannot send `customer_account: null`. The harness refuses an initial null snapshot before changing settings and invents no defaults. This stays `PENDING` until an updated SDK is published, installed, and verified, or the parent supplies a fixture with restorable settings. The account setup script already records an absent setting in its snapshot and stops before any write. That is code readiness only. Restoring the absent state is not proven.
+- **Absent account settings restoration:** the pinned SDK accepts and preserves `customer_account: null`. The account setup script snapshots an absent `customer_account` as explicit absence and restores it by sending explicit `null`. It validates the restore request locally before any settings write.
 - **Gift card challenge:** `PRQ-GIFT-CHALLENGE` stays unresolved until a published SDK carries the public challenge flow and it is installed and verified. The harness has the guarded row and no way around the challenge.
 - **Sandbox readiness:** card and Affirm admission, ACH settlement and debit-email readiness, automatic tax, and workers, attested by the parent. A readiness statement expires after 24 hours.
 - **Device wallets** need a real Safari or Chrome wallet flow with an operator. **Microdeposit ACH** is outside the supported matrix and is never faked. ACH uses actual instant verification.

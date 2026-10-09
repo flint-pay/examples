@@ -8,7 +8,7 @@ import * as logic from './checkout-logic.js';
 import { $, $$, announce, csrfToken, focusElement, setBusy } from './dom.js';
 import { mountChallengeFrame } from './gift-challenge.js';
 import { formatMoney, sameMoney } from './money.js';
-import { createStripePayment } from './stripe-payment.js';
+import { createStripePayment, runClientAction } from './stripe-payment.js';
 
 /** @typedef {import('../../src/views/types.ts').CheckoutState} CheckoutState */
 /** @typedef {import('../../src/views/types.ts').GiftChallengeView} GiftChallengeView */
@@ -29,7 +29,8 @@ const POLL_MAX_MS = 5000;
 const POLL_LIMIT_MS = 60_000;
 /** Resume requests one recovery run may send. Each replays the same saved request. */
 const MAX_RESUME_POSTS = 3;
-const SWAP_REGIONS = ['notices', 'summary', 'discount', 'delivery', 'gift-cards', 'tip', 'contact-extra'];
+const BILLING_FOCUS_KEY = 'sf-focus-billing-title';
+const SWAP_REGIONS = ['notices', 'summary', 'discount', 'delivery', 'billing', 'gift-cards', 'tip', 'contact-extra'];
 
 const app = {
   state: boot.state,
@@ -269,7 +270,7 @@ function currentBlockers() {
   }
   if (OPEN_STATES.has(app.paymentState) && !blockers.includes('attempt_open')) blockers.push('attempt_open');
   if (needsProcessor() && !savedChoice() && !app.elementsComplete && !blockers.includes('delivery_selection_missing')) blockers.push('elements_incomplete');
-  const priority = ['session_not_open', 'attempt_open', 'contact_email_missing', 'delivery_selection_missing', 'delivery_input_required', 'elements_incomplete'];
+  const priority = ['session_not_open', 'attempt_open', 'contact_email_missing', 'billing_address_missing', 'delivery_selection_missing', 'delivery_input_required', 'elements_incomplete'];
   return [...new Set(blockers)].sort((a, b) => priority.indexOf(a) - priority.indexOf(b));
 }
 
@@ -359,7 +360,7 @@ function applyState(state) {
   }
   refreshPayControls();
   // Removing a gift card can bring the card form back after a settlement-only load.
-  if (needsProcessor() && !app.flow && app.paymentState !== 'loading' && !OPEN_STATES.has(app.paymentState)) void mountPayment();
+  if (needsProcessor() && !app.flow && payForm() && app.paymentState !== 'loading' && !OPEN_STATES.has(app.paymentState)) void mountPayment();
 }
 
 /**
@@ -400,6 +401,8 @@ async function refreshRegions(options = {}) {
     const hadFocus = current.contains(document.activeElement);
     const keepEditing = name === 'delivery' && deliveryEditing(current);
     if (keepEditing && incoming.getAttribute('data-state') === 'idle') continue;
+    // Typing in the billing form survives a refresh caused by another section. Its own save always swaps.
+    if (name === 'billing' && options.focusRegion !== 'billing' && deliveryEditing(current)) continue;
     current.replaceWith(document.importNode(incoming, true));
     if (hadFocus && options.focusRegion !== name) {
       const heading = $(`[data-region="${name}"] h2`);
@@ -452,6 +455,14 @@ const bodies = {
       country: field(form, 'country') || 'US',
     },
   }),
+  'billing-address': (form) => ({
+    line1: field(form, 'line1'),
+    ...(field(form, 'line2') ? { line2: field(form, 'line2') } : {}),
+    city: field(form, 'city'),
+    state: field(form, 'state').toUpperCase(),
+    postal_code: field(form, 'postal_code'),
+    country: 'US',
+  }),
   'pickup-locations': (form) => ({ postal_code: field(form, 'postal_code'), country: 'US' }),
   'delivery-select': (form) => {
     const mode = $('[data-delivery-modes] input:checked');
@@ -484,6 +495,7 @@ const paths = {
   discount: '/discount',
   'discount-remove': '/discount/remove',
   'delivery-quote': '/delivery/quote',
+  'billing-address': '/billing-address',
   'pickup-locations': '/pickup-locations',
   'delivery-select': '/delivery/select',
   'gift-card': '/gift-card',
@@ -496,6 +508,7 @@ const errorTargets = {
   discount: 'discount',
   'discount-remove': 'discount',
   'delivery-quote': 'delivery',
+  'billing-address': 'billing',
   'pickup-locations': 'delivery',
   'delivery-select': 'delivery',
   'gift-card': 'gift-card',
@@ -548,6 +561,32 @@ function showJobError(target, text) {
 }
 
 /**
+ * The first billing field that fails, in form order, or an empty string.
+ * @param {HTMLFormElement} form
+ */
+function billingFailure(form) {
+  for (const name of ['line1', 'city', 'state', 'postal_code']) if (!field(form, name)) return name;
+  if (!/^[A-Za-z]{2}$/.test(field(form, 'state'))) return 'state';
+  if (!/^\d{5}(-\d{4})?$/.test(field(form, 'postal_code'))) return 'postal_code';
+  return '';
+}
+
+/**
+ * Marks only the failing billing field invalid and moves focus to it. An empty name clears every mark.
+ * @param {HTMLFormElement} form
+ * @param {string} name
+ */
+function markBillingInvalid(form, name) {
+  for (const input of $$('input:not([type="hidden"])', form)) {
+    if (!(input instanceof HTMLInputElement)) continue;
+    if (input.name === name) input.setAttribute('aria-invalid', 'true');
+    else input.removeAttribute('aria-invalid');
+  }
+  const bad = name ? form.elements.namedItem(name) : null;
+  if (bad instanceof HTMLInputElement) bad.focus();
+}
+
+/**
  * @param {string} kind
  * @param {HTMLFormElement} form
  */
@@ -557,6 +596,10 @@ function validateJobForm(kind, form) {
   if (kind === 'delivery-quote') {
     for (const name of ['line1', 'city', 'state', 'postal_code']) if (!field(form, name)) return msg('delivery_address_incomplete');
     if (!/^\d{5}(-\d{4})?$/.test(field(form, 'postal_code'))) return msg('delivery_postal_code_required');
+  }
+  if (kind === 'billing-address') {
+    const failed = billingFailure(form);
+    if (failed) return msg(failed === 'postal_code' && field(form, 'postal_code') ? 'billing_postal_code_required' : 'billing_address_incomplete');
   }
   if (kind === 'pickup-locations' && !/^\d{5}(-\d{4})?$/.test(field(form, 'postal_code'))) return msg('delivery_postal_code_required');
   if (kind === 'delivery-select') {
@@ -598,10 +641,15 @@ async function onJobSubmit(event) {
   const errorTarget = errorTargets[kind] ?? 'payment';
   if (problem) {
     showJobError(errorTarget, problem);
+    if (kind === 'billing-address') {
+      markBillingInvalid(target, billingFailure(target));
+      return;
+    }
     const first = $('input:not([type="hidden"]):not([type="radio"])', target);
     if (first instanceof HTMLElement && problem) first.setAttribute('aria-invalid', 'true');
     return;
   }
+  if (kind === 'billing-address') markBillingInvalid(target, '');
   showJobError(errorTarget, '');
   const button = /** @type {HTMLElement | null} */ ($('button[type="submit"]', target));
   const path = kind === 'gift-card-remove' ? `/gift-card/${encodeURIComponent(target.action.split('/gift-card/')[1]?.split('/')[0] ?? '')}/remove` : paths[kind];
@@ -682,17 +730,29 @@ async function runJob(kind, path, body, target, paysSent) {
     const input = target.elements.namedItem('gift_card_code');
     if (input instanceof HTMLInputElement) input.value = '';
   }
-  await refreshRegions({ focusRegion: focusAfter(kind), announcePrefix: kind === 'gift-card' ? msg('gift_card_applied') : undefined });
+  const refreshed = await refreshRegions({ focusRegion: focusAfter(kind), announcePrefix: kind === 'gift-card' ? msg('gift_card_applied') : undefined });
+  // The address is saved but the page could not read the result. Say so instead of leaving the old form.
+  if (kind === 'billing-address' && !refreshed) {
+    showJobError('billing', msg('network_error'));
+    return;
+  }
   if (app.afterQuote && (kind === 'delivery-quote' || kind === 'pickup-locations')) {
     showJobError('delivery', app.afterQuote);
     app.afterQuote = '';
   }
   if (kind === 'verification-confirm') await loadSavedMethods();
+  // The pay form is only on the page once tax has a location. Load it the way a new region is loaded.
+  if (kind === 'billing-address' && !payForm() && logic.taxLocationState(app.state) !== 'needed') {
+    // The reload drops focus, so the next load puts it back on the billing heading once.
+    try { sessionStorage.setItem(BILLING_FOCUS_KEY, REF); } catch { /* focus is a courtesy */ }
+    window.location.reload();
+  }
 }
 
 /** @param {string} kind */
 function focusAfter(kind) {
   if (kind.startsWith('delivery') || kind === 'pickup-locations') return 'delivery';
+  if (kind === 'billing-address') return 'billing';
   if (kind.startsWith('discount')) return 'discount';
   if (kind.startsWith('gift-card')) return 'gift-cards';
   if (kind === 'tip') return 'tip';
@@ -1077,6 +1137,23 @@ function wireRegions() {
       for (const panel of $$('[data-delivery-panel]')) panel.toggleAttribute('hidden', panel.getAttribute('data-delivery-panel') !== mode);
     });
   }
+  for (const input of $$('form[data-job-form="billing-address"] input')) {
+    if (!(input instanceof HTMLInputElement) || input.dataset.wired) continue;
+    input.dataset.wired = 'true';
+    input.addEventListener('input', () => input.removeAttribute('aria-invalid'));
+  }
+  for (const button of $$('[data-billing-change]')) {
+    if (!(button instanceof HTMLButtonElement) || button.dataset.wired) continue;
+    button.dataset.wired = 'true';
+    button.addEventListener('click', () => {
+      const edit = document.getElementById('billing-edit');
+      if (!edit) return;
+      const open = edit.hasAttribute('hidden');
+      edit.toggleAttribute('hidden', !open);
+      button.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (open) $('input:not([type="hidden"])', edit)?.focus();
+    });
+  }
   for (const button of $$('[data-delivery-change]')) {
     if (!(button instanceof HTMLButtonElement) || button.dataset.wired) continue;
     button.dataset.wired = 'true';
@@ -1239,7 +1316,7 @@ async function mountPayment() {
     setPaymentState(logic.derivePaymentState(app.state) === 'ready' ? 'ready' : logic.derivePaymentState(app.state));
     return;
   }
-  const key = JSON.stringify([guidanceSource.publishable_key, guidanceSource.account_id, guidanceSource.elements?.mode, guidanceSource.elements?.payment_method_types, app.excludeAffirm]);
+  const key = JSON.stringify([guidanceSource.publishable_key, guidanceSource.account_id, guidanceSource.elements?.mode, guidanceSource.elements?.payment_method_types, guidanceSource.return_url, app.excludeAffirm]);
   if (app.flow && app.flowKey === key) return;
   app.flow?.destroy();
   app.flow = null;
@@ -1291,6 +1368,8 @@ async function mountPayment() {
       getShipping: shippingForAffirm,
     });
     app.flowKey = key;
+    const saveCard = $('#save-card');
+    if (saveCard instanceof HTMLInputElement && saveCard.checked && !saveCard.disabled) await app.flow.setSaving(true);
   } catch (error) {
     const missing = error instanceof Error && error.message === 'stripe_not_loaded';
     setPaymentState('unavailable', { message: missing ? msg('stripe_not_loaded') : msg('payments_unavailable', { store: boot.store }) });
@@ -1560,15 +1639,13 @@ async function authenticate(clientAction) {
     }
     return;
   }
-  if (dedupeKey) app.handledActions.set(dedupeKey, 1);
-  if (!action || !app.flow) {
-    if (!app.flow) await mountPayment();
-  }
-  if (!action || !app.flow) {
-    await recoverOutcome('read');
+  // Flint clears the card form's guidance while an action is pending, so Stripe runs it without Elements.
+  const run = await runClientAction(action, { onInvoke: () => { if (dedupeKey) app.handledActions.set(dedupeKey, 1); } });
+  if (!run.invoked) {
+    // Nothing ran, so the action is not marked as seen and a reload tries it again. No more requests.
+    setPaymentState('unavailable', { message: msg('bug_checkout', { store: boot.store }) });
     return;
   }
-  await app.flow.handleNextAction(action);
   // Resume whether or not the provider call returned an error: Flint decides the outcome.
   await recoverOutcome('resume');
 }
@@ -1669,7 +1746,6 @@ async function continueAffirm() {
   if (read.state) applyState(read.state);
   if (read.next === 'authenticate') {
     app.handledActions.clear();
-    if (!app.flow) await mountPayment();
     await authenticate(read.client_action);
   } else {
     await advance(read.next ?? 'wait', read.client_action);
@@ -1746,7 +1822,6 @@ async function start() {
       break;
     }
     case 'authenticating':
-      await mountPayment();
       await authenticate(undefined);
       break;
     case 'resuming':
@@ -1776,6 +1851,19 @@ async function start() {
   }
   maybeAutoRequote();
   if (app.state.order.customer_id && resting !== 'expired') void loadSavedMethods();
+  restoreBillingFocus();
+}
+
+/** Puts focus on the billing heading once after the reload that follows the first saved address. */
+function restoreBillingFocus() {
+  let wanted = null;
+  try {
+    wanted = sessionStorage.getItem(BILLING_FOCUS_KEY);
+    sessionStorage.removeItem(BILLING_FOCUS_KEY);
+  } catch { /* nothing to restore */ }
+  if (wanted !== REF) return;
+  const heading = $('#billing-title');
+  if (heading instanceof HTMLElement) focusElement(heading);
 }
 
 start();

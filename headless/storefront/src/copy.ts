@@ -76,6 +76,7 @@ export const messages = {
   checkout_expired: 'This checkout expired. Your cart is saved.',
   payments_unavailable: "Payments aren't available right now. Contact {store} for help.",
   affirm_incomplete: "Your Affirm application isn't finished. Continue with Affirm or choose another way to pay.",
+  trial_not_started: "Your free trial hasn't started yet. Add your card and select Start free trial. You won't be charged today.",
   signed_in_mid_checkout: "You're signed in. This checkout continues as a guest, and the order will show in your account after you pay.",
   bug_checkout: "Checkout hit a problem we can't fix here. Contact {store} and share the reference ID.",
 
@@ -94,6 +95,10 @@ export const messages = {
   customer_verification_rate_limited: 'Too many codes were sent. Wait a few minutes, then send a new code.',
   customer_verification_unavailable: "We can't send or check codes right now. Try again in a few minutes.",
   invalid_customer_account_request: 'Your email changed while confirming. Send a new code.',
+  customer_verification_text_unavailable: "We can't text a code right now. Email the code instead.",
+  payment_method_save_email_unavailable: "We can't email a code to confirm this card.",
+  payment_method_save_not_ready: "We're still saving your card. Try again in a moment.",
+  save_card_code_invalid: "That code isn't right. Use the latest code, or send a new one.",
 
   // Discount
   discount_invalid: "That code can't be used on this order.",
@@ -125,6 +130,11 @@ export const messages = {
   pickup_none_nearby: 'No pickup locations near {postal_code}. Try another ZIP code or ship to an address.',
   delivery_address_incomplete: 'Enter the full address to see delivery options.',
   delivery_postal_code_required: 'Enter a 5-digit postal code.',
+
+  // Billing address for tax
+  billing_address_needed: 'Enter your billing address to see your total and pay.',
+  billing_address_incomplete: 'Enter your full billing address.',
+  billing_postal_code_required: 'Enter a 5-digit postal code.',
   delivery_choice_required: 'Choose a delivery option.',
   delivery_service_unavailable: "Delivery options aren't loading right now. Try again.",
   delivery_selection_required: 'Choose a delivery option to continue.',
@@ -137,6 +147,7 @@ export const messages = {
   contact_email_missing: 'Enter your email address to pay.',
   delivery_selection_missing: 'Choose a delivery option to pay.',
   delivery_input_required: 'Add the missing delivery details to pay.',
+  billing_address_missing: 'Enter your billing address to continue.',
   elements_incomplete: 'Finish your payment details to pay.',
   sections_locked: "Changes are paused until your payment finishes confirming.",
   attempt_open:'Your payment is still being confirmed.',
@@ -215,7 +226,9 @@ const tones: Partial<Record<string, Tone>> = {
   still_confirming: 'warning',
   checkout_expired: 'warning',
   payments_unavailable: 'warning',
+  billing_address_needed: 'info',
   affirm_incomplete: 'warning',
+  trial_not_started: 'warning',
   signed_in_mid_checkout: 'info',
   cart_locked_payment: 'warning',
   delivery_requoted: 'warning',
@@ -396,6 +409,8 @@ export const copy = {
     discountRemove: 'Remove',
     discountRemoveLabel: 'Remove discount {name}',
     deliveryHeading: 'Delivery',
+    billingHeading: 'Billing address',
+    saveBillingAddress: 'Save address',
     deliveryModeLegend: 'How do you want to get your order?',
     modeShip: 'Ship to an address',
     modePickup: 'Pick up at the roastery',
@@ -487,6 +502,7 @@ export const copy = {
     tip: 'Tip',
     tax: 'Tax',
     taxPending: 'Calculated after you choose delivery',
+    taxPendingBilling: 'Calculated after you enter your billing address',
     total: 'Total',
     giftCards: 'Gift cards applied',
     amountDue: 'Amount due now',
@@ -548,6 +564,18 @@ export const copy = {
     paidAmount: 'Paid',
     paidWithGiftCard: 'Paid with gift card',
     coveredByDiscounts: 'Covered by discounts',
+    saveCardHeading: 'Save your card',
+    saveCardIntro: 'Confirm your card with a code to use it next time. Your payment is complete either way.',
+    saveCardEmailStep: 'Your number is confirmed. To finish, confirm your email with a code.',
+    saveCardSendText: 'Text me a code',
+    saveCardSendEmail: 'Email me a code',
+    saveCardEmailInstead: 'Email the code instead',
+    saveCardCode: 'Code',
+    saveCardConfirm: 'Confirm code',
+    saveCardResend: 'Send a new code',
+    saveCardSavedText: 'Card saved. Next time, confirm with a code texted to your phone.',
+    saveCardSavedEmail: 'Card saved. Next time, confirm with a code emailed to you.',
+    saveCardExpired: "Your card wasn't saved because it wasn't confirmed within 24 hours. Your payment wasn't affected.",
   },
   identity: {
     signInTitle: 'Sign in',
@@ -589,7 +617,7 @@ export const copy = {
 
 /** Unit words for billing intervals (Flint `billing_interval` values). */
 export function intervalUnit(interval: string, count: number): string {
-  const base: Record<string, string> = { day: 'day', week: 'week', month: 'month', year: 'year' };
+  const base: Record<string, string> = { daily: 'day', weekly: 'week', monthly: 'month', yearly: 'year', day: 'day', week: 'week', month: 'month', year: 'year' };
   const word = base[interval] ?? interval;
   return count === 1 ? word : `${word}s`;
 }

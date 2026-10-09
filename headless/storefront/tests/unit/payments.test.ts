@@ -17,6 +17,29 @@ const money=(amount:string)=>({amount,currency:'USD'});
 function order(amount='1800'):Order{return {order_id:'example-order',payment_status:'unpaid',order_revision:'5',settlement_amounts:{outstanding_money:money(amount)},payment_collection:{stripe:{elements:{}}}} as unknown as Order;}
 function attempt(status:string,is_resumable=false,id='example-attempt'):OrderPaymentAttempt{return {order_payment_attempt_id:id,status,is_resumable} as OrderPaymentAttempt;}
 function input(amount='1800'):PayInput{return {approved_outstanding_money:money(amount),approved_collection_kind:'processor'};}
+function trialOrder():Order{return {...order('0'),status:'open',payment_status:'paid',subscription_plan_id:'example-plan',setup_collection:{stripe:{elements:{mode:'setup'}}}} as Order;}
+test('a zero-dollar paid trial still submits setup and waits for its subscription',async()=>{
+  const store=new Store(':memory:');const calls:PayOrderRequestInput[]=[];let current=trialOrder();
+  const client={orders:{get:async()=>current,pay:async(request:{body:PayOrderRequestInput})=>{calls.push(request.body);current={...current,status:'closed',setup_collection:undefined};return {order:current,payment_attempt:attempt('succeeded')};},getPaymentAttempt:async()=>attempt('succeeded')}} as unknown as Client;
+  try{
+    const row=record(store);store.run("UPDATE checkouts SET kind='subscription',last_attempt_id=NULL WHERE checkout_ref=?",row.checkout_ref);const engine=new PaymentEngine(client,createAuth('local-fixture'),store);
+    assert.equal(engine.next({order:current,unknown:false}),'new_payment');
+    const result=await engine.start(row.checkout_ref,{approved_outstanding_money:money('0'),approved_collection_kind:'setup',credential:{kind:'payment_method_token',value:'pm_trial'},buyer_contact:{email:'buyer@example.test'}});
+    assert.equal(calls.length,1);assert.equal(calls[0]!.action,'setup');assert.deepEqual(calls[0]!.setup_payment_source,{token:'pm_trial'});assert.equal(engine.next(result),'wait');
+    await engine.start(row.checkout_ref,{approved_outstanding_money:money('0'),approved_collection_kind:'setup',credential:{kind:'payment_method_token',value:'pm_duplicate'}});assert.equal(calls.length,1);
+    assert.equal(engine.next({...result,order:{...result.order,subscription_id:'example-subscription'}}),'done');
+  }finally{store.close();}
+});
+test('paid zero-dollar trial cannot erase an unknown setup request or hide authentication',()=>{
+  const store=new Store(':memory:');try{
+    const row=record(store);const engine=new PaymentEngine(new Client(),createAuth('local-fixture'),store);const job=engine.job(row,'pay',{action:'setup',setup_payment_source:{token:'pm_trial'}});store.run("UPDATE actions SET status='unknown' WHERE action_id=?",job.action_id);
+    const current=trialOrder();const result=engine.observe(row,current,undefined);assert.equal(result.unknown,true);assert.ok(engine.unresolved(row));assert.equal(resolvesJob(job,current,undefined),false);
+    assert.equal(engine.next({order:current,attempt:attempt('requires_action',true),unknown:false}),'authenticate');assert.equal(engine.next({order:current,attempt:attempt('processing',true),unknown:false}),'resume');
+    assert.equal(engine.next({order:current,attempt:attempt('failed'),unknown:false}),'new_payment');assert.equal(engine.next({order:current,attempt:attempt('succeeded'),unknown:false}),'wait');
+    assert.equal(engine.next({order:{...order(),payment_status:'paid'},unknown:false}),'done');assert.equal(engine.next({order:{...order('0'),payment_status:'paid',subscription_plan_id:'example-plan',subscription_id:'example-subscription'},unknown:false}),'done');
+    assert.equal(engine.next({order:{...order('0'),payment_status:'paid'},unknown:false}),'done');assert.equal(resolvesJob(job,{...order('0'),payment_status:'paid'},undefined),true);
+  }finally{store.close();}
+});
 function giftOrder():Order{return {...order(),gift_cards:[{gift_card_id:'example-gift'}],gift_card_estimate:{can_pay:true,order_revision:'5',gift_card_money:money('1800'),processor_money:money('0'),gift_cards:[{gift_card_id:'example-gift',amount_money:money('1800')}]}} as unknown as Order;}
 test('collection kind distinguishes zero-balance orders from subscription setup',()=>{
   assert.equal(collectionKind(order(),'order'),'processor');assert.equal(collectionKind(order('0'),'order'),'settlement');assert.equal(collectionKind(giftOrder(),'order'),'settlement');

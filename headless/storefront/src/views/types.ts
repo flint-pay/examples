@@ -198,7 +198,13 @@ export type Order = {
   } | null;
   gift_card_settlements?: { amount_money: Money | null; last_characters?: string }[];
   payment_intents?: { payment_intent_id: string; status?: string; payment_source?: { type?: string } | null }[];
-  tax?: { status: string; enabled: boolean } | null;
+  tax?: {
+    status: string;
+    enabled: boolean;
+    /** Location kinds the buyer may supply. `provided` means a billing address entered at checkout. */
+    available_location_inputs?: string[];
+    location?: { address_source?: string; address_type?: string; address?: Address | null } | null;
+  } | null;
   requested_tip?: { percent?: number; amount_money?: Money | null } | null;
   buyer_contact?: { email: string | null; phone: string | null; is_email_cleared?: boolean; is_phone_cleared?: boolean } | null;
   delivery_destination?: {
@@ -234,7 +240,7 @@ export type CheckoutSessionBuyer = {
   save_payment_method_phone_offered?: boolean;
   save_payment_method_requires_verification?: boolean;
   subscription_terms?: SubscriptionTerms | null;
-  payment_method_save?: { status: string; email_confirmation_required: boolean } | null;
+  payment_method_save?: { status: string; email_confirmation_required: boolean; phone_last_digits?: string; expires_at?: string; saved_with?: string } | null;
 };
 
 export type SubscriptionTerms = {
@@ -373,6 +379,7 @@ export type SavedMethod = {
 
 export type CheckoutVerification = {
   status: 'code_sent';
+  purpose?: string;
   delivery_channel?: string;
   masked_email?: string;
   phone_last_digits?: string;
@@ -412,6 +419,8 @@ export type CheckoutState = {
   subscription?: CheckoutSubscription | null;
   notices: string[];
   approved_outstanding_money: Money | null;
+  /** Full US billing address the buyer gave for tax. The app keeps it to prefill the form. */
+  billing_address?: Address | null;
   /** Optional app-owned buyer details the server keeps outside Flint. */
   buyer?: { name?: string; email_locked?: boolean; signed_in_email?: string } | null;
 };

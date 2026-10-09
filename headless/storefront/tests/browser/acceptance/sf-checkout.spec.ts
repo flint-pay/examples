@@ -6,7 +6,7 @@
 
 import { expect, test } from '@playwright/test';
 import {
-  addToCart, CARDS, completeChallenge, ensureTestMode, enterCard, fillContact, payNow, pickUpAtRoastery,
+  addToCart, CARDS, completeChallenge, ensureTestMode, enterCard, fillBillingAddressIfRequired, fillContact, payNow, pickUpAtRoastery,
   requireAcceptance, shipToAddress, shipToTexas, startCheckout, watchConsole, watchFlintHosts,
 } from './support/staging.ts';
 
@@ -20,6 +20,7 @@ test('SF-25 online class (service) skips delivery and pays', async ({ page }) =>
   await startCheckout(page);
   await expect(page.getByTestId('sf-delivery')).toHaveCount(0);
   await fillContact(page);
+  await fillBillingAddressIfRequired(page);
   await enterCard(page, CARDS.success);
   await payNow(page);
   await expect(page.getByTestId('sf-complete-status')).toHaveAttribute('data-status', 'paid', { timeout: 60_000 });
@@ -159,6 +160,7 @@ test('no console errors through a card checkout', async ({ page }) => {
   await addToCart(page, 'brewing-class');
   await startCheckout(page);
   await fillContact(page);
+  await fillBillingAddressIfRequired(page);
   await enterCard(page, CARDS.success);
   await payNow(page);
   await expect(page.getByTestId('sf-complete-status')).toHaveAttribute('data-status', 'paid', { timeout: 60_000 });

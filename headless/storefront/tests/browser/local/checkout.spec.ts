@@ -250,6 +250,46 @@ test('decline shows buyer copy as an alert, clears the card, and a retry succeed
   await expect(page).toHaveURL(/complete$/);
 });
 
+test('a retry after a decline binds the rotated return relay in its confirmation token', async ({ page }) => {
+  await readyOrder(page);
+  await shipAndSelect(page);
+  await typeCard(page, 'decline');
+  await page.getByTestId('sf-pay-button').click();
+  await waitForPayment(page, 'declined');
+  await typeCard(page, 'decline');
+  await page.getByTestId('sf-pay-button').click();
+  await expect.poll(async () => (await stripeCalls(page)).filter((call) => call.name === 'createConfirmationToken').length).toBe(2);
+  await waitForPayment(page, 'declined');
+  const tokens = (await stripeCalls(page)).filter((call) => call.name === 'createConfirmationToken');
+  expect(tokens.map((call) => call.params.return_url)).toEqual([
+    'https://relay.example.test/payment-returns/fixture',
+    'https://relay.example.test/payment-returns/fixture-1',
+  ]);
+  await typeCard(page, 'ok');
+  await page.getByTestId('sf-pay-button').click();
+  await expect(page).toHaveURL(/complete$/);
+});
+
+test('a checked save-card box survives a decline and relay rotation into the remounted elements', async ({ page }) => {
+  await readyOrder(page);
+  await shipAndSelect(page);
+  await typeCard(page, 'decline');
+  await page.getByTestId('sf-save-card').check();
+  await page.getByTestId('sf-pay-button').click();
+  await waitForPayment(page, 'declined');
+  await expect(page.getByTestId('sf-save-card')).toBeChecked();
+  await typeCard(page, 'decline');
+  await page.getByTestId('sf-pay-button').click();
+  await expect.poll(async () => (await stripeCalls(page)).filter((call) => call.name === 'createConfirmationToken').length).toBe(2);
+  await waitForPayment(page, 'declined');
+  const calls = await stripeCalls(page);
+  const tokenIndex = calls.findLastIndex((call) => call.name === 'createConfirmationToken');
+  expect(calls[tokenIndex].params.return_url).toBe('https://relay.example.test/payment-returns/fixture-1');
+  const remountIndex = calls.findLastIndex((call, index) => index < tokenIndex && call.name === 'Stripe');
+  const restored = calls.slice(remountIndex, tokenIndex).filter((call) => call.name === 'elements.update' && call.options.setupFutureUsage === 'on_session');
+  expect(restored).toHaveLength(1);
+});
+
 test('code specific decline copy for incorrect_cvc', async ({ page }) => {
   await readyOrder(page);
   await shipAndSelect(page);

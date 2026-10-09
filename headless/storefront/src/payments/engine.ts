@@ -30,8 +30,13 @@ export function acceptedAllocation(order:Order):OrderGiftCardAllocationAcceptanc
   if(!estimate?.can_pay||estimate.gift_card_money.currency!=='USD'||estimate.processor_money.currency!=='USD'||estimate.gift_cards.some(card=>card.amount_money.currency!=='USD'))throw new LocalError('GIFT_CARD_ALLOCATION_CHANGED',409);
   return {order_revision:estimate.order_revision,gift_card_money:{amount:estimate.gift_card_money.amount,currency:'USD'},processor_money:{amount:estimate.processor_money.amount,currency:'USD'},gift_cards:estimate.gift_cards.map(card=>({gift_card_id:card.gift_card_id,amount_money:{amount:card.amount_money.amount,currency:'USD'}}))};
 }
+// A zero-dollar trial is financially paid before its card is set up. The
+// subscription ID is the authoritative proof that signup finished.
+export function paymentComplete(order:Order):boolean{
+  return order.payment_status==='paid'&&(!order.subscription_plan_id||!!order.subscription_id);
+}
 export function resolvesJob(job:ActionRecord,order:Order,attempt:OrderPaymentAttempt|undefined):boolean{
-  return order.payment_status==='paid'||job.kind==='pay'&&!!order.active_payment_attempt||job.kind!=='pay'&&attempt?.order_payment_attempt_id===job.attempt_id&&!attemptOpen(attempt);
+  return paymentComplete(order)||job.kind==='pay'&&!!order.active_payment_attempt||job.kind!=='pay'&&attempt?.order_payment_attempt_id===job.attempt_id&&!attemptOpen(attempt);
 }
 
 export class PaymentEngine {
@@ -117,7 +122,7 @@ export class PaymentEngine {
       if(this.store.get("SELECT action_id FROM actions WHERE resource=? AND kind NOT IN ('pay','resume','cancel') AND status IN ('pending','unknown')",this.resource(record)))throw new LocalError('ACTION_RECONCILIATION_REQUIRED',409);
       if(record.cart_dirty)throw new LocalError('CART_RECONCILIATION_REQUIRED',409);
       const order=await this.read(record);
-      if(order.payment_status==='paid')return {order,attempt:await this.attempt(record,order),unknown:false};
+      if(paymentComplete(order)||order.subscription_plan_id&&order.payment_status==='paid'&&order.status==='closed')return {order,attempt:await this.attempt(record,order),unknown:false};
       if(attemptOpen(order.active_payment_attempt)){this.remember(record,order.active_payment_attempt);return {order,attempt:order.active_payment_attempt,unknown:false};}
       if(!approvalMatches(order,record.kind,input))return {order,unknown:false,totalChanged:true};
       if(collectionKind(order,record.kind)==='unavailable')throw new LocalError('PAYMENTS_UNAVAILABLE',503);
@@ -185,5 +190,11 @@ export class PaymentEngine {
     });
   }
   async status(ref:string):Promise<PaymentResult>{const record=this.record(ref);return this.store.locked(this.resource(record),()=>this.reconcile(this.record(ref)));}
-  next(result:PaymentResult){return result.unknown?'resume':result.order.payment_status==='paid'?'done':nextStep(result.attempt,result.order);}
+  next(result:PaymentResult){
+    if(result.unknown)return 'resume';
+    if(paymentComplete(result.order))return 'done';
+    const next=nextStep(result.attempt,result.order);
+    if(result.order.subscription_plan_id&&!result.order.subscription_id&&(next==='done'||result.order.payment_status==='paid'&&result.order.status==='closed'))return 'wait';
+    return next;
+  }
 }

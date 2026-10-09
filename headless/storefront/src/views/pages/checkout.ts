@@ -18,6 +18,7 @@ import {
   processorMoney,
   serverBlockers,
   showDelivery,
+  taxLocationState,
   tipChoice,
   tipVisible,
   TIP_PERCENTS,
@@ -289,6 +290,40 @@ function deliverySection(ctx: Ctx): Html {
   </section>`;
 }
 
+// ----- Billing address (tax) -----
+
+function billingSection(ctx: Ctx): Html {
+  const state = ctx.data.state;
+  const stateName = taxLocationState(state);
+  if (!stateName) return html`<div data-region="billing"></div>`;
+  const prefill: Address = state.billing_address ?? state.order.tax?.location?.address ?? {};
+  const set = stateName === 'set';
+  return html`<section class="section checkout-section" id="billing" data-region="billing" aria-labelledby="billing-title" data-testid="sf-billing" data-state="${stateName}" data-section="billing">
+    <h2 id="billing-title" tabindex="-1">${copy.checkout.billingHeading}</h2>
+    ${set
+      ? html`<div class="selected-summary" data-testid="sf-billing-selected">
+      <p class="selected-detail">${addressLine(prefill)}</p>
+      <button class="button button-quiet button-small" type="button" data-billing-change aria-expanded="false" aria-controls="billing-edit">${copy.checkout.change}</button>
+    </div>`
+      : ''}
+    <div id="billing-edit"${set ? raw(' hidden') : raw('')}>
+      <form method="post" action="${path(state, '/billing-address')}" data-job-form="billing-address" novalidate class="stack address-form" data-testid="sf-billing-address">
+        ${field({ id: 'bill-line1', name: 'line1', label: copy.checkout.line1, value: prefill.line1 ?? '', required: true, autocomplete: 'billing address-line1', testid: 'sf-bill-line1' })}
+        ${field({ id: 'bill-line2', name: 'line2', label: copy.checkout.line2, value: prefill.line2 ?? '', autocomplete: 'billing address-line2', testid: 'sf-bill-line2' })}
+        <div class="field-row">
+          ${field({ id: 'bill-city', name: 'city', label: copy.checkout.city, value: prefill.city ?? '', required: true, autocomplete: 'billing address-level2', testid: 'sf-bill-city' })}
+          ${field({ id: 'bill-state', name: 'state', label: copy.checkout.state, value: prefill.state ?? '', required: true, autocomplete: 'billing address-level1', maxlength: 2, testid: 'sf-bill-state' })}
+          ${field({ id: 'bill-postal', name: 'postal_code', label: copy.checkout.postalCode, value: prefill.postal_code ?? '', required: true, autocomplete: 'billing postal-code', inputmode: 'numeric', testid: 'sf-bill-postal' })}
+        </div>
+        <p class="hint">${copy.checkout.country}: ${copy.checkout.countryUs}</p>
+        <input type="hidden" name="country" value="US">
+        <div class="actions"><button class="button" type="submit" data-testid="sf-billing-save">${copy.checkout.saveBillingAddress}</button></div>
+      </form>
+    </div>
+    <p class="field-error" role="alert" data-job-error="billing" hidden></p>
+  </section>`;
+}
+
 // ----- Gift cards -----
 
 /**
@@ -388,6 +423,7 @@ export function amountRows(state: CheckoutState): Html {
   const outstanding = processorMoney(state);
   const total = pricing?.total_money ?? null;
   const taxPending = order.tax?.status === 'requires_location';
+  const taxPendingText = taxLocationState(state) === 'needed' ? copy.checkout.taxPendingBilling : copy.checkout.taxPending;
   const estimate = order.gift_card_estimate;
   const giftMoney = (order.gift_cards?.length ?? 0) > 0 ? estimate?.gift_card_money ?? null : null;
   const charges = (order.charges ?? []).filter((charge) => isPositive(charge.applied_money));
@@ -401,7 +437,7 @@ export function amountRows(state: CheckoutState): Html {
         : ''}
     ${pricing && isPositive(pricing.requested_tip_money) ? row(copy.checkout.tip, pricing.requested_tip_money, formatOrDash(pricing.requested_tip_money), 'tip', 'sf-summary-tip') : ''}
     ${taxPending
-      ? html`<div class="summary-row" data-row="tax"><dt>${copy.checkout.tax}</dt><dd><span class="money" data-testid="sf-summary-tax" data-state="requires_location">${copy.checkout.taxPending}</span></dd></div>`
+      ? html`<div class="summary-row" data-row="tax"><dt>${copy.checkout.tax}</dt><dd><span class="money" data-testid="sf-summary-tax" data-state="requires_location">${taxPendingText}</span></dd></div>`
       : pricing?.tax_money
         ? row(copy.checkout.tax, pricing.tax_money, formatOrDash(pricing.tax_money), 'tax', 'sf-summary-tax')
         : ''}
@@ -505,7 +541,7 @@ function paymentSection(ctx: Ctx): Html {
   const resting = derivePaymentState(state);
   const processor = needsProcessor(state);
   const blockers = serverBlockers(state);
-  const showForm = resting !== 'expired' && resting !== 'unavailable' && resting !== 'recovery';
+  const showForm = resting !== 'expired' && resting !== 'unavailable' && resting !== 'recovery' && resting !== 'needs_billing';
   const initial = resting === 'ready' || resting === 'declined' || resting === 'pay_remaining' ? (processor ? 'loading' : resting) : resting;
   const code = declineCode(state);
   const saveOffered = state.kind === 'order' && state.session.save_payment_method_offered === true && processor;
@@ -531,6 +567,9 @@ function paymentSection(ctx: Ctx): Html {
       : ''}
     ${resting === 'unavailable'
       ? html`<div class="state-panel" data-testid="sf-unavailable"><p role="alert" data-testid="sf-payment-message">${initialMessage}</p>${supportLine(ctx)}</div>`
+      : ''}
+    ${resting === 'needs_billing'
+      ? html`<div class="state-panel" data-testid="sf-payment-needs-billing"><p role="status">${message('billing_address_needed')}</p></div>`
       : ''}
     ${resting === 'recovery'
       ? html`<div class="state-panel" data-testid="sf-recovery"><p role="status" data-testid="sf-payment-message">${message('finishing_payment')}</p></div>`
@@ -649,7 +688,7 @@ export function checkoutPage(input: Ctx): Html {
       ${summaryRegion(ctx)}
       <div class="checkout-sections">
         <p class="notice notice-info locked-note" role="status" data-locked-note data-testid="sf-locked-note"${attemptIsOpen(resting) ? raw('') : raw(' hidden')}>${message('sections_locked')}</p>
-        ${readOnly ? '' : html`${contactSection(ctx)}${state.kind === 'order' ? discountSection(ctx) : ''}${deliverySection(ctx)}${giftCardSection(ctx)}${tipSection(ctx)}`}
+        ${readOnly ? '' : html`${contactSection(ctx)}${state.kind === 'order' ? discountSection(ctx) : ''}${deliverySection(ctx)}${billingSection(ctx)}${giftCardSection(ctx)}${tipSection(ctx)}`}
         ${paymentSection(ctx)}
       </div>
     </div>

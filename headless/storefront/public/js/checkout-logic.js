@@ -67,7 +67,7 @@ export function createContactEdits() {
 /**
  * States the payment region can rest in. `loading`, `submitting`,
  * `total_changed`, and `succeeded` are transient and only set in the browser.
- * @typedef {'unavailable'|'ready'|'authenticating'|'resuming'|'waiting'|'bank_processing'|'declined'|'pay_remaining'|'affirm_incomplete'|'recovery'|'expired'|'succeeded'} RestingPaymentState
+ * @typedef {'unavailable'|'ready'|'needs_billing'|'authenticating'|'resuming'|'waiting'|'bank_processing'|'declined'|'pay_remaining'|'affirm_incomplete'|'recovery'|'expired'|'succeeded'} RestingPaymentState
  */
 
 const EXPIRED_STATUSES = new Set(['expired', 'invalidated', 'closed', 'canceled', 'cancelled']);
@@ -210,6 +210,7 @@ export function derivePaymentState(state) {
         break;
     }
   }
+  if (taxLocationState(state) === 'needed') return 'needs_billing';
   const collection = collectionKindOf(state);
   if (collection === 'unavailable') return 'unavailable';
   if (needsProcessor(state) && !guidanceOf(state)?.stripe?.elements) return 'unavailable';
@@ -318,6 +319,26 @@ export function deliveryModes(state) {
   return modes.length ? modes : ['ship', 'pickup'];
 }
 
+// ----- Billing address for tax -----
+
+/**
+ * Whether the page asks for a full US billing address so tax can be calculated. Only checkouts
+ * with no delivery step ask. `needed` means tax requires a location and lists `provided` as an
+ * input; it blocks payment. `set` means the order's location came from the buyer
+ * (`location.address_source === 'provided'`) so they can change it. The server stops listing
+ * inputs once tax is calculated, so `set` does not depend on `available_location_inputs`.
+ * @param {CheckoutState} state
+ * @returns {'needed'|'set'|null}
+ */
+export function taxLocationState(state) {
+  if (showDelivery(state)) return null;
+  const tax = state.order?.tax;
+  if (tax?.enabled !== true) return null;
+  if (tax.status === 'requires_location') return (tax.available_location_inputs ?? []).includes('provided') ? 'needed' : null;
+  if (tax.location?.address_source === 'provided') return 'set';
+  return null;
+}
+
 // ----- Tip -----
 
 export const TIP_PERCENTS = [10, 15, 20];
@@ -357,6 +378,7 @@ export function serverBlockers(state) {
   const blockers = [];
   const paymentState = derivePaymentState(state);
   if (paymentState === 'expired' || paymentState === 'unavailable') blockers.push('session_not_open');
+  if (taxLocationState(state) === 'needed') blockers.push('billing_address_missing');
   if (attemptIsOpen(paymentState) || paymentState === 'recovery') blockers.push('attempt_open');
   const delivery = deliveryState(state);
   if (delivery !== null) {

@@ -7,6 +7,7 @@ import { readFile } from 'node:fs/promises';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { renderPage } from '../../../src/views/index.ts';
+import { trialSetupNotStarted } from '../../../src/views/pages/complete.ts';
 import type { PageContext, PageId } from '../../../src/views/types.ts';
 import { cartData, catalog, homeLoaded, plans } from './fixtures.ts';
 import { CHALLENGE_ORIGIN, FakeCheckout } from './fake-backend.ts';
@@ -118,7 +119,10 @@ app.get('/checkout/:ref', async (c) => {
   if (!fake) return page(c, 'not-found', {}, {}, 404);
   const state = fake.project();
   if (['paid', 'partially_paid'].includes(String((state.session as any).status))) return c.redirect(`/checkout/${fake.ref}/complete`, 303);
-  return page(c, 'sf-checkout', { state }, { user: fake.user, path: c.req.path });
+  const response = await page(c, 'sf-checkout', { state }, { user: fake.user, path: c.req.path });
+  // The real app shows this notice once, on the first checkout page it sends back.
+  fake.notices = fake.notices.filter((key) => key !== 'trial_not_started');
+  return response;
 });
 app.get('/checkout/:ref/return', (c) => {
   const ref = c.req.param('ref');
@@ -129,6 +133,11 @@ app.get('/checkout/:ref/complete', (c) => {
   const fake = checkout(c.req.param('ref'));
   if (!fake) return page(c, 'not-found', {}, {}, 404);
   const state = { ...fake.project(), subscription: fake.subscription ?? undefined } as any;
+  // Same rule as the app: never starts or cancels a payment, only sends the buyer back to checkout.
+  if (trialSetupNotStarted(state)) {
+    if (!state.attempt && !fake.notices.includes('trial_not_started')) fake.notices.push('trial_not_started');
+    return c.redirect(`/checkout/${fake.ref}`, 303);
+  }
   const accountUrl = fake.user ? 'http://localhost:4200/orders/ord_fixture_1' : 'http://localhost:4200/sign-up?next=%2Forders%2Ford_fixture_1';
   return page(c, 'sf-complete', { state, paidSignal: c.req.query('signal') === '1', accountUrl }, { user: fake.user });
 });

@@ -7,7 +7,7 @@ import type {ContentfulStatusCode} from 'hono/utils/http-status';
 import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import type {IncomingMessage} from 'node:http';
-import type {Client,DeliveryAddressRequestInput,MoneyValue} from '@flintpay/node';
+import type {Client,DeliveryAddressRequestInput,MoneyValue,OrderTaxLocationFullAddressRequestInput} from '@flintpay/node';
 import {SDK_VERSION} from './config.ts';
 import type {Config} from './config.ts';
 import {createAuth} from './flint/auth.ts';
@@ -34,6 +34,8 @@ import {buyerSafe} from './flint/projection.ts';
 import type {PageId,ViewContext} from './flint/view-data.ts';
 import {viewPath} from './flint/view-data.ts';
 import {renderPage} from './views/index.ts';
+import {trialSetupNotStarted} from './views/pages/complete.ts';
+import type {CheckoutState} from './views/types.ts';
 
 type Env={Bindings:{incoming?:IncomingMessage};Variables:{session:Session;user:User|undefined;requestId:string;returnNext?:string;form?:ViewContext['form']}};
 export type AppOptions={config:Config;preflight:Preflight;client?:Client;store?:Store;identity?:IdentityStore};
@@ -167,11 +169,16 @@ export function createApp(options:AppOptions){
   }));
   app.post('/checkout/:ref/timezone',async c=>job(c,async()=>{const timezone=text((await body(c)).timezone,100);try{await checkouts.mutate(c.req.param('ref'),'timezone',{timezone},(record,key)=>client.checkoutSessions.update(record.checkout_session_id!,{timezone},auth.checkout(record,key)));}catch(error){if(!(error&&typeof error==='object'&&'code'in error&&error.code==='INVALID_TIMEZONE'))throw error;}}));
   app.post('/checkout/:ref/verification',async c=>job(c,async()=>{
-    limited(c,'verification',3,15*60_000);const input=await body(c);const purpose=text(input.purpose);const channel=text(input.channel??'auto');
+    const input=await body(c);const purpose=text(input.purpose);const channel=text(input.channel??'auto');
     if(!['use_saved_payment_methods','save_payment_method','confirm_saved_payment_method'].includes(purpose)||!['auto','email','sms'].includes(channel))throw new LocalError('INVALID_INPUT');
-    await checkouts.mutate(c.req.param('ref'),'checkout_verification',{purpose,channel,email:input.email?email(input.email):undefined},async(record,key)=>{
-      const verified=await client.checkoutSessions.createCustomerVerification(record.checkout_session_id!,{purpose:purpose as 'use_saved_payment_methods',channel:channel as 'auto',...(input.email?{email:email(input.email)}:{}),...auth.checkoutHeaders(record)},auth.checkout(record,key));
-      const details=checkouts.details(record);details.verification={customer_verification_id:verified.customer_verification_id,status:'code_sent',channel:verified.channel,email:verified.email,phone_last_digits:verified.phone_last_digits};checkouts.saveDetails(record,details);
+    // Confirming a saved card sends to the number and email from the payment, so the buyer supplies neither and `auto` is refused.
+    const confirming=purpose==='confirm_saved_payment_method';if(confirming&&channel==='auto')throw new LocalError('INVALID_INPUT');
+    // Codes before payment keep their own allowance, and Flint allows 3 per channel to confirm a card.
+    if(confirming)limited(c,'verification_confirm',6,15*60_000);else limited(c,'verification',3,15*60_000);
+    const address=confirming||!input.email?undefined:email(input.email);
+    await checkouts.mutate(c.req.param('ref'),'checkout_verification',{purpose,channel,email:address},async(record,key)=>{
+      const verified=await client.checkoutSessions.createCustomerVerification(record.checkout_session_id!,{purpose:purpose as 'use_saved_payment_methods',channel:channel as 'auto',...(address?{email:address}:{}),...auth.checkoutHeaders(record)},auth.checkout(record,key));
+      const details=checkouts.details(record);details.verification={customer_verification_id:verified.customer_verification_id,status:'code_sent',purpose,channel:verified.channel,email:verified.email,phone_last_digits:verified.phone_last_digits};checkouts.saveDetails(record,details);
     });
   }));
   app.post('/checkout/:ref/verification/confirm',async c=>job(c,async()=>{
@@ -200,6 +207,17 @@ export function createApp(options:AppOptions){
       checkouts.saveDetails(record,details);
     });
   }
+  app.post('/checkout/:ref/billing-address',async c=>job(c,async()=>{
+    const input=await body(c);const line1=text(input.line1,200),city=text(input.city,200),state=text(input.state,2),postal_code=text(input.postal_code,200),country=text(input.country,2),line2=input.line2===undefined?'':text(input.line2,200);
+    if(!line1||!city||!state||!/^\d{5}(-\d{4})?$/.test(postal_code)||country!=='US')throw new LocalError('INVALID_INPUT');
+    const address:OrderTaxLocationFullAddressRequestInput={line1,city,state,postal_code,country,...(line2?{line2}:{})};
+    await checkouts.mutate(c.req.param('ref'),'tax_location',{address},async(record,key)=>{
+      const session=await client.checkoutSessions.get(record.checkout_session_id!,undefined,auth.checkout(record));const order=await payments.read(record);const details=checkouts.details(record);
+      if(session.delivery_selection_required||details.delivery_quote||details.delivery_selection||order.tax?.enabled!==true)throw new LocalError('INVALID_INPUT');
+      await client.orders.update(record.order_id!,{tax:{enabled:true,location:{address_source:'provided',address_type:'billing_address',address}}},auth.checkout(record,key));
+      details.billing_address=address;checkouts.saveDetails(record,details);
+    });
+  }));
   app.post('/checkout/:ref/delivery/quote',async c=>job(c,()=>quote(c,false)));
   app.post('/checkout/:ref/pickup-locations',async c=>job(c,()=>quote(c,true)));
   app.post('/checkout/:ref/delivery/select',async c=>job(c,async()=>{
@@ -254,6 +272,7 @@ export function createApp(options:AppOptions){
   });
   app.get('/checkout/:ref/complete',async c=>{
     own(c);const current=await state(c);let subscription:unknown;
+    if(trialSetupNotStarted(current.state as unknown as CheckoutState)){if(!current.state.attempt)checkouts.notice(current.read.record,'trial_not_started');return c.redirect(`/checkout/${c.req.param('ref')}`,303);}
     try{subscription=await checkouts.subscription(current.read);}catch(error){if(!(error&&typeof error==='object'&&'code'in error&&error.code==='CHECKOUT_SESSION_PAYMENT_REQUIRED'))throw error;}
     const user=c.get('user');const order=current.read.order;const accountUrl=config.accountOrigin?(user?`${config.accountOrigin}/orders/${encodeURIComponent(order.order_id)}`:`${config.accountOrigin}/sign-up?next=${encodeURIComponent(`/orders/${order.order_id}`)}`):null;
     if(current.read.record.cart_id&&['paid','bank_processing'].includes(checkouts.record(c.req.param('ref')).status))carts.complete(current.read.record.checkout_ref,order);
