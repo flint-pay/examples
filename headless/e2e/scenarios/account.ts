@@ -279,7 +279,7 @@ export async function replayAppRefresh(d: Driver, anonymous: Pick<Client, 'custo
 }
 export async function assertAppSecretInvalid(anonymous: Pick<Client, 'me'>, secret: SealedCredential, code: string): Promise<void> {
   const invalid = await secret.use(customerToken => sessionCall(() => anonymous.me.get(undefined, { customerToken }))).then(() => undefined, apiFailure);
-  invariant(invalid?.status === 401 && invalid.code === 'INVALID_CUSTOMER_SESSION', code);
+  invariant(invalid?.status === 404 && invalid.code === 'CUSTOMER_SESSION_NOT_FOUND', code);
 }
 type RowReader = Pick<AppVault, 'metadata' | 'readVault' | 'count'>;
 type RefreshPorts = { reader: RowReader; anonymous: Pick<Client, 'customerSessions' | 'me'>; now: () => number; wait: (ms: number) => Promise<void>; sync: () => Promise<void>; verify: () => Promise<unknown>; scan: () => Promise<void> };
@@ -369,5 +369,5 @@ export async function runAppSignoutTransition(d: Driver, ports: SignoutPorts): P
   await ports.scan();
   await ports.boundary();
   await ports.scan();
-  return ['APP_VAULT_RUN_OWNED_GATES_VERIFIED', 'OLD_SECRET_VALID_BEFORE_SIGNOUT', 'SIGNOUT_CSRF_AND_ORIGIN_REJECTED_WITHOUT_EFFECT', 'APP_SIGNOUT_REVOKED_EXACT_FAMILY', 'OLD_APP_SECRET_INVALID_CUSTOMER_SESSION', 'NEXT_PAGE_SIGNED_OUT', 'ACCOUNT_CREDENTIAL_BOUNDARY_TEST_PASS', 'CREDENTIAL_SCANS_CLEAN'];
+  return ['APP_VAULT_RUN_OWNED_GATES_VERIFIED', 'OLD_SECRET_VALID_BEFORE_SIGNOUT', 'SIGNOUT_CSRF_AND_ORIGIN_REJECTED_WITHOUT_EFFECT', 'APP_SIGNOUT_REVOKED_EXACT_FAMILY', 'OLD_APP_SECRET_CUSTOMER_SESSION_NOT_FOUND', 'NEXT_PAGE_SIGNED_OUT', 'ACCOUNT_CREDENTIAL_BOUNDARY_TEST_PASS', 'CREDENTIAL_SCANS_CLEAN'];
 }

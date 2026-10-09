@@ -29,6 +29,6 @@ export async function exerciseOwnSessionRefresh(operator: Operator, customerId: 
   } catch (error) { replayError = error; }
   invariant(replayError?.code === 'CUSTOMER_SESSION_REFRESH_REUSED', 'OWN_SUPERSEDED_REFRESH_MUST_REVOKE_FAMILY');
   const invalid = await sessionCall(() => buyerClient(second.secret).me.get()).then(() => null, apiFailure);
-  invariant(invalid?.code === 'INVALID_CUSTOMER_SESSION', 'OWN_REUSED_SESSION_FAMILY_MUST_BE_INVALID');
+  invariant(invalid?.status === 404 && invalid?.code === 'CUSTOMER_SESSION_NOT_FOUND', 'OWN_REUSED_SESSION_FAMILY_MUST_BE_INVALID');
   return ['PUBLIC_OWN_SESSION_REFRESH_ROTATION_REUSE_FAMILY_REVOCATION'];
 }

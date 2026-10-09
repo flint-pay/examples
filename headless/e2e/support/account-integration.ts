@@ -32,7 +32,7 @@ export async function exerciseAccountApi(operator: Operator, customerId: string,
     const revoked = await operator.ledger.action('account-api-revoke', 'A', 'customerSessions.revoke', [refreshed.customer_session_id, {}], async key => (await operator.clients.writable('A')).customerSessions.revoke(refreshed.customer_session_id, {}, { idempotencyKey: key }), async () => {});
     invariant(revoked.revoked === true && revoked.customer_session_id === refreshed.customer_session_id, 'ACCOUNT_SESSION_REVOCATION_REQUIRED');
     const invalid = await rotated.me.get().then(() => null, error => error);
-    invariant(invalid?.code === 'INVALID_CUSTOMER_SESSION', 'ACCOUNT_REVOKED_SESSION_MUST_BE_INVALID');
+    invariant(invalid?.status === 404 && invalid?.code === 'CUSTOMER_SESSION_NOT_FOUND', 'ACCOUNT_REVOKED_SESSION_MUST_BE_INVALID');
     return ['PUBLIC_ACCOUNT_SESSION_MINT', 'PUBLIC_BUYER_RESOURCE_LISTS', 'PUBLIC_ACCOUNT_SESSION_REFRESH', 'PUBLIC_ACCOUNT_SESSION_REVOKE_AND_DENIAL'];
   } finally { await Promise.all(buyers.map(buyer => buyer.close())); await clients.anonymous.close(); }
 }
