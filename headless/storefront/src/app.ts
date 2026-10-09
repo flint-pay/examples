@@ -5,6 +5,7 @@ import {bodyLimit} from 'hono/body-limit';
 import {serveStatic} from '@hono/node-server/serve-static';
 import type {ContentfulStatusCode} from 'hono/utils/http-status';
 import {randomUUID} from 'node:crypto';
+import {fileURLToPath} from 'node:url';
 import type {IncomingMessage} from 'node:http';
 import type {Client,DeliveryAddressRequestInput,MoneyValue} from '@flintpay/node';
 import {SDK_VERSION} from './config.ts';
@@ -107,7 +108,8 @@ export function createApp(options:AppOptions){
     await next();logRequest({request_id:requestId,route:c.req.path,status:c.res.status,duration_ms:Date.now()-started});
   });
   app.get('/healthz',c=>c.json({status:'ok',app:'storefront',sandbox_id:preflight.sandboxId,mode:'test',sdk_version:SDK_VERSION,cards:preflight.cards,...(config.build?{build:config.build}:{})}));
-  app.get('/js/*',serveStatic({root:'./public'}));app.get('/images/*',serveStatic({root:'./public'}));app.get('/styles.css',serveStatic({root:'./public'}));
+  const publicRoot=fileURLToPath(new URL('../public/',import.meta.url));
+  app.get('/js/*',serveStatic({root:publicRoot}));app.get('/images/*',serveStatic({root:publicRoot}));app.get('/styles.css',serveStatic({root:publicRoot}));
   app.post('/webhooks/flint',async c=>{
     if(!config.webhookSecret)return c.body(null,404);
     const raw=new Uint8Array(await c.req.arrayBuffer());let event:Body;
