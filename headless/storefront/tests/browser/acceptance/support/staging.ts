@@ -77,11 +77,15 @@ export async function fillContact(page: Page) {
 }
 
 export async function shipToTexas(page: Page) {
+  await shipToAddress(page, TEXAS_ADDRESS);
+}
+
+export async function shipToAddress(page: Page, address: { line1: string; city: string; state: string; postal: string }) {
   await page.getByTestId('sf-ship-name').fill(TEST_BUYER.name);
-  await page.getByTestId('sf-ship-line1').fill(TEXAS_ADDRESS.line1);
-  await page.getByTestId('sf-ship-city').fill(TEXAS_ADDRESS.city);
-  await page.getByTestId('sf-ship-state').fill(TEXAS_ADDRESS.state);
-  await page.getByTestId('sf-ship-postal').fill(TEXAS_ADDRESS.postal);
+  await page.getByTestId('sf-ship-line1').fill(address.line1);
+  await page.getByTestId('sf-ship-city').fill(address.city);
+  await page.getByTestId('sf-ship-state').fill(address.state);
+  await page.getByTestId('sf-ship-postal').fill(address.postal);
   await page.getByTestId('sf-delivery-quote').click();
   await expect(page.getByTestId('sf-delivery-option-0')).toBeVisible({ timeout: 30_000 });
   await page.getByTestId('sf-delivery-option-0').check();

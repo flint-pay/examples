@@ -650,3 +650,29 @@ test.describe('a proxy error page instead of the app answer', () => {
     });
   }
 });
+
+test('an Apply queued behind a discount keeps its code through the region swap and completes the check', async ({ page, request }) => {
+  await serveChallengeHost(page);
+  const discountRelease = gate();
+  await page.route('**/checkout/chk_card/discount', async (route) => {
+    await discountRelease.wait;
+    await route.continue();
+  });
+  await openOrder(page);
+  const discountSent = page.waitForRequest('**/checkout/chk_card/discount');
+  await page.getByTestId('sf-discount-code').fill('WELCOME10');
+  await page.getByTestId('sf-discount-apply').click();
+  await discountSent;
+  await apply(page, 'CHALLENGE');
+  await expect(page.getByTestId('sf-gift-card-apply')).toHaveAttribute('aria-busy', 'true');
+  discountRelease.open();
+  // The discount's swap renders a fresh, empty gift card field before the queued Apply runs.
+  await expect(page.getByTestId('sf-discount-applied-0')).toContainText('WELCOME10');
+  await expect(page.getByTestId('sf-gift-card-applied-0')).toContainText('Gift card ending 4821');
+  await stateOf(page).toHaveAttribute('data-challenge-state', 'none');
+  await expect(giftError(page)).toBeHidden();
+  await expect(page.getByTestId('sf-gift-card-code')).toHaveValue('');
+  expect(await challengePosts(request)).toBe(1);
+  expect(await applyPosts(request)).toBe(1);
+  expect(JSON.stringify((await fixtureLog(request, REF)).log)).not.toContain('CHALLENGE');
+});

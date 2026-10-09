@@ -162,7 +162,8 @@ export function createApp(options:AppOptions){
   app.get('/checkout/:ref/state',async c=>{own(c);return c.json({state:(await state(c)).state});});
   app.post('/checkout/:ref/contact',async c=>job(c,async()=>{
     const input=await body(c);const contact:{email?:string|null;phone?:string|null}={};if(input.email!==undefined)contact.email=input.email===null||input.email===''?null:email(input.email);if(input.phone!==undefined)contact.phone=input.phone===null?null:phone(input.phone);
-    await checkouts.mutate(c.req.param('ref'),'contact',{buyer_contact:contact},async(record,key)=>{await client.checkoutSessions.update(record.checkout_session_id!,{buyer_contact:contact},auth.checkout(record,key));const details=checkouts.details(record);details.contact={...details.contact,...contact};if(input.name!==undefined)details.name=text(input.name,200);checkouts.saveDetails(record,details);});
+    const name=input.name===undefined?undefined:text(input.name,200);
+    await checkouts.mutate(c.req.param('ref'),'contact',{buyer_contact:contact,...(name===undefined?{}:{name})},async(record,key)=>{if(Object.keys(contact).length)await client.checkoutSessions.update(record.checkout_session_id!,{buyer_contact:contact},auth.checkout(record,key));const details=checkouts.details(record);details.contact={...details.contact,...contact};if(name!==undefined)details.name=name;checkouts.saveDetails(record,details);});
   }));
   app.post('/checkout/:ref/timezone',async c=>job(c,async()=>{const timezone=text((await body(c)).timezone,100);try{await checkouts.mutate(c.req.param('ref'),'timezone',{timezone},(record,key)=>client.checkoutSessions.update(record.checkout_session_id!,{timezone},auth.checkout(record,key)));}catch(error){if(!(error&&typeof error==='object'&&'code'in error&&error.code==='INVALID_TIMEZONE'))throw error;}}));
   app.post('/checkout/:ref/verification',async c=>job(c,async()=>{
