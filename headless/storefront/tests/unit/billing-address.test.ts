@@ -110,7 +110,7 @@ test('billing copy has the agreed words, reaches the browser, and has no dashes'
   for (const key of keys) {
     assert.ok(messages[key], key);
     assert.equal(browserMessages[key], messages[key]);
-    assert.doesNotMatch(messages[key], /[–—]|--/);
+    assert.doesNotMatch(messages[key], /[\u2013\u2014]|--/);
   }
   assert.equal(messages.billing_address_missing, 'Enter your billing address to continue.');
   assert.equal(copy.checkout.billingHeading, 'Billing address');
