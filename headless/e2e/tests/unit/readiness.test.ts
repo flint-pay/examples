@@ -1,8 +1,35 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { unresolvedSuitePrerequisites, prerequisites,giftChallengeSdkReady,giftChallengeReadiness } from '../../support/readiness.ts';
+import { unresolvedSuitePrerequisites, prerequisites,giftChallengeSdkReady,giftChallengeReadiness, inventoryReadiness } from '../../support/readiness.ts';
+import { atPath, type Fixtures } from '../../support/fixtures.ts';
+import type { Config } from '../../support/config.ts';
+import manifest from '../../fixtures/manifest.example.json' with { type: 'json' };
 import { rows } from '../../scenarios/registry.ts';
 import { Results } from '../../support/results.ts';
+
+test('readiness inventories missing and present hyphenated provider recipes without aborting', () => {
+  for (const present of [false, true]) {
+    const fixtures = structuredClone(manifest) as Fixtures;
+    fixtures.values = { zeroBalancePromotion: 'promo_PLACEHOLDER', providerSteps: present ? { 'ach-microdeposit-attempt': [] } : {} };
+    const results = new Results('/tmp/unused-unit-readiness.json', rows.map(row => row.id));
+    inventoryReadiness({} as Config, fixtures, results);
+    assert.equal(results.roots.get('PRQ-FIXTURE-SF-ACH-MICRODEP')?.status, present ? 'RESOLVED' : 'PENDING');
+    assert.equal(results.roots.get('PRQ-FIXTURE-SF-05Z2')?.status, 'RESOLVED');
+    assert.equal(results.roots.get('PRQ-INBOX')?.status, 'PENDING');
+    assert.equal(results.roots.get('PRQ-PROVIDER-AC-05A')?.status, 'PENDING');
+    assert.ok([...results.rows.values()].every(row => row.status === 'NOT RUN'));
+  }
+});
+
+test('fixture paths use nonempty literal keys and do not traverse prototypes', () => {
+  assert.equal(atPath({ data: [{ resource_id: 'id_PLACEHOLDER' }] }, 'data.0.resource_id'), 'id_PLACEHOLDER');
+  assert.equal(atPath({}, 'providerSteps.ach-microdeposit-attempt'), undefined);
+  assert.equal(atPath({ data: null }, 'data.id'), undefined);
+  assert.equal(atPath(Object.create({ inherited: { id: 'id_PLACEHOLDER' } }), 'inherited.id'), undefined);
+  for (const path of ['', '.data', 'data.', 'data..id', 'data[0]', 'data/id', '__proto__', 'data.__proto__.id', 'constructor.prototype', 'data.prototype.id']) {
+    assert.throws(() => atPath({}, path), { message: 'RESPONSE_PATH_INVALID' });
+  }
+});
 
 test('fixture checks fail pending roots without counting unexecuted or blocked coverage as passing', () => {
   const results = new Results('/tmp/unused-unit-readiness.json', rows.map(row => row.id));
