@@ -1,4 +1,4 @@
-import type {Client,Order,CheckoutSession,BuyerDeliveryQuoteChoiceGroupResource,DeliveryAddressRequestInput,DeliveryBuyerLocationRequestInput,Subscription} from '@flintpay/node';
+import type {Client,Order,CheckoutSession,BuyerDeliveryQuoteChoiceGroupResource,DeliveryAddressRequestInput,DeliveryBuyerLocationRequestInput,OrderTaxLocationFullAddressRequestInput,Subscription} from '@flintpay/node';
 import {createHash} from 'node:crypto';
 import type {Auth} from './auth.ts';
 import {LocalError,unknownOutcome,appError} from './errors.ts';
@@ -14,15 +14,15 @@ import type {User,Session} from '../identity/index.ts';
 import {Carts} from '../store/cart.ts';
 import type {Cart,CartLine} from '../store/cart.ts';
 import type {Config} from '../config.ts';
-import {PaymentEngine,collectionKind} from '../payments/engine.ts';
+import {PaymentEngine,collectionKind,paymentComplete} from '../payments/engine.ts';
 import type {PaymentResult} from '../payments/engine.ts';
 import {attemptOpen} from '../payments/next-step.ts';
 
 export type Quote={delivery_quote_id:string;choice_groups:BuyerDeliveryQuoteChoiceGroupResource[];expires_at:string;input_requirements:unknown[];buyer_reasons?:string[];status:string};
-export type Details={name?:string;contact?:{email?:string|null;phone?:string|null};delivery_quote?:Quote;delivery_selection?:{delivery_selection_id?:string;[key:string]:unknown};pickup_locations?:unknown[];quote_input?:{destination_address?:DeliveryAddressRequestInput;buyer_location?:DeliveryBuyerLocationRequestInput};verification?:{customer_verification_id:string;status:string;channel?:string;email?:string;phone_last_digits?:string};receipt_sent_at?:number;gift_origin_replaced_at?:number};
+export type Details={name?:string;contact?:{email?:string|null;phone?:string|null};billing_address?:OrderTaxLocationFullAddressRequestInput;delivery_quote?:Quote;delivery_selection?:{delivery_selection_id?:string;[key:string]:unknown};pickup_locations?:unknown[];quote_input?:{destination_address?:DeliveryAddressRequestInput;buyer_location?:DeliveryBuyerLocationRequestInput};verification?:{customer_verification_id:string;status:string;purpose?:string;channel?:string;email?:string;phone_last_digits?:string};receipt_sent_at?:number;gift_origin_replaced_at?:number};
 export type ReadCheckout={record:CheckoutRecord;session:CheckoutSession;order:Order;result:PaymentResult};
 export type MutationContext={order_revision?:string;delivery_selection_id:string|null;delivery_quote_id?:string;customer_verification_id?:string};
-const displayNotices=new Set(['checkout_refreshed','delivery_released','total_changed','gift_card_changed','affirm_incomplete','signed_in_mid_checkout','delivery_requoted']);
+const displayNotices=new Set(['checkout_refreshed','delivery_released','total_changed','gift_card_changed','affirm_incomplete','trial_not_started','signed_in_mid_checkout','delivery_requoted']);
 
 export class Checkouts {
   client:Client;auth:Auth;store:Store;identity:IdentityStore;config:Config;sandboxId:string;carts:Carts;payments:PaymentEngine;
@@ -55,9 +55,9 @@ export class Checkouts {
     try{const response=await call(row.idempotency_key);this.store.run("UPDATE actions SET status='succeeded' WHERE action_id=?",row.action_id);return response;}
     catch(error){const uncertain=error instanceof SdkError?error.outcome!=='not_sent'&&(unknownOutcome(error)||error.outcome!=='response'||[401,403].includes(error.status??0)):!(error instanceof LocalError);this.store.run('UPDATE actions SET status=? WHERE action_id=?',classifyError?.(error)??(uncertain?'unknown':'rejected'),row.action_id);throw error;}
   }
-  async launch(record:CheckoutRecord,customerId?:string):Promise<CheckoutRecord>{
+  async launch(record:CheckoutRecord,customerId?:string,replaceCurrent=true):Promise<CheckoutRecord>{
     const common={surface:'embedded' as const,page_origin:this.config.appOrigin,customer_collection:{require_email:true,...(customerId?{customer_id:customerId}:{})},expiration:{expires_in_seconds:String(this.config.checkoutTtl)},redirects:{success_redirect_url:`${this.config.appOrigin}/checkout/${record.checkout_ref}/return`},external_reference_id:record.checkout_ref};
-    const freshInput=record.order_id?{...common,order_id:record.order_id,...(record.checkout_session_id?{replace_checkout_session_id:record.checkout_session_id}:{})}:{...common,subscription_plan_id:record.subscription_plan_id!};
+    const freshInput=record.order_id?{...common,order_id:record.order_id,...(replaceCurrent&&record.checkout_session_id?{replace_checkout_session_id:record.checkout_session_id}:{})}:{...common,subscription_plan_id:record.subscription_plan_id!};
     const previous=this.store.get<ActionRecord>('SELECT * FROM actions WHERE idempotency_key=?',`session-${record.checkout_ref}-${record.generation}`);
     const input=previous?.body?JSON.parse(previous.body) as typeof freshInput:freshInput;
     const launched=await this.action(record,'session_create',input,key=>this.client.checkoutSessions.create(input,this.auth.merchant(key)),`session-${record.checkout_ref}-${record.generation}`);
@@ -114,11 +114,11 @@ export class Checkouts {
           this.store.run('UPDATE checkouts SET needs_replacement=1 WHERE checkout_ref=?',ref);record.needs_replacement=1;
         }
       }
-      if((credentialsStale||record.needs_replacement||['invalidated','expired','closed'].includes(session.status))&&!session.recovery_mode&&!attemptOpen(order.active_payment_attempt)&&!unresolved&&!unresolvedMutation&&order.payment_status!=='paid'&&order.status==='open'){
+      if((credentialsStale||record.needs_replacement||['invalidated','expired','closed'].includes(session.status))&&!session.recovery_mode&&!attemptOpen(order.active_payment_attempt)&&!unresolved&&!unresolvedMutation&&!paymentComplete(order)&&order.status==='open'){
         const previous=this.store.get<ActionRecord>('SELECT * FROM actions WHERE idempotency_key=?',`session-${record.checkout_ref}-${record.generation}`);
-        const replay=previous&&(previous.status==='pending'||previous.status==='unknown'||previous.body&&JSON.parse(previous.body).replace_checkout_session_id===record.checkout_session_id);
+        const replay=previous&&(previous.status==='pending'||previous.status==='unknown'||previous.status!=='rejected'&&previous.body&&JSON.parse(previous.body).replace_checkout_session_id===record.checkout_session_id);
         if(!replay){this.store.run('UPDATE checkouts SET generation=generation+1 WHERE checkout_ref=?',ref);record=this.record(ref);}
-        record=await this.launch(record,this.identity.isBound(user,this.sandboxId)?user.flint_customer_id!:undefined);
+        record=await this.launch(record,this.identity.isBound(user,this.sandboxId)?user.flint_customer_id!:undefined,session.status==='open');
         const details=this.details(record);delete details.delivery_quote;delete details.delivery_selection;delete details.pickup_locations;delete details.verification;this.saveDetails(record,details);
         this.notice(record,'checkout_refreshed');
         session=await this.client.checkoutSessions.get(record.checkout_session_id!,undefined,this.auth.checkout(record));order=await this.client.orders.get(record.order_id!,undefined,this.auth.checkout(record));
@@ -135,8 +135,8 @@ export class Checkouts {
       }
       const attempt=await this.payments.attempt(record,order,managedRead);this.payments.remember(record,attempt);
       const result=this.payments.observe(record,order,attempt);
-      const status=order.payment_status==='paid'?'paid':this.payments.next(result)==='bank_processing'?'bank_processing':'open';
-      if(status!=='open')this.store.run('UPDATE checkouts SET status=?,completed_at=COALESCE(completed_at,?),updated_at=? WHERE checkout_ref=?',status,Date.now(),Date.now(),ref);
+      const status=paymentComplete(order)?'paid':this.payments.next(result)==='bank_processing'?'bank_processing':'open';
+      if(status!=='open'||record.status!==status)this.store.run('UPDATE checkouts SET status=?,completed_at=CASE WHEN ?=\'open\' THEN NULL ELSE COALESCE(completed_at,?) END,updated_at=? WHERE checkout_ref=?',status,status,Date.now(),Date.now(),ref);
       return {record,session,order,result};
     });
   }
@@ -149,11 +149,11 @@ export class Checkouts {
   }
   project(read:ReadCheckout){
     const details=this.details(read.record);const next=this.payments.next(read.result);
-    const verification=details.verification?{status:'code_sent',delivery_channel:details.verification.channel,masked_email:details.verification.email,phone_last_digits:details.verification.phone_last_digits}:undefined;
+    const verification=details.verification?{status:'code_sent',purpose:details.verification.purpose,delivery_channel:details.verification.channel,masked_email:details.verification.email,phone_last_digits:details.verification.phone_last_digits}:undefined;
     return {checkout_ref:read.record.checkout_ref,kind:read.record.kind,collection_kind:collectionKind(read.order,read.record.kind),session:safeSession(read.session),order:safeOrder(read.order),attempt:safeAttempt(read.result.attempt),next,
       payment_collection:buyerSafe(read.order.payment_collection??read.session.payment_collection),setup_collection:buyerSafe(read.order.setup_collection??read.session.setup_collection),
       delivery_quote:buyerSafe(details.delivery_quote),delivery_selection:buyerSafe(details.delivery_selection),pickup_locations:buyerSafe(details.pickup_locations),verification,
-      contact_name:details.name,notices:this.displayNotices(read.record),approved_outstanding_money:read.order.settlement_amounts.outstanding_money};
+      contact_name:details.name,billing_address:details.billing_address??null,notices:this.displayNotices(read.record),approved_outstanding_money:read.order.settlement_amounts.outstanding_money};
   }
   async cartLock(cart:Cart,session:Session,user?:User):Promise<CheckoutRecord|undefined>{
     return this.store.locked(`cart:${cart.cart_id}`,async()=>{

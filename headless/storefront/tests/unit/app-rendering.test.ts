@@ -8,6 +8,9 @@ import {Store} from '../../src/store/db.ts';
 import type {ActionRecord} from '../../src/store/db.ts';
 import {IdentityStore} from '../../src/identity/index.ts';
 import {viewPath} from '../../src/flint/view-data.ts';
+import {LocalError} from '../../src/flint/errors.ts';
+import {trialSetupNotStarted} from '../../src/views/pages/complete.ts';
+import type {CheckoutState} from '../../src/views/types.ts';
 
 const origin='http://localhost:4100';const money={amount:'1800',currency:'USD'};
 function fixture(){
@@ -42,6 +45,15 @@ function inputValue(html:string,name:string):string{
   const tag=html.match(new RegExp(`<input\\b(?=[^>]*\\bname="${name}")[^>]*>`))?.[0];assert.ok(tag,`missing ${name} field`);
   return (tag.match(/\bvalue="([^"]*)"/)?.[1]??'').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&');
 }
+test('reading a paid zero-dollar trial keeps its local checkout open until subscription provisioning',async()=>{
+  const app=fixture();try{
+    const {record}=app.checkout();app.store.run("UPDATE checkouts SET kind='subscription' WHERE checkout_ref=?",record.checkout_ref);
+    app.remote.order={...app.remote.order,payment_status:'paid',subscription_plan_id:'fixture-plan',settlement_amounts:{...app.remote.order.settlement_amounts,outstanding_money:{amount:'0',currency:'USD'}},setup_collection:{stripe:{elements:{mode:'setup'}}}} as Order;
+    await app.checkouts.read(record.checkout_ref);assert.equal(app.checkouts.record(record.checkout_ref).status,'open');
+    app.store.run("UPDATE checkouts SET status='paid',completed_at=1 WHERE checkout_ref=?",record.checkout_ref);await app.checkouts.read(record.checkout_ref);assert.equal(app.checkouts.record(record.checkout_ref).status,'open');assert.equal(app.checkouts.record(record.checkout_ref).completed_at,null);
+    app.remote.order.subscription_id='fixture-subscription';await app.checkouts.read(record.checkout_ref);assert.equal(app.checkouts.record(record.checkout_ref).status,'paid');assert.equal(app.remote.mutations,0);
+  }finally{app.close();}
+});
 test('browser assets are served when launched from the repository root',async()=>{
   const cwd=process.cwd();process.chdir(fileURLToPath(new URL('../../../../',import.meta.url)));
   let app:ReturnType<typeof fixture>|undefined;try{
@@ -176,5 +188,99 @@ test('a failed lock refresh after a rejected cart edit keeps the rejection and n
   const app=fixture();try{
     const {cart}=app.checkout();app.remote.order={...app.remote.order,active_payment_attempt:{order_payment_attempt_id:'fixture-attempt',status:'processing',is_resumable:false} as OrderPaymentAttempt};app.remote.readFailureAt=2;
     const rejected=await app.post('/cart/items/fixture-line',{quantity:'2'});assert.equal(rejected.status,409);const html=await rejected.text();assert.match(html,/data-page="error"/);assert.match(html,/Your payment is still being confirmed/);assert.doesNotMatch(html,/action="\/cart\/items\//);assert.equal(app.carts.lines(cart)[0]!.quantity,1);assert.equal(app.remote.mutations,0);
+  }finally{app.close();}
+});
+
+type VerificationBody={state?:{verification?:Record<string,unknown>};error?:{code:string;message_key:string}};
+function verificationClient(app:ReturnType<typeof fixture>,fail?:string){
+  const calls:Record<string,unknown>[]=[];
+  (app.client.checkoutSessions as unknown as Record<string,unknown>).createCustomerVerification=async(_id:string,params:Record<string,unknown>)=>{
+    calls.push(params);if(fail)throw new LocalError(fail,409);
+    return {customer_verification_id:`private-verification-${calls.length}`,channel:params.channel==='auto'?'sms':params.channel,...(params.channel==='email'?{email:'b•••@example.test'}:{phone_last_digits:'67'})};
+  };
+  return calls;
+}
+test('a code that confirms a saved card sends no address, refuses auto, and is told apart from a code asked for before payment',async()=>{
+  const app=fixture();try{
+    const {record}=app.checkout();const calls=verificationClient(app);const url=`/checkout/${record.checkout_ref}/verification`;
+    const before=await app.post(url,{purpose:'use_saved_payment_methods',channel:'email',email:'buyer@example.test'},true);assert.equal(before.status,200);
+    const left=(await before.json() as VerificationBody).state?.verification;assert.equal(left?.purpose,'use_saved_payment_methods');assert.equal(calls[0]!.email,'buyer@example.test');
+
+    const auto=await app.post(url,{purpose:'confirm_saved_payment_method',channel:'auto'},true);assert.equal(auto.status,400);assert.equal(calls.length,1);
+    const texted=await app.post(url,{purpose:'confirm_saved_payment_method',channel:'sms',email:'someone-else@example.test'},true);assert.equal(texted.status,200);
+    assert.equal(calls.length,2);assert.equal(calls[1]!.purpose,'confirm_saved_payment_method');assert.equal(calls[1]!.channel,'sms');assert.equal('email' in calls[1]!,false);
+    const text=await texted.text();assert.doesNotMatch(text,/private-verification|private-checkout-credential/);
+    assert.deepEqual((JSON.parse(text) as VerificationBody).state?.verification,{status:'code_sent',purpose:'confirm_saved_payment_method',delivery_channel:'sms',phone_last_digits:'67'});
+
+    const emailed=await app.post(url,{purpose:'confirm_saved_payment_method',channel:'email'},true);assert.equal(emailed.status,200);
+    assert.deepEqual((await emailed.json() as VerificationBody).state?.verification,{status:'code_sent',purpose:'confirm_saved_payment_method',delivery_channel:'email',masked_email:'b•••@example.test'});
+    assert.equal(JSON.parse(app.checkouts.record(record.checkout_ref).details).verification.purpose,'confirm_saved_payment_method');
+  }finally{app.close();}
+});
+test('codes to confirm a saved card have their own allowance and stop after six',async()=>{
+  const app=fixture();try{
+    const {record}=app.checkout();verificationClient(app);const url=`/checkout/${record.checkout_ref}/verification`;
+    for(let count=0;count<3;count++)assert.equal((await app.post(url,{purpose:'use_saved_payment_methods',channel:'email',email:'buyer@example.test'},true)).status,200);
+    assert.equal((await app.post(url,{purpose:'use_saved_payment_methods',channel:'email',email:'buyer@example.test'},true)).status,429);
+    for(let count=0;count<6;count++)assert.equal((await app.post(url,{purpose:'confirm_saved_payment_method',channel:count%2?'email':'sms'},true)).status,200);
+    assert.equal((await app.post(url,{purpose:'confirm_saved_payment_method',channel:'sms'},true)).status,429);
+  }finally{app.close();}
+});
+test('when a text cannot be sent the answer names the code and keeps the earlier code state',async()=>{
+  const app=fixture();try{
+    const {record}=app.checkout();verificationClient(app,'CUSTOMER_VERIFICATION_TEXT_UNAVAILABLE');
+    const response=await app.post(`/checkout/${record.checkout_ref}/verification`,{purpose:'confirm_saved_payment_method',channel:'sms'},true);
+    assert.equal(response.status,409);const body=await response.json() as VerificationBody;
+    assert.equal(body.error?.code,'CUSTOMER_VERIFICATION_TEXT_UNAVAILABLE');assert.equal(body.error?.message_key,'customer_verification_text_unavailable');
+    assert.equal(body.state?.verification,undefined);assert.equal(JSON.parse(app.checkouts.record(record.checkout_ref).details).verification,undefined);
+  }finally{app.close();}
+});
+
+function trialState(change:Record<string,unknown>={},order:Record<string,unknown>={}):CheckoutState{
+  return {kind:'subscription',next:'new_payment',session:{status:'open'},order:{settlement_amounts:{outstanding_money:{amount:'0',currency:'USD'}},...order},...change} as unknown as CheckoutState;
+}
+test('a trial whose card setup never ran is the only state that leaves the confirmation page',()=>{
+  const cases:[string,CheckoutState,boolean][]=[
+    ['no attempt',trialState(),true],
+    ['failed setup',trialState({attempt:{status:'failed'}}),true],
+    ['canceled setup',trialState({attempt:{status:'canceled'}}),true],
+    ['subscription exists',trialState({},{subscription_id:'example-subscription'}),false],
+    ['amount due',trialState({},{settlement_amounts:{outstanding_money:{amount:'2200',currency:'USD'}}}),false],
+    ['unknown outcome',trialState({next:'resume'}),false],
+    ['processing',trialState({next:'wait',attempt:{status:'processing'}}),false],
+    ['needs authentication',trialState({next:'authenticate',attempt:{status:'requires_action'}}),false],
+    ['setup succeeded, subscription pending',trialState({next:'wait',attempt:{status:'succeeded'}}),false],
+    ['done',trialState({next:'done'}),false],
+    ['session paid',trialState({session:{status:'paid'}}),false],
+    ['session partially paid',trialState({session:{status:'partially_paid'}}),false],
+    ['order checkout',trialState({kind:'order'}),false],
+  ];
+  for(const [name,state,expected] of cases)assert.equal(trialSetupNotStarted(state),expected,name);
+});
+
+function unstartedTrial(app:ReturnType<typeof fixture>){
+  const {record}=app.checkout();app.store.run("UPDATE checkouts SET kind='subscription' WHERE checkout_ref=?",record.checkout_ref);
+  app.remote.order={...app.remote.order,payment_status:'paid',subscription_plan_id:'fixture-plan',settlement_amounts:{...app.remote.order.settlement_amounts,outstanding_money:{amount:'0',currency:'USD'}},setup_collection:{stripe:{elements:{mode:'setup'}}}} as Order;
+  return record;
+}
+test('the real completion route sends an unstarted $0 trial back to checkout with a one-time notice and no Flint mutation',async()=>{
+  const app=fixture();try{
+    const record=unstartedTrial(app);const flash=()=>JSON.parse(app.checkouts.record(record.checkout_ref).flash) as string[];
+    assert.deepEqual(flash(),[]);
+    const redirect=await app.get(`/checkout/${record.checkout_ref}/complete`);
+    assert.equal(redirect.status,303);assert.equal(redirect.headers.get('location'),`/checkout/${record.checkout_ref}`);assert.deepEqual(flash(),['trial_not_started']);assert.equal(app.remote.mutations,0);
+    const shown=await app.get(redirect.headers.get('location')!);assert.equal(shown.status,200);assert.match(await shown.text(),/data-notice="trial_not_started"/);
+    assert.deepEqual(flash(),[]);assert.equal(app.remote.mutations,0);
+    const again=await app.get(`/checkout/${record.checkout_ref}`);assert.equal(again.status,200);assert.doesNotMatch(await again.text(),/data-notice="trial_not_started"/);
+    assert.equal(app.remote.mutations,0);
+  }finally{app.close();}
+});
+test('the real completion route keeps a $0 trial with an unknown payment outcome on the confirming page',async()=>{
+  const app=fixture();try{
+    const record=unstartedTrial(app);const action=app.payments.job(record,'pay',{action:'setup',setup_payment_source:{token:'pm_trial'}});
+    app.store.run("UPDATE actions SET status='unknown' WHERE action_id=?",action.action_id);
+    const response=await app.get(`/checkout/${record.checkout_ref}/complete`);
+    assert.equal(response.status,200);assert.equal(response.headers.get('location'),null);assert.match(await response.text(),/data-testid="sf-complete"/);
+    assert.deepEqual(JSON.parse(app.checkouts.record(record.checkout_ref).flash),[]);assert.equal(app.remote.mutations,0);
   }finally{app.close();}
 });

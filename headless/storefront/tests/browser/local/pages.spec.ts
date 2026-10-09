@@ -31,6 +31,8 @@ const pages: { name: string; url: string; testid: string; state?: string }[] = [
   { name: 'checkout unavailable', url: '/checkout/chk_unavailable', testid: 'sf-checkout' },
   { name: 'checkout declined', url: '/checkout/chk_declined', testid: 'sf-checkout' },
   { name: 'complete paid', url: '/checkout/chk_paid/complete', testid: 'sf-complete', state: 'paid' },
+  { name: 'complete card saved', url: '/checkout/chk_guestsaved/complete', testid: 'sf-complete', state: 'paid' },
+  { name: 'complete card not saved', url: '/checkout/chk_guestexpired/complete', testid: 'sf-complete', state: 'paid' },
   { name: 'complete bank', url: '/checkout/chk_bankdone/complete', testid: 'sf-complete', state: 'bank_processing' },
   { name: 'return elsewhere', url: '/checkout/chk_elsewhere/return', testid: 'sf-return' },
   { name: 'server error', url: '/fx/error', testid: 'sf-error' },
@@ -67,7 +69,7 @@ for (const width of [390, 768, 1024, 1440]) {
   test(`no horizontal scroll at ${width}px on key screens`, async ({ page }) => {
     await installStripeStub(page);
     await page.setViewportSize({ width, height: 900 });
-    for (const url of ['/', '/products/house-blend', '/fx/cart-locked', '/checkout/chk_card', '/checkout/chk_paid/complete', '/sign-up']) {
+    for (const url of ['/', '/products/house-blend', '/fx/cart-locked', '/checkout/chk_card', '/checkout/chk_paid/complete', '/checkout/chk_guestsaved/complete', '/sign-up']) {
       await page.goto(url);
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       expect(overflow, `${url} overflows at ${width}`).toBeLessThanOrEqual(0);

@@ -47,6 +47,33 @@ export function whenStripeLoaded() {
   });
 }
 
+/**
+ * Runs a pending provider action with no Elements, guidance or card form. Only the action Flint
+ * returned is used. Anything but `handle_next_action` is refused without calling Stripe.
+ * `invoked` is true once Stripe was called, whether or not it returned an error.
+ * @param {ClientAction | null | undefined} action
+ * @param {{ onInvoke?: () => void }} [hooks]
+ * @returns {Promise<{ invoked: boolean, error?: { message?: string, code?: string } }>}
+ */
+export async function runClientAction(action, hooks) {
+  const call = action?.payment_intent ?? action?.setup_intent;
+  if (!action?.publishable_key || !call?.client_secret || call.stripe_js_call !== 'handle_next_action') return { invoked: false, error: { message: 'missing_client_action' } };
+  let factory;
+  try {
+    factory = await whenStripeLoaded();
+  } catch {
+    return { invoked: false, error: { message: 'stripe_not_loaded' } };
+  }
+  const client = factory(action.publishable_key, action.account_id ? { stripeAccount: action.account_id } : undefined);
+  hooks?.onInvoke?.();
+  try {
+    const result = await client.handleNextAction({ clientSecret: call.client_secret });
+    return result?.error ? { invoked: true, error: result.error } : { invoked: true };
+  } catch (error) {
+    return { invoked: true, error: { message: String(/** @type {any} */ (error)?.message ?? error) } };
+  }
+}
+
 /** @param {Money | null | undefined} money */
 function minorNumber(money) {
   return money ? Number(money.amount) : 0;
@@ -257,14 +284,8 @@ export async function createStripePayment(options) {
      * @returns {Promise<{ error?: { message?: string, code?: string } }>}
      */
     async handleNextAction(action) {
-      let client = stripe;
-      if (action.publishable_key !== stripeInfo.publishable_key || action.account_id !== stripeInfo.account_id) {
-        client = factory(action.publishable_key, action.account_id ? { stripeAccount: action.account_id } : undefined);
-      }
-      const secret = action.payment_intent?.client_secret ?? action.setup_intent?.client_secret;
-      if (!secret) return { error: { message: 'missing_client_action' } };
-      const result = await client.handleNextAction({ clientSecret: secret });
-      return result?.error ? { error: result.error } : {};
+      const run = await runClientAction(action);
+      return run.error ? { error: run.error } : {};
     },
 
     destroy() {

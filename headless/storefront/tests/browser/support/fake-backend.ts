@@ -107,6 +107,12 @@ export class FakeCheckout {
   selection: Json | null = null;
   verification: Json | null = null;
   contactName = '';
+  /** The full US billing address the buyer gave for tax, as the app keeps it. */
+  billing: Json | null = null;
+  /** Guest scenarios: the card can be saved with a phone number and confirmed after payment. */
+  get guest() {
+    return this.scenario.startsWith('guest');
+  }
   savedMethods: Json[] = [];
   pickupLocations: Json[] | null = null;
   /** An unresolved saved pay request the app must replay. Nothing in the browser can change it. */
@@ -114,6 +120,8 @@ export class FakeCheckout {
   subscription: Json | null = null;
   log: { method: string; path: string; body: unknown }[] = [];
   payCount = 0;
+  /** Each declined card payment rotates the active return relay, as the service does. */
+  relayGeneration = 0;
   resumeCount = 0;
   attemptReads = 0;
   staleOnce = false;
@@ -142,9 +150,9 @@ export class FakeCheckout {
       delivery_selection_required: this.config.needsDelivery,
       merchant_support: { email: 'support@example.test', phone: '555-0100', url: 'https://example.test/help' },
       promotion_config: { codes_enabled: true },
-      save_payment_method_offered: ['card', 'signedin', 'returning'].includes(this.scenario) || this.scenario === 'pickup',
-      save_payment_method_phone_offered: false,
-      save_payment_method_requires_verification: this.scenario === 'returning',
+      save_payment_method_offered: ['card', 'signedin', 'returning'].includes(this.scenario) || this.scenario === 'pickup' || this.guest,
+      save_payment_method_phone_offered: this.guest,
+      save_payment_method_requires_verification: this.scenario === 'returning' || this.guest,
       problems: [],
     };
     if (this.config.kind === 'subscription') {
@@ -165,6 +173,12 @@ export class FakeCheckout {
       this.savedMethods = [{ payment_method_id: 'pm_fixture_visa', type: 'card', card: { brand: 'visa', last4: '4242', exp_month: 12, exp_year: 2028 } }];
     }
     this.recalc();
+    if (this.config.kind === 'subscription') this.order.subscription_plan_id = this.config.trial ? 'plan_fixture_2' : 'plan_fixture_1';
+    // Like the public API, a $0 trial is financially paid from creation. Only the card setup creates the subscription.
+    if (this.config.kind === 'subscription' && this.config.trial) {
+      this.order.payment_status = 'paid';
+      this.order.settlement_amounts = { outstanding_money: usd(0), paid_money: usd(0) };
+    }
     this.initScenario();
     this.recalc();
   }
@@ -176,6 +190,7 @@ export class FakeCheckout {
       action_type: 'handle_next_action',
       client_action: { stripe: { publishable_key: 'pk_test_fixture', account_id: 'acct_fixture', [kind]: { client_secret: 'pi_fixture_secret_fixture', stripe_js_call: 'handle_next_action' } } },
     });
+    if (s === 'taxset') this.billing = { line1: '1 Cedar St', city: 'Austin', state: 'TX', postal_code: '78701', country: 'US' };
     if (s === 'expired') this.session.status = 'expired';
     if (s === 'recovery') {
       this.session.recovery_mode = true;
@@ -199,9 +214,17 @@ export class FakeCheckout {
       this.notices.push('affirm_incomplete');
       this.pendingBehavior = 'affirm';
     }
+    if (s === 'subtrialdeclined') this.attempt = this.makeAttempt('failed', { is_resumable: false, failure_code: 'incorrect_cvc' });
+    if (s === 'subtrialwaiting') this.attempt = this.makeAttempt('processing', { is_resumable: false });
     if (s === 'declined') this.attempt = this.makeAttempt('failed', { is_resumable: false, failure_code: 'incorrect_cvc' });
     if (s === 'remaining') this.attempt = this.makeAttempt('partially_succeeded', { is_resumable: false });
     if (s === 'paid') this.markPaid();
+    if (s === 'guestsaved' || s === 'guestexpired' || s === 'guestleft') {
+      this.markPaid();
+      this.session.payment_method_save = s === 'guestsaved' ? { status: 'saved', email_confirmation_required: false, saved_with: 'sms' } : s === 'guestexpired' ? { status: 'expired', email_confirmation_required: false } : { status: 'pending', email_confirmation_required: false, phone_last_digits: '67' };
+      // A code asked for before payment must not look like the receipt's code.
+      if (s === 'guestleft') this.verification = { status: 'code_sent', purpose: 'use_saved_payment_methods', delivery_channel: 'sms', masked_email: 'b***@example.test', phone_last_digits: '0100' };
+    }
     if (s === 'bankdone') this.attempt = this.makeAttempt('processing', { is_resumable: false, selected: 'ach_debit' });
     if (s === 'returning') this.session.save_payment_method_requires_verification = true;
     if (s === 'unavailable') this.session.unavailable = true;
@@ -241,6 +264,7 @@ export class FakeCheckout {
     const gift = this.order.gift_card_estimate;
     this.order.gift_card_settlements = gift ? [{ amount_money: gift.gift_card_money, last_characters: '4821' }] : [];
     if (this.config.kind === 'subscription') {
+      this.order.subscription_id = 'sub_fixture_1';
       this.subscription = {
         subscription_id: 'sub_fixture_1',
         status: this.config.trial ? 'trialing' : 'active',
@@ -272,10 +296,19 @@ export class FakeCheckout {
     if (this.tip?.percent) tipMoney = (base * BigInt(this.tip.percent)) / 100n;
     if (this.tip?.amount_money) tipMoney = big(this.tip.amount_money);
     o.requested_tip = this.tip;
-    const needsLocation = this.config.needsDelivery && !this.selection;
+    const needsBilling = ['taxneeded', 'subtrialtax'].includes(this.scenario) && !this.billing;
+    const needsLocation = (this.config.needsDelivery && !this.selection) || needsBilling;
     const taxable = base + charge;
-    const tax = needsLocation || this.config.kind === 'subscription' ? 0n : (taxable * 825n) / 10000n;
-    o.tax = { status: needsLocation ? 'requires_location' : 'calculated', enabled: true };
+    // A California address is taxed at a higher rate, so editing the address changes the total.
+    const rate = this.billing?.state === 'CA' ? 950n : 825n;
+    const tax = needsLocation || this.config.kind === 'subscription' ? 0n : (taxable * rate) / 10000n;
+    o.tax = {
+      status: needsLocation ? 'requires_location' : 'calculated',
+      enabled: true,
+      // Like the service, inputs are listed only while an address is being asked for.
+      ...(needsLocation ? { available_location_inputs: ['provided'] } : {}),
+      ...(this.billing ? { location: { address_source: 'provided', address_type: 'billing_address' } } : {}),
+    };
     let total = base + charge + tipMoney + tax + this.totalBump;
     if (this.config.kind === 'subscription' && this.config.trial) total = 0n;
     o.pricing_amounts = {
@@ -306,6 +339,7 @@ export class FakeCheckout {
 
   collectionKind(): string {
     const outstanding = big(this.order.settlement_amounts.outstanding_money);
+    if (this.order.tax?.status === 'requires_location' && !this.config.needsDelivery) return 'unavailable';
     if (this.config.kind === 'subscription') return outstanding === 0n ? 'setup' : 'processor';
     if (this.scenario === 'unavailable') return 'unavailable';
     const est = this.order.gift_card_estimate;
@@ -329,19 +363,21 @@ export class FakeCheckout {
   project(): CheckoutState {
     const kind = this.collectionKind();
     const money = (this.order.settlement_amounts as Json).outstanding_money;
-    const guide = kind === 'setup' ? undefined : kind === 'settlement' || kind === 'unavailable' ? undefined : guidance('payment', usd(big(this.order.gift_card_estimate?.processor_money ?? money)), this.scenario === 'wallet' ? { digital_wallets: ['apple_pay', 'google_pay'] } : {});
+    const guide = kind === 'setup' ? undefined : kind === 'settlement' || kind === 'unavailable' ? undefined : guidance('payment', usd(big(this.order.gift_card_estimate?.processor_money ?? money)), this.scenario === 'wallet' ? { digital_wallets: ['apple_pay', 'google_pay'] } : {}, this.relayGeneration);
     const setupGuide = kind === 'setup' ? guidance('setup', usd(0)) : undefined;
     return {
       checkout_ref: this.ref,
       kind: this.config.kind,
-      collection_kind: kind,
+      collection_kind: this.attempt?.status === 'requires_action' ? 'unavailable' : kind,
       contact_name: this.contactName || undefined,
+      billing_address: this.billing,
       session: JSON.parse(JSON.stringify(this.session)),
       order: JSON.parse(JSON.stringify(this.order)),
       attempt: this.attempt ? JSON.parse(JSON.stringify(this.attempt)) : undefined,
       next: this.nextStep(),
-      payment_collection: guide,
-      setup_collection: setupGuide,
+      // Like the service, no collection guidance is offered while an authentication is pending.
+      payment_collection: this.attempt?.status === 'requires_action' ? undefined : guide,
+      setup_collection: this.attempt?.status === 'requires_action' ? undefined : setupGuide,
       delivery_quote: this.quote,
       delivery_selection: this.selection,
       pickup_locations: this.pickupLocations,
@@ -369,7 +405,7 @@ export class FakeCheckout {
   handle(method: string, name: string, body: Json): Reply {
     this.log.push({ method, path: name, body: sanitizeBody(body) });
     const locked = this.journal !== null || (this.attempt && ['requires_action', 'processing', 'requires_retry'].includes(this.attempt.status));
-    const mutating = ['contact', 'discount', 'discount/remove', 'delivery/quote', 'pickup-locations', 'delivery/select', 'gift-card', 'tip'].includes(name) || name.startsWith('gift-card/');
+    const mutating = ['contact', 'discount', 'discount/remove', 'delivery/quote', 'pickup-locations', 'delivery/select', 'gift-card', 'tip', 'billing-address'].includes(name) || name.startsWith('gift-card/');
     if (mutating && name !== 'contact' && locked) return fail(409, 'conflict', 'PAYMENT_ATTEMPT_IN_PROGRESS', 'payment_attempt_in_progress', this.project());
     switch (name) {
       case 'contact':
@@ -377,10 +413,12 @@ export class FakeCheckout {
       case 'timezone':
         return this.ok();
       case 'verification':
-        this.verification = { status: 'code_sent', delivery_channel: body.channel === 'email' ? 'email' : 'sms', masked_email: 'b***@example.test', phone_last_digits: '0100' };
+        if (body.purpose === 'confirm_saved_payment_method') return this.confirmSavedCardCode(body);
+        this.verification = { status: 'code_sent', purpose: body.purpose, delivery_channel: body.channel === 'email' ? 'email' : 'sms', masked_email: 'b***@example.test', phone_last_digits: '0100' };
         return this.ok();
       case 'verification/confirm':
         if (String(body.code) !== '123456') return fail(400, 'validation', 'CUSTOMER_VERIFICATION_CODE_INVALID', 'customer_verification_code_invalid', this.project());
+        if (this.verification?.purpose === 'confirm_saved_payment_method') return this.confirmSavedCard();
         this.verification = null;
         this.order.customer_id = 'cus_fixture_2';
         this.savedMethods = [{ payment_method_id: 'pm_fixture_mc', type: 'card', card: { brand: 'mastercard', last4: '4444', exp_month: 3, exp_year: 2029 } }];
@@ -392,6 +430,8 @@ export class FakeCheckout {
         this.releaseSelection();
         this.recalc();
         return this.ok();
+      case 'billing-address':
+        return this.billingAddress(body);
       case 'delivery/quote':
         return this.deliveryQuote(body, false);
       case 'pickup-locations':
@@ -426,6 +466,30 @@ export class FakeCheckout {
         }
         return fail(404, 'not_found', 'NOT_FOUND', 'not_found', this.project());
     }
+  }
+
+  /** Asking for the code that confirms a card saved with a phone number. The paid session keeps its credential. */
+  private confirmSavedCardCode(body: Json): Reply {
+    const save = this.session.payment_method_save;
+    if (!save || save.status !== 'pending') return fail(409, 'conflict', 'PAYMENT_METHOD_SAVE_NOT_PENDING', 'payment_method_save_not_pending', this.project());
+    if (body.channel !== 'sms' && body.channel !== 'email') return fail(400, 'validation', 'INVALID_INPUT', 'invalid_input', this.project());
+    if (body.channel === 'sms' && this.scenario === 'guestnotext') return fail(409, 'conflict', 'CUSTOMER_VERIFICATION_TEXT_UNAVAILABLE', 'customer_verification_text_unavailable', this.project());
+    this.verification = { status: 'code_sent', purpose: 'confirm_saved_payment_method', delivery_channel: body.channel, masked_email: 'b•••@example.test', phone_last_digits: body.channel === 'sms' ? '67' : undefined };
+    return this.ok();
+  }
+
+  /** A texted code saves the card, unless the email must be confirmed too. An emailed code finishes it. */
+  private confirmSavedCard(): Reply {
+    const save = this.session.payment_method_save;
+    const channel = this.verification?.delivery_channel;
+    this.verification = null;
+    if (channel === 'sms' && this.scenario === 'guestemail') this.session.payment_method_save = { ...save, email_confirmation_required: true };
+    else {
+      // Like the public API, the last digits are sent only while the card is pending.
+      const { phone_last_digits: _digits, ...rest } = save;
+      this.session.payment_method_save = { ...rest, status: 'saved', email_confirmation_required: false, saved_with: channel };
+    }
+    return this.ok();
   }
 
   private contact(body: Json): Reply {
@@ -495,6 +559,16 @@ export class FakeCheckout {
       input_requirements: [],
     };
     this.pickupLocations = pickup && !noneNearby ? [{ ...pick, delivery_choice_group_id: 'grp_fixture_1', availability_status: 'ready', display_position: 0 }] : null;
+    return this.ok();
+  }
+
+  private billingAddress(body: Json): Reply {
+    if (this.config.needsDelivery) return fail(400, 'validation', 'INVALID_INPUT', 'generic_error', this.project());
+    // A ZIP code the tax service cannot place, so the page shows the error and keeps the form.
+    if (body.postal_code === '00000') return fail(422, 'validation', 'TAX_LOCATION_INVALID', 'generic_error', this.project());
+    this.billing = body;
+    this.order.order_revision = String(Number(this.order.order_revision ?? 3) + 1);
+    this.recalc();
     return this.ok();
   }
 
@@ -647,6 +721,7 @@ export class FakeCheckout {
         this.recalc();
         return this.paymentReply({ error: { kind: 'conflict', code: 'ORDER_CHANGED_REFRESH_REQUIRED', message_key: 'total_changed', request_id: 'req_fixture' } });
       case 'decline':
+        this.relayGeneration += 1;
         this.attempt = this.makeAttempt('failed', { failure_code: 'card_declined' });
         return this.paymentReply();
       case 'cvc':
@@ -660,7 +735,7 @@ export class FakeCheckout {
         this.pendingBehavior = behavior;
         this.attempt = this.makeAttempt('requires_action', {
           is_resumable: true,
-          pending_actions: [{ pending_action_id: `pa_fixture_${++this.seq}`, action_type: 'handle_next_action', client_action: { stripe: { publishable_key: 'pk_test_fixture', account_id: 'acct_fixture', payment_intent: { client_secret: 'pi_fixture_secret_fixture', stripe_js_call: 'handle_next_action' } } } }],
+          pending_actions: [{ pending_action_id: `pa_fixture_${++this.seq}`, action_type: 'handle_next_action', client_action: { stripe: { publishable_key: 'pk_test_fixture', account_id: 'acct_fixture', ...(kind === 'setup' ? { setup_intent: { client_secret: 'seti_fixture_secret_fixture', stripe_js_call: 'handle_next_action' } } : { payment_intent: { client_secret: 'pi_fixture_secret_fixture', stripe_js_call: 'handle_next_action' } }) } } }],
         });
         return this.paymentReply();
       case 'lostsend':
@@ -678,6 +753,7 @@ export class FakeCheckout {
         return this.paymentReply();
       default:
         this.markPaid();
+        if (body.save_payment_method && body.save_payment_method_phone) this.session.payment_method_save = { status: 'pending', email_confirmation_required: false, phone_last_digits: String(body.save_payment_method_phone).slice(-2) };
         return this.paymentReply();
     }
   }

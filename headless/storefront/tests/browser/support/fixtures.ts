@@ -41,15 +41,18 @@ export function cartData(lines: { id: string; slug: string; variant: number; qua
 
 export type Scenario =
   | 'card' | 'pickup' | 'service' | 'subtrial' | 'subpaid' | 'gift' | 'expired' | 'recovery' | 'unavailable'
-  | 'authenticating' | 'waiting' | 'bank' | 'affirm' | 'declined' | 'remaining' | 'paid' | 'bankdone' | 'signedin' | 'returning' | 'wallet' | 'lostresume' | 'stuckresume' | 'resumefail';
+  | 'authenticating' | 'waiting' | 'bank' | 'affirm' | 'declined' | 'remaining' | 'paid' | 'bankdone' | 'signedin' | 'returning' | 'wallet' | 'lostresume' | 'stuckresume' | 'resumefail'
+  | 'subtrialdeclined' | 'subtrialwaiting'
+  | 'taxneeded' | 'taxset' | 'subtrialtax'
+  | 'guestsave' | 'guestemail' | 'guestnotext' | 'guestsaved' | 'guestexpired' | 'guestleft';
 
 const STRIPE = { publishable_key: 'pk_test_fixture', account_id: 'acct_fixture' };
 
-function guidance(mode: 'payment' | 'setup', amount: Money, extra: Record<string, unknown> = {}) {
+function guidance(mode: 'payment' | 'setup', amount: Money, extra: Record<string, unknown> = {}, relay = 0) {
   return {
     stripe: {
       ...STRIPE,
-      return_url: 'https://relay.example.test/payment-returns/fixture',
+      return_url: relay ? `https://relay.example.test/payment-returns/fixture-${relay}` : 'https://relay.example.test/payment-returns/fixture',
       elements: {
         mode,
         next_step: mode === 'setup' ? 'collect_setup_payment_source' : 'create_confirmation_token',
@@ -110,8 +113,13 @@ export function baseOrder(config: FakeConfig): Order {
 export function scenarioConfig(scenario: Scenario): FakeConfig {
   switch (scenario) {
     case 'service':
+    case 'taxneeded':
+    case 'taxset':
       return { lines: [lineFor('brewing-class', 0, 1, 'li_1')], needsDelivery: false, kind: 'order', trial: false };
     case 'subtrial':
+    case 'subtrialtax':
+    case 'subtrialdeclined':
+    case 'subtrialwaiting':
       return { lines: [], needsDelivery: false, kind: 'subscription', trial: true };
     case 'subpaid':
       return { lines: [], needsDelivery: false, kind: 'subscription', trial: false };

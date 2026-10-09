@@ -47,8 +47,8 @@ function readSnapshot(path:string,sandboxId:string,merchantId:string):Snapshot{
   return snapshot;
 }
 function sdkWrite(body:SettingsWrite):UpdateSettingsRequestInput{
-  // The public API accepts null to clear this subtree. The pinned SDK does not
-  // yet declare or encode it. Validate locally before any change that needs it.
+  // The public API accepts null to clear this subtree, and the pinned SDK
+  // preserves explicit null. Validate locally before any settings write.
   return makeUpdateSettingsRequest(body as UpdateSettingsRequestInput).toJSON();
 }
 function assertRestorable(snapshot:Snapshot){
