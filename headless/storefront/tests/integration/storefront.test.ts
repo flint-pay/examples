@@ -17,7 +17,7 @@ import type {CheckoutRecord} from '../../src/store/db.ts';
 // No HTTP responses or SDK operations are mocked.
 test('storefront public SDK sandbox journeys',{timeout:180_000},async t=>{
   const config=readConfig();if(!config.sandboxGuard)throw new Error('Set FLINT_SANDBOX_ID to the dedicated integration sandbox.');
-  const client=createClient(config.apiBaseUrl,config.sandboxGuard);const auth=createAuth(config.apiKey);const ready=await preflight(client,auth,config);assert.equal(ready.sandboxId,config.sandboxGuard);assert.equal(ready.cards,'enabled');
+  const client=createClient(config.apiBaseUrl,config.sandboxGuard);const auth=createAuth(config.apiKey);const ready=await preflight(client,auth,config);assert.equal(ready.sandboxId,config.sandboxGuard);assert.equal(ready.cards,'ready');
   const journals=process.env.E2E_INTEGRATION_JOURNAL_DIR;
   if(journals)mkdirSync(journals,{recursive:true,mode:0o700});
   const directory=mkdtempSync(join(journals??tmpdir(),'storefront-integration-'));const runId=randomUUID();const runtime=createApp({config:{...config,appDatabasePath:join(directory,'app.sqlite'),identityDatabasePath:join(directory,'identity.sqlite')},client,preflight:ready});
