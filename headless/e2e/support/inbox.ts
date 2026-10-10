@@ -16,7 +16,11 @@ export type Inbox = { waitForEmail(query: WaitMail): Promise<Mail>; close(): Pro
 export function parseLinks(html: string, text: string): Mail['links'] {
   const dom = parseDocument(html);
   const links = findAll(n => n.type === 'tag' && n.name === 'a' && !!n.attribs.href, dom.children).map(n => ({ text: textContent(n), href: n.attribs.href }));
-  for (const href of text.match(/https?:\/\/[^\s<>"']+/g) ?? []) if (!links.some(l => l.href === href)) links.push({ text: '', href });
+  const htmlHrefs = links.map(l => l.href);
+  for (const href of text.match(/https?:\/\/[^\s<>"']+/g) ?? []) {
+    const proseDuplicate = htmlHrefs.some(htmlHref => href === `${htmlHref}.`);
+    if (!proseDuplicate && !links.some(l => l.href === href)) links.push({ text: '', href });
+  }
   return links;
 }
 export function auditLinks(mail: Mail, origins: string[], family = 'order_receipts'): void {
