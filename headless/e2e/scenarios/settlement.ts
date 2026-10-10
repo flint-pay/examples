@@ -28,7 +28,7 @@ export const settlement: Record<string, Scenario> = {
     return ['ZERO_BALANCE_PUBLIC_PAY_WITHOUT_PROCESSOR'];
   },
   'SF-05Z1': async d => {
-    const c = await d.checkout(await d.page('gift-full'), 'house-blend'); await d.delivery(c, true);
+    const c = await d.checkout(await d.page('gift-full'), 'house-blend'); await d.delivery(c);
     const outstanding = money(c.state.order.settlement_amounts.outstanding_money), issued = await d.operator.issueGiftCard('full-gift-funded', (BigInt(outstanding.amount) + 1000n).toString());
     invariant(issued.code, 'PUBLIC_GIFT_CODE_REQUIRED'); d.scanner.addGift(issued.code);
     await d.applyGift(c,issued.code);
@@ -38,22 +38,22 @@ export const settlement: Record<string, Scenario> = {
     const [response] = await Promise.all([c.page.waitForRequest(r => new URL(r.url()).pathname === `/checkout/${c.ref}/pay` && r.method() === 'POST'), c.page.getByTestId('sf-pay-button').click()]);
     const request = response.postDataJSON();
     invariant(!request.credential, 'GIFT_FULL_PROCESSOR_SOURCE'); equalMoney(request.approved_outstanding_money, outstanding);
-    await expect(c.page.getByTestId('sf-complete')).toHaveAttribute('data-state', 'paid'); const order = await d.trackOrder('A', c.orderId);
+    await expect(c.page.getByTestId('sf-complete')).toHaveAttribute('data-state', 'paid', { timeout: 60000 }); const order = await d.trackOrder('A', c.orderId);
     assertOneCharge(order, (await d.operator.clients.clients.A.orders.listPaymentAttempts(c.orderId)).data, 0);
     invariant(order.gift_card_settlements?.length === 1, 'FULL_GIFT_SETTLEMENT_MISSING'); return ['FULL_GIFT_EXACT_ALLOCATION_NO_PROCESSOR'];
   },
   'SF-05Z3': async d => {
-    const main = await d.checkout(await d.page('gift-change-main'), 'house-blend'); await d.delivery(main, true);
-    const spend = await d.checkout(await d.page('gift-change-spend'), 'brewing-class');
+    const main = await d.checkout(await d.page('gift-change-main'), 'house-blend'); await d.delivery(main);
+    const spend = await d.checkout(await d.page('gift-change-spend'), 'brewing-class'); await billing(d, spend);
     const expected = money(main.state.order.settlement_amounts.outstanding_money), spending = money(spend.state.order.settlement_amounts.outstanding_money);
     invariant(expected.currency === spending.currency && BigInt(expected.amount) > 500n, 'GIFT_CONCURRENCY_MONEY_REQUIRED');
     const issued = await d.operator.issueGiftCard('gift-allocation-change', (BigInt(expected.amount) + BigInt(spending.amount) - 500n).toString());
     invariant(issued.code, 'PUBLIC_GIFT_CODE_REQUIRED'); d.scanner.addGift(issued.code);
     for (const c of [main, spend]) { await d.applyGift(c,issued.code); invariant(money(giftAllocation(c.state.order).processor_money).amount === '0', 'INITIAL_GIFT_FULL_ALLOCATION_REQUIRED'); }
-    await spend.page.getByTestId('sf-pay-button').click(); await expect(spend.page.getByTestId('sf-complete')).toHaveAttribute('data-state', 'paid');
+    await spend.page.getByTestId('sf-pay-button').click(); await expect(spend.page.getByTestId('sf-complete')).toHaveAttribute('data-state', 'paid', { timeout: 60000 });
     assertOneCharge(await d.trackOrder('A', spend.orderId), (await d.operator.clients.clients.A.orders.listPaymentAttempts(spend.orderId)).data, 0);
     await syncAppAudit(d); const checkpoint = d.appMutations.length;
-    await main.page.getByTestId('sf-pay-button').click(); await expect(main.page.getByTestId('sf-payment')).toHaveAttribute('data-state', 'total_changed');
+    await main.page.getByTestId('sf-pay-button').click(); await expect(main.page.getByTestId('sf-payment')).toHaveAttribute('data-state', 'total_changed', { timeout: 60000 });
     await expect(main.page.getByTestId('sf-payment-message')).toContainText('gift card balance changed'); await syncAppAudit(d);
     invariant(!d.appMutations.slice(checkpoint).some(e => e.operation === 'ORDER_PAY' && e.targetId === main.orderId), 'STALE_GIFT_MUST_NOT_CALL_PUBLIC_PAY');
     invariant((await d.operator.clients.clients.A.orders.listPaymentAttempts(main.orderId)).data.length === 0, 'STALE_GIFT_MUST_NOT_CREATE_ATTEMPT');

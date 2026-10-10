@@ -1554,6 +1554,11 @@ async function handlePayError(result) {
 async function totalChanged(giftChanged) {
   await refreshRegions();
   app.approved = logic.outstandingOf(app.state);
+  // The refresh cannot mount while the payment is submitting, so a new processor balance brings the card form back here.
+  if (needsProcessor() && !app.flow && payForm() && app.paymentState !== 'loading') {
+    await mountPayment();
+    if (app.paymentState === 'unavailable') return false;
+  }
   app.flow?.updateAmount(logic.processorMoney(app.state));
   setPaymentState('total_changed', { message: giftChanged ? msg('gift_card_changed') : msg('total_changed', { amount: formatMoney(app.approved) }) });
   return false;
