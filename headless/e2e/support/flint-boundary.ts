@@ -164,8 +164,19 @@ export class BrowserGuard {
     this.scanner.scan(JSON.stringify(await context.cookies()), 'cookie');
     for (const page of context.pages()) for (const frame of page.frames()) {
       if (!this.appOrigins.includes(new URL(frame.url() === 'about:blank' ? this.appOrigins[0] : frame.url()).origin)) continue;
-      const values = await frame.evaluate(() => ({ storage: JSON.stringify([localStorage, sessionStorage]), dom: document.documentElement.outerHTML,
-        inputs: [...document.querySelectorAll('input[data-sensitive="true"], textarea[data-sensitive="true"]')].map(x => (x as HTMLInputElement).value) }));
+      const values = await frame.evaluate(() => {
+        const storage = (['localStorage', 'sessionStorage'] as const).map(name => {
+          try { return window[name]; }
+          catch (error) {
+            // Standalone and sandboxed blank documents have opaque origins and no Web Storage.
+            // Inherited app-origin blank frames still have storage and must be scanned.
+            if (location.href === 'about:blank' && self.origin === 'null' && error instanceof DOMException && error.name === 'SecurityError') return null;
+            throw error;
+          }
+        });
+        return { storage: JSON.stringify(storage), dom: document.documentElement.outerHTML,
+          inputs: [...document.querySelectorAll('input[data-sensitive="true"], textarea[data-sensitive="true"]')].map(x => (x as HTMLInputElement).value) };
+      });
       this.scanner.scan(values.storage, 'storage');
       this.scanner.scan(values.dom, 'dom');
       for (const input of values.inputs) this.scanner.scan(input, 'dom', { sensitiveInput: true });
