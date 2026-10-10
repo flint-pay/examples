@@ -1,7 +1,12 @@
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { account } from '../../scenarios/account.ts';
 import type { Driver } from '../../support/driver.ts';
+import { beginHostedAuthentication } from '../../support/public-actions.ts';
+import { Ledger } from '../../support/ledger.ts';
 
 type Attempt = { status: number; body: unknown };
 function invoiceHarness(attempts: [Attempt, Attempt], launch: { reused?: boolean; orderId?: string } = {}, throughConflict = false) {
@@ -24,7 +29,7 @@ function invoiceHarness(attempts: [Attempt, Attempt], launch: { reused?: boolean
     },
   };
   const driver = {
-    fixtures: { buyers: { b1: { verified: true, customerId: 'cus_UNIT_PLACEHOLDER', email: 'buyer@example.invalid' } } },
+    fixtures: { values: { hostedConflictPaymentToken: 'pm_UNIT3DS' }, buyers: { b1: { verified: true, customerId: 'cus_UNIT_PLACEHOLDER', email: 'buyer@example.invalid' } } },
     config: { apiOrigin: 'https://api.staging.withflintpay.com', origins: { accountA: origin } },
     operator: {
       issueInvoice: async (name: string) => {
@@ -43,7 +48,7 @@ function invoiceHarness(attempts: [Attempt, Attempt], launch: { reused?: boolean
         assert.equal(step.operation, 'customerSessions.create'); authorityRequests++;
         return { data: { secret: 'UNIT_CUSTOMER_TOKEN_PLACEHOLDER' } };
       },
-      ledger: { action: async (name: string, sandbox: string, operation: string, _args: unknown, _send: unknown, observe: (response: unknown) => Promise<void>) => {
+      ledger: { state: { actions: {} }, action: async (name: string, sandbox: string, operation: string, _args: unknown, _send: unknown, observe: (response: unknown) => Promise<void>) => {
         if (name === 'idle-embedded-replace') {
           assert.equal(throughConflict, true); assert.equal(operation, 'me.createInvoiceCheckoutSession');
           const response = { reused_existing: false, checkout_session: { checkout_session_id: 'cs_IDLE_EMBEDDED_PLACEHOLDER', order_id: 'ord_IDLE_PLACEHOLDER', surface: 'embedded' } };
@@ -137,4 +142,78 @@ test('AC-05 observes hosted surface conflict on the shared payment region', asyn
   });
   await assert.rejects(account['AC-05'](h.driver), error => error === h.nextStep);
   assert.equal(publicReads, 1); assert.equal(h.conflictChecks(), 1);
+});
+
+async function hostedPaymentHarness(t: TestContext, token: unknown, status = 'requires_action', transportFailure = false) {
+  const directory = await mkdtemp(join(tmpdir(), 'hosted-payment-unit-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const ledger = new Ledger(join(directory, 'ledger.json'), 'hosted-payment-unit');
+  const zero = { amount: '0', currency: 'USD' }, total = { amount: '12000', currency: 'USD' };
+  const order = {
+    order_id: 'ord_UNIT_PLACEHOLDER', buyer_actions: [], status: 'open', payment_status: 'unpaid', refund_status: 'none', line_items: [],
+    pricing_amounts: { charge_money: zero, discount_money: zero, requested_tip_money: zero, subtotal_money: total, tax_money: zero, total_money: total },
+    settlement_amounts: { balance_money: total, outstanding_money: total, paid_money: zero, credit_money: zero, net_collected_money: zero, refunded_money: zero, settled_tip_money: zero },
+    tax: { enabled: false, mode: 'external', status: 'not_required', taxability_reason: 'tax_disabled' },
+  };
+  const payments: { body: unknown; key: string | null }[] = [];
+  let reads = 0, verifications = 0, tracked = 0;
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString());
+    assert.equal(url.origin, 'https://api.staging.withflintpay.com');
+    if (init?.method === 'GET') {
+      assert.equal(url.pathname, '/v1/orders/ord_UNIT_PLACEHOLDER'); reads++;
+      return Response.json({ data: order });
+    }
+    assert.equal(init?.method, 'POST'); assert.equal(url.pathname, '/v1/orders/ord_UNIT_PLACEHOLDER/pay');
+    payments.push({ body: JSON.parse(String(init?.body)), key: new Headers(init?.headers).get('idempotency-key') });
+    if (transportFailure) { transportFailure = false; throw new TypeError('UNIT_TRANSPORT_OUTCOME_UNKNOWN'); }
+    return Response.json({ data: { order, payment_attempt: { order_payment_attempt_id: 'attempt_UNIT_PLACEHOLDER', mode: 'payment', status, is_resumable: status === 'requires_action', expected_outstanding_money: total } } });
+  });
+  const driver = {
+    config: { apiOrigin: 'https://api.staging.withflintpay.com' },
+    fixtures: { values: { hostedConflictPaymentToken: token } },
+    operator: { ledger, clients: { verify: async (sandbox: string) => { assert.equal(sandbox, 'A'); verifications++; } } },
+    trackOrder: async (sandbox: string, id: string) => { assert.equal(sandbox, 'A'); assert.equal(id, order.order_id); tracked++; },
+  } as unknown as Driver;
+  const launch = { checkout_session: { checkout_session_id: 'cs_UNIT_PLACEHOLDER', order_id: order.order_id }, checkout_access: { checkout_auth_token: 'UNIT_CHECKOUT_TOKEN_PLACEHOLDER' } };
+  return { driver, launch, ledger, payments, reads: () => reads, verifications: () => verifications, tracked: () => tracked };
+}
+
+test('hosted conflict preparation requires a real private PaymentMethod token before any payment', async t => {
+  for (const token of [undefined, '', 'pm_card_authenticationRequired', 'tok_threeDSecure2Required', 'pm_UNIT_SOURCE']) await t.test(String(token), async t => {
+    const h = await hostedPaymentHarness(t, token);
+    await assert.rejects(beginHostedAuthentication(h.driver, 'hosted-pay', h.launch), { code: token ? 'HOSTED_CONFLICT_PAYMENT_TOKEN_INVALID' : 'HOSTED_CONFLICT_PAYMENT_TOKEN_REQUIRED' });
+    assert.equal(h.reads(), 0); assert.equal(h.payments.length, 0); assert.equal(h.verifications(), 0);
+  });
+});
+
+test('hosted conflict preparation pays with the supplied source and refuses another action reusing it', async t => {
+  const h = await hostedPaymentHarness(t, 'pm_UNIT3DS');
+  await beginHostedAuthentication(h.driver, 'hosted-pay', h.launch);
+  assert.deepEqual(h.payments[0].body, { action: 'pay', expected_outstanding_money: { amount: 12000, currency: 'USD' }, payment_source: { token: 'pm_UNIT3DS' } });
+  assert.equal(h.payments.length, 1); assert.equal(h.verifications(), 1); assert.equal(h.tracked(), 1);
+  await assert.rejects(beginHostedAuthentication(h.driver, 'different-hosted-pay', h.launch), { code: 'HOSTED_CONFLICT_PAYMENT_TOKEN_REUSED' });
+  assert.equal(h.payments.length, 1); assert.equal(h.verifications(), 1);
+  await beginHostedAuthentication(h.driver, 'hosted-pay', h.launch);
+  assert.equal(h.payments.length, 1); assert.equal(h.tracked(), 2);
+});
+
+test('hosted conflict preparation replays the same source and action after an uncertain transport outcome', async t => {
+  const h = await hostedPaymentHarness(t, 'pm_UNIT3DS', 'requires_action', true);
+  await assert.rejects(beginHostedAuthentication(h.driver, 'hosted-pay', h.launch));
+  assert.equal(h.ledger.state.actions['A:hosted-pay'].phase, 'unknown');
+  assert.equal(h.payments[0].key, 'fx-hosted-payment-unit-A-hosted-pay');
+  await assert.rejects(beginHostedAuthentication(h.driver, 'different-hosted-pay', h.launch), { code: 'HOSTED_CONFLICT_PAYMENT_TOKEN_REUSED' });
+  assert.equal(h.payments.length, 1);
+  await beginHostedAuthentication(h.driver, 'hosted-pay', h.launch);
+  assert.equal(h.payments.length, 2); assert.equal(h.payments[0].key, h.payments[1].key);
+  assert.deepEqual(h.payments[0].body, h.payments[1].body); assert.equal(h.tracked(), 1);
+});
+
+test('hosted conflict preparation rejects an actual response that is not pending authentication', async t => {
+  for (const status of ['succeeded', 'failed', 'processing']) await t.test(status, async t => {
+    const h = await hostedPaymentHarness(t, 'pm_UNIT3DS', status);
+    await assert.rejects(beginHostedAuthentication(h.driver, 'hosted-pay', h.launch), { code: 'HOSTED_AUTHENTICATION_NOT_PENDING' });
+    assert.equal(h.payments.length, 1);
+  });
 });
