@@ -145,6 +145,7 @@ export class Driver {
     const variants = page.locator('[data-testid^="sf-variant-"]');
     if (await variants.count()) await variants.first().check();
     await page.getByTestId('sf-add-to-cart').click();
+    await expect(page.getByTestId('sf-add-status')).toHaveText('Added to cart');
     await this.goto(page, this.sf(sandbox), '/cart');
     await expect(page.getByTestId('sf-cart')).toBeVisible();
   }
