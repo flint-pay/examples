@@ -7,6 +7,7 @@ import { auditedFetch, creationTypes } from '../../support/audit-transport.ts';
 import { consumeAppFeed, assertFreshRevocation } from '../../support/audit-feed.ts';
 import { Driver } from '../../support/driver.ts';
 import { Ledger } from '../../support/ledger.ts';
+import { CredentialScanner } from '../../support/credential-scan.ts';
 import { writePrivateText } from '../../support/private-files.ts';
 import { API_ORIGIN } from '../../support/config.ts';
 import type { Config } from '../../support/config.ts';
@@ -86,6 +87,49 @@ test('durable responses redact credentials and restart replays the original key 
   const restarted = new Ledger(ledger.file, run); await restarted.load(); const response = await restarted.action('ephemeral', 'A', 'customerSessions.create', [], send, async () => {});
   assert.equal(response.secret, 'flint_cses_PLACEHOLDER'); assert.equal(keys.length, 2); assert.equal(keys[0], keys[1]);
 }));
+
+test('private checkout response fields leave a clean journal and replay before known or interrupted reconciliation', async t => {
+  for (const phase of ['known', 'unknown'] as const) await t.test(phase, async () => temp(async dir => {
+    const ledger = new Ledger(join(dir, 'ledger.json'), run), keys: string[] = [];
+    const args = ['inv_PLACEHOLDER', { surface: 'embedded' }];
+    const response = { invoice_id: 'inv_PLACEHOLDER', checkout_session: { checkout_session_id: 'cs_PLACEHOLDER', order_id: 'ord_PLACEHOLDER', recovery: [{ superseding_checkout_session_id: 'cs_NEXT_PLACEHOLDER', recovery_payment_attempt_id: 'pat_PLACEHOLDER' }] } };
+    const send = async (key: string) => { keys.push(key); return response; };
+    const initial = ledger.action('invoice-session', 'A', 'invoices.getOrCreateCheckoutSession', args, send, async received => {
+      assert.deepEqual(received, response);
+      if (phase === 'unknown') throw new Error('interrupted reconciliation');
+    });
+    if (phase === 'unknown') await assert.rejects(() => initial, /interrupted reconciliation/); else await initial;
+    const raw = new CredentialScanner(); raw.scan(JSON.stringify(ledger.state), 'body');
+    assert.deepEqual([...raw.violations], ['PRIVATE_DTO_FIELD']); assert.throws(() => raw.assertClean(), { code: 'CREDENTIAL_LEAK' });
+    const clean = new CredentialScanner(); clean.scan(await readFile(ledger.file, 'utf8'), 'body'); clean.assertClean();
+    const loaded = new Ledger(ledger.file, run); await loaded.load();
+    const action = loaded.state.actions['A:invoice-session'];
+    assert.equal(action.phase, phase); assert.equal(action.responseNeedsReplay, true); assert.deepEqual(action.args, args); assert.equal(action.key, keys[0]);
+    assert.deepEqual(action.response, { invoice_id: response.invoice_id, checkout_session: { order_id: response.checkout_session.order_id, recovery: [{}] } });
+    await loaded.save();
+    const restarted = new Ledger(ledger.file, run); await restarted.load();
+    assert.equal(restarted.state.actions['A:invoice-session'].responseNeedsReplay, true);
+    let reconciled = 0;
+    assert.deepEqual(await restarted.action('invoice-session', 'A', 'invoices.getOrCreateCheckoutSession', args, send, async received => {
+      assert.equal(keys.length, 2); assert.deepEqual(received, response); reconciled++;
+    }), response);
+    assert.equal(reconciled, 1); assert.equal(keys.length, 2); assert.equal(keys[0], keys[1]);
+    assert.equal(restarted.state.actions['A:invoice-session'].phase, 'known');
+    const durable = new Ledger(ledger.file, run); await durable.load();
+    assert.equal(durable.state.actions['A:invoice-session'].responseNeedsReplay, true); assert.deepEqual(durable.state.actions['A:invoice-session'].args, args);
+    const replayed = new CredentialScanner(); replayed.scan(await readFile(ledger.file, 'utf8'), 'body'); replayed.assertClean();
+  }));
+});
+
+test('raw browser checkout DTOs and registered credentials remain forbidden', () => {
+  for (const field of ['checkout_session_id', 'superseding_checkout_session_id', 'recovery_payment_attempt_id']) {
+    const scanner = new CredentialScanner(); scanner.scan(JSON.stringify({ [field]: 'PLACEHOLDER' }), 'body', { providerJob: true });
+    assert.deepEqual([...scanner.violations], ['PRIVATE_DTO_FIELD']); assert.throws(() => scanner.assertClean(), { code: 'CREDENTIAL_LEAK' });
+  }
+  const secret = 'unit-registered-authority', scanner = new CredentialScanner([secret]);
+  scanner.scan(JSON.stringify({ actions: { response: { value: secret } } }), 'body');
+  assert.deepEqual([...scanner.violations], ['CREDENTIAL_BODY']); assert.throws(() => scanner.assertClean(), { code: 'CREDENTIAL_LEAK' });
+});
 
 test('gift apply audit records checkout authority and proof presence without the code or header value',async()=>{
  const entries:Record<string,unknown>[]=[],proof='gccp_'+ 'X'.repeat(30),code='GIFT-FIXTURE-SECRET';let calls=0;

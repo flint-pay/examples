@@ -209,12 +209,12 @@ test('subscription update numeric quantity retains exact version and run-owned a
   assert.equal(calls, 1); assert.equal(loaded.state.actions['A:numeric-update'].phase, 'known');
   assert.deepEqual(loaded.state.actions['A:numeric-update'].args, ['sub_UNIT_FAKE', input]);
 }));
-test('subscription checkout numeric quantity executes with unchanged terms and durable resource tracking', async () => setup(async (ledger, dir) => {
+test('subscription checkout restart replays the same key and terms to recover its redacted session ID', async () => setup(async (ledger, dir) => {
   const input: CreateCheckoutSessionRequestInput = { subscription_plan_id: 'plan_UNIT_FAKE', subscription_terms: { quantity: 100 } };
   const step = { ...subscriptionCheckoutStep(100), args: [input] };
-  let calls = 0;
+  let calls = 0; const keys: string[] = [];
   const fake = { checkoutSessions: { createWithResponse: async (body: CreateCheckoutSessionRequestInput, options: { idempotencyKey: string }) => {
-    calls++; assert.deepEqual(body, input);
+    calls++; keys.push(options.idempotencyKey); assert.deepEqual(body, input);
     const durable = new Ledger(join(dir, 'ledger.json'), run); await durable.load();
     assert.equal(durable.state.actions['A:numeric-checkout'].phase, 'unknown');
     assert.deepEqual(durable.state.actions['A:numeric-checkout'].args, [input]);
@@ -225,8 +225,10 @@ test('subscription checkout numeric quantity executes with unchanged terms and d
   const operator = new Operator(clients, ledger, {} as Fixtures);
   operator.validate(step); await operator.execute(step);
   const loaded = new Ledger(join(dir, 'ledger.json'), run); await loaded.load();
-  await new Operator(clients, loaded, {} as Fixtures).execute(step);
-  assert.equal(calls, 1); assert.equal(loaded.state.actions['A:numeric-checkout'].phase, 'known');
+  assert.equal(loaded.state.actions['A:numeric-checkout'].responseNeedsReplay, true);
+  assert.deepEqual(loaded.state.actions['A:numeric-checkout'].response, { data: { checkout_session: {} } });
+  assert.deepEqual(await new Operator(clients, loaded, {} as Fixtures).execute(step), { data: { checkout_session: { checkout_session_id: 'cs_UNIT_FAKE' } }, requestId: undefined });
+  assert.equal(calls, 2); assert.equal(keys[0], keys[1]); assert.equal(loaded.state.actions['A:numeric-checkout'].phase, 'known');
   assert.equal(loaded.state.resources.length, 1);
   assert.equal(loaded.state.resources[0].resource, 'cs_UNIT_FAKE');
   assert.equal(loaded.state.resources[0].type, 'checkout_session'); assert.equal(loaded.state.resources[0].owned, true);
