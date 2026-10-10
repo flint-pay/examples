@@ -21,13 +21,24 @@ export function navigationDecision(raw: string, method: string, mainFrame: boole
   if (u.origin === relayOrigin && method === 'GET' && mainFrame && !u.hash && (role === 'flint_account_link_relay' && accountRelayPath.test(u.pathname) || role === 'flint_email_preferences_relay' && preferenceRelayPath.test(u.pathname))) return 'email-relay';
   return 'reject';
 }
-export function validateRelayResponse(raw: string, status: number, location: string | undefined, role: 'relay' | LinkRole, appOrigins: string[], accountOrigin: string): string {
+export type PreferenceRelayBinding = { merchantId: string; sandboxId: string };
+export function validateRelayResponse(raw: string, status: number, location: string | undefined, role: 'relay' | LinkRole, appOrigins: string[], accountOrigin: string, preferenceBinding?: PreferenceRelayBinding): string {
   invariant(status >= 300 && status < 400 && location, 'RELAY_MUST_REDIRECT_WITHOUT_DOCUMENT');
   const destination = new URL(location, raw);
   invariant(!destination.username && !destination.password && appOrigins.includes(destination.origin), 'RELAY_DESTINATION_FORBIDDEN');
   if (role !== 'relay') invariant(destination.origin === accountOrigin, 'EMAIL_RELAY_ACCOUNT_ORIGIN_REQUIRED');
   if (role === 'flint_account_link_relay') invariant(!destination.hash && destination.href.endsWith('#'), 'ACCOUNT_RELAY_CLEAR_FRAGMENT_REQUIRED');
-  if (role === 'flint_email_preferences_relay') invariant(destination.pathname === '/email-preferences' && !destination.search && /^#token=.+/.test(destination.hash), 'PREFERENCE_FRAGMENT_DESTINATION_REQUIRED');
+  if (role === 'flint_email_preferences_relay') {
+    invariant(preferenceBinding?.merchantId && preferenceBinding.sandboxId, 'PREFERENCE_RELAY_BINDING_REQUIRED');
+    const expected = new Map([
+      ['flint_action', 'manage'], ['flint_resource_type', 'email_preferences'], ['flint_mode', 'sandbox'],
+      ['flint_merchant_id', preferenceBinding.merchantId], ['flint_environment_id', preferenceBinding.sandboxId],
+    ]);
+    const query = [...destination.searchParams];
+    invariant(query.length === expected.size && [...expected].every(([key, value]) => destination.searchParams.getAll(key).length === 1 && destination.searchParams.get(key) === value), 'PREFERENCE_RELAY_ROUTING_REQUIRED');
+    const fragment = [...new URLSearchParams(destination.hash.slice(1))];
+    invariant(destination.pathname === '/email-preferences' && fragment.length === 1 && fragment[0][0] === 'flint_email_preference_token' && fragment[0][1].length > 0, 'PREFERENCE_FRAGMENT_DESTINATION_REQUIRED');
+  }
   return destination.href;
 }
 
@@ -40,8 +51,8 @@ export class BrowserGuard {
   readonly challengeUrls=new Set<string>();
   private proofGate?:Promise<void>;
   private releaseProof?:()=>void;
-  readonly scanner: CredentialScanner; readonly appOrigins: string[]; readonly accountOrigin: string; readonly auditedRelays: Map<string, LinkRole>;
-  constructor(scanner: CredentialScanner, appOrigins: string[], accountOrigin = appOrigins[0], auditedRelays = new Map<string, LinkRole>()) { this.scanner = scanner; this.appOrigins = appOrigins; this.accountOrigin = accountOrigin; this.auditedRelays = auditedRelays; }
+  readonly scanner: CredentialScanner; readonly appOrigins: string[]; readonly accountOrigin: string; readonly auditedRelays: Map<string, LinkRole>; readonly preferenceBindings: Map<string, PreferenceRelayBinding>;
+  constructor(scanner: CredentialScanner, appOrigins: string[], accountOrigin = appOrigins[0], auditedRelays = new Map<string, LinkRole>(), preferenceBindings = new Map<string, PreferenceRelayBinding>()) { this.scanner = scanner; this.appOrigins = appOrigins; this.accountOrigin = accountOrigin; this.auditedRelays = auditedRelays; this.preferenceBindings = preferenceBindings; }
   allowGiftChallenge(url:string):void{invariant(trustedChallengeUrl(url)===url,'GIFT_CHALLENGE_URL_UNTRUSTED');this.challengeUrls.add(url);}
   holdGiftProof():()=>void{
     invariant(!this.proofGate,'CHALLENGE_PROOF_ALREADY_HELD');this.proofGate=new Promise(resolve=>{this.releaseProof=resolve;});
@@ -77,7 +88,7 @@ export class BrowserGuard {
         try {
           const response = await route.fetch({ maxRedirects: 0, timeout: 10_000 });
           const role = decision === 'relay' ? 'relay' : this.auditedRelays.get(request.url())!;
-          const destination = validateRelayResponse(request.url(), response.status(), response.headers()['location'], role, this.appOrigins, this.accountOrigin);
+          const destination = validateRelayResponse(request.url(), response.status(), response.headers()['location'], role, this.appOrigins, this.accountOrigin, this.preferenceBindings.get(request.url()));
           this.scanner.scan(destination, 'url'); this.scanner.assertClean();
           const timer = setTimeout(() => { this.violations.add('RELAY_RETURN_TIMEOUT'); this.relays.delete(page); }, 10_000);
           this.relays.set(page, { timer, destination }); await route.fulfill({ response });
