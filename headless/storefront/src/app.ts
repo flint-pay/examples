@@ -7,7 +7,7 @@ import type {ContentfulStatusCode} from 'hono/utils/http-status';
 import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import type {IncomingMessage} from 'node:http';
-import type {Client,DeliveryAddressRequestInput,MoneyValue,OrderTaxLocationFullAddressRequestInput} from '@flintpay/node';
+import type {Client,DeliveryAddressRequestInput,MoneyValue,OrderTaxLocationFullAddressRequestInput,PostalAddress,UpdateCustomerRequestInput} from '@flintpay/node';
 import {SDK_VERSION} from './config.ts';
 import type {Config} from './config.ts';
 import {createAuth} from './flint/auth.ts';
@@ -21,6 +21,7 @@ import {IdentityBinding} from './flint/identity-binding.ts';
 import {IdentityStore,normalizeEmail,verifyPassword,equalSecret,digest} from './identity/index.ts';
 import type {Session,User} from './identity/index.ts';
 import {Store} from './store/db.ts';
+import type {ActionRecord} from './store/db.ts';
 import {Carts} from './store/cart.ts';
 import {PaymentEngine} from './payments/engine.ts';
 import type {PayInput,PaymentResult} from './payments/engine.ts';
@@ -54,6 +55,9 @@ async function body(c:Context<Env>):Promise<Body>{
 }
 function asRecord(value:unknown):Body{if(!value||typeof value!=='object'||Array.isArray(value))throw new LocalError('INVALID_INPUT');return value as Body;}
 function approvedMoney(value:unknown):MoneyValue{const record=asRecord(value);const amount=text(record.amount,20);const currency=text(record.currency,3);if(!/^\d+$/.test(amount)||!/^[A-Z]{3}$/.test(currency))throw new LocalError('INVALID_AMOUNT');return {amount,currency};}
+function sameBillingAddress(saved:(Omit<PostalAddress,'line2'>&{line2?:string|null})|null|undefined,address:OrderTaxLocationFullAddressRequestInput):boolean{
+  return !!saved&&(['line1','city','state','postal_code','country'] as const).every(field=>saved[field]===address[field])&&(saved.line2??'').trim()===(address.line2??'').trim();
+}
 
 export function createApp(options:AppOptions){
   const {config,preflight}=options;
@@ -253,6 +257,19 @@ export function createApp(options:AppOptions){
     await checkouts.mutate(c.req.param('ref'),'tax_location',{address},async(record,key)=>{
       const session=await client.checkoutSessions.get(record.checkout_session_id!,undefined,auth.checkout(record));const order=await payments.read(record);const details=checkouts.details(record);
       if(session.delivery_selection_required||details.delivery_quote||details.delivery_selection||order.tax?.enabled!==true)throw new LocalError('INVALID_INPUT');
+      const user=c.get('user');
+      if(record.kind==='subscription'&&identity.isBound(user,preflight.sandboxId)&&record.user_id===user.user_id&&order.customer_id===user.flint_customer_id){
+        const customer=await client.customers.get(user.flint_customer_id!,undefined,auth.merchant());const customerKey=`${key}-customer`;
+        const previous=store.get<ActionRecord>('SELECT * FROM actions WHERE idempotency_key=?',customerKey);
+        const ownedBilling=details.customer_billing_address&&sameBillingAddress(customer.billing_address,details.customer_billing_address);
+        if(previous||!sameBillingAddress(customer.billing_address,address)&&(!customer.billing_address&&!customer.shipping_address||ownedBilling)){
+          // Keep the original target and version when recovering a lost response.
+          const input=previous?.body?JSON.parse(previous.body) as {customer_id:string;request:UpdateCustomerRequestInput}:{customer_id:customer.customer_id,request:{billing_address:address,expected_version:customer.version}};
+          if(input.customer_id!==user.flint_customer_id)throw new LocalError('ACTION_RECONCILIATION_REQUIRED',409);
+          await checkouts.action(record,'tax_location_customer',input,customerKey=>sameBillingAddress(customer.billing_address,address)?Promise.resolve(customer):client.customers.update(input.customer_id,input.request,auth.merchant(customerKey)),customerKey,undefined,`action:${key}`);
+          details.customer_billing_address=address;checkouts.saveDetails(record,details);
+        }
+      }
       await client.orders.update(record.order_id!,{tax:{enabled:true,location:{address_source:'provided',address_type:'billing_address',address}}},auth.checkout(record,key));
       details.billing_address=address;checkouts.saveDetails(record,details);
     });
