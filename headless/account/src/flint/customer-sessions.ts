@@ -15,7 +15,17 @@ export class CustomerSessions {
     this.identity.saveVault(vault);return vault;
   }
   resetVault(user:User){this.identity.db.prepare('INSERT INTO account_customer_session_generation(user_id,sandbox_id,generation) VALUES(?,?,2) ON CONFLICT(user_id,sandbox_id) DO UPDATE SET generation=generation+1').run(user.user_id,this.sandboxId);this.identity.deleteVault(user.user_id,this.sandboxId);}
+  generation(user:User):number{return (this.identity.db.prepare('SELECT generation FROM account_customer_session_generation WHERE user_id=? AND sandbox_id=?').get(user.user_id,this.sandboxId) as {generation:number}|undefined)?.generation??1;}
   invalidate(user:User){this.identity.db.prepare('DELETE FROM sessions WHERE user_id=?').run(user.user_id);this.resetVault(user);}
+  async replacementAfterFailure(user:User,failed:CustomerVault,generation:number,error:unknown):Promise<CustomerVault>{
+    return this.locks.locked(`customer-session:${this.sandboxId}:${user.user_id}`,async()=>{
+      // Replacement creation holds this lock even before its vault is saved.
+      const latest=this.identity.vault(user.user_id,this.sandboxId);
+      if(latest&&latest.secret!==failed.secret)return latest;
+      if(this.generation(user)!==generation)throw new LocalError('SESSION_ENDED',401);
+      return this.handle(user,error);
+    });
+  }
   async handle(user:User,error:unknown):Promise<never>{
     const code=error&&typeof error==='object'&&'code'in error?String(error.code):'';
     if(code==='CUSTOMER_SESSION_REFRESH_REUSED'){
@@ -23,7 +33,7 @@ export class CustomerSessions {
       await this.client.customers.revokeSessions(user.flint_customer_id!,undefined,this.auth.merchant(this.identity.actionKey(`revoke-reused:${user.user_id}:${digest(this.identity.vault(user.user_id,this.sandboxId)?.refresh_token??'')}`))).catch(()=>{});
       console.warn(JSON.stringify({event:'customer_session_refresh_reused'}));
     }
-    if(['CUSTOMER_SESSION_REFRESH_REUSED','CUSTOMER_SESSION_REFRESH_EXPIRED','INVALID_CUSTOMER_SESSION'].includes(code)){this.invalidate(user);throw new LocalError('SESSION_ENDED',401);}
+    if(['CUSTOMER_SESSION_REFRESH_REUSED','CUSTOMER_SESSION_REFRESH_EXPIRED','INVALID_CUSTOMER_SESSION','CUSTOMER_SESSION_NOT_FOUND'].includes(code)){this.invalidate(user);throw new LocalError('SESSION_ENDED',401);}
     throw error;
   }
   async vault(user:User,forceSecret?:string):Promise<CustomerVault>{
@@ -51,13 +61,18 @@ export class CustomerSessions {
   }
   async call<T>(user:User,fn:(options:RequestOptions<'customer'>)=>Promise<T>,key?:string):Promise<T>{
     let vault=await this.vault(user);
+    let generation=this.generation(user);
     try{return await fn(key?this.auth.customer(vault.secret,key):this.auth.customer(vault.secret));}
     catch(error){
       const code=error&&typeof error==='object'&&'code'in error?error.code:undefined;
-      const latest=this.identity.vault(user.user_id,this.sandboxId);
-      if(code==='CUSTOMER_SESSION_EXPIRED'||code==='INVALID_CUSTOMER_SESSION'&&latest&&latest.secret!==vault.secret){
-        vault=await this.vault(user,vault.secret);
-        try{return await fn(key?this.auth.customer(vault.secret,key):this.auth.customer(vault.secret));}catch(retryError){return this.handle(user,retryError);}
+      if(code==='CUSTOMER_SESSION_EXPIRED'||['INVALID_CUSTOMER_SESSION','CUSTOMER_SESSION_NOT_FOUND'].includes(String(code))){
+        vault=code==='CUSTOMER_SESSION_EXPIRED'?await this.vault(user,vault.secret):await this.replacementAfterFailure(user,vault,generation,error);
+        generation=this.generation(user);
+        try{return await fn(key?this.auth.customer(vault.secret,key):this.auth.customer(vault.secret));}catch(retryError){
+          const retryCode=retryError&&typeof retryError==='object'&&'code'in retryError?String(retryError.code):'';
+          if(['INVALID_CUSTOMER_SESSION','CUSTOMER_SESSION_NOT_FOUND'].includes(retryCode)){await this.replacementAfterFailure(user,vault,generation,retryError);throw new LocalError('SESSION_ENDED',401);}
+          return this.handle(user,retryError);
+        }
       }
       return this.handle(user,error);
     }

@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {Client} from '@flintpay/node';
+import {Client,SdkError} from '@flintpay/node';
 import type {RequestOptions,Order,BuyerGiftCard,BuyerGiftCardTransaction,PaymentIntent,PaymentSourceSummary,PickupFulfillmentDetails} from '@flintpay/node';
 import {createApp} from '../../src/app.ts';
 import {IdentityStore} from '../../src/identity/index.ts';
@@ -148,6 +148,65 @@ test('pending email changes reserve the new email in the shared canonical identi
     const response=await h.app.request('/profile/email',{method:'POST',headers:h.headers,body:JSON.stringify({new_email:'new-buyer@example.invalid'})});assert.equal(response.status,200);assert.equal('customer_id'in(await response.json()).request,false);
     await assert.rejects(h.identity.createUser('Another','new-buyer@example.invalid','another example password'),/email_reserved/);
   }finally{h.close();}
+});
+test('a revoked customer-session 404 sends the buyer to sign-in instead of redirecting account home to itself',async()=>{
+  const h=await harness({me:{get:async()=>{throw new SdkError('not_found','Session not found','response',false,{status:404,headers:{},attempts:1,durationMs:0},'CUSTOMER_SESSION_NOT_FOUND');}}});try{
+    const response=await h.app.request('/',{headers:{Cookie:h.headers.Cookie}});assert.equal(response.status,303);
+    const location=response.headers.get('Location')!,url=new URL(location,config.appOrigin);assert.equal(url.pathname,'/sign-in');assert.equal(url.searchParams.get('notice'),'session_ended');
+    assert.equal(h.identity.session(h.session.token),undefined);assert.equal(h.identity.vault(h.user.user_id,'sandbox_example'),undefined);assert.equal((await h.app.request(location)).status,200);
+  }finally{h.close();}
+});
+test('confirmed email changes replace revoked authority, rotate the proving browser, and support new-email login',async()=>{
+  const newEmail='new-buyer@example.invalid',oldAuthority='example customer authority',newAuthority='new example authority',keys:string[]=[];let revoked=false;
+  const emailRequest={email_change_request_id:'email_change_example',customer_id:'cus_example',new_email:newEmail,confirmed:false,current_email_confirmation_required:true,created_at:new Date().toISOString(),expires_at:new Date(Date.now()+3600000).toISOString()};
+  const h=await harness({
+    me:{
+      createEmailChangeRequest:async()=>emailRequest,
+      confirmEmailChangeRequest:async(_id:string,body:unknown,options:RequestOptions)=>{assert.deepEqual(body,{new_email_code:'654321',current_email_code:'123456'});assert.equal(options.customerToken,oldAuthority);revoked=true;return {...emailRequest,confirmed:true};},
+      get:async(_body:unknown,options:RequestOptions)=>{assert.ok(revoked);assert.equal(options.customerToken,newAuthority);assert.equal(options.apiKey,undefined);return {customer_id:'cus_example',email:newEmail,name:'Example'};}
+    },
+    customerSessions:{
+      create:async(body:unknown,options:RequestOptions)=>{assert.ok(revoked);assert.deepEqual(body,{customer_id:'cus_example',expires_in_seconds:String(config.sessionTtl)});assert.ok(options.idempotencyKey);keys.push(options.idempotencyKey!);return {customer_id:'cus_example',customer_session_id:'new_session_example',secret:newAuthority,refresh_token:'new example refresh',expires_at:new Date(Date.now()+3600000).toISOString(),refresh_token_expires_at:new Date(Date.now()+86400000).toISOString()};},
+      revoke:async()=>({})
+    }
+  });try{
+    const other=h.identity.createSession(h.user.user_id);
+    const oldKey=h.identity.actionKey(`session-create:sandbox_example:${h.user.user_id}:1`);
+    assert.equal((await h.app.request('/profile/email',{method:'POST',headers:h.headers,body:JSON.stringify({new_email:newEmail})})).status,200);
+    const response=await h.app.request('/profile/email/confirm',{method:'POST',headers:{...h.headers,'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({_csrf:h.session.session.csrf_token,current_email_code:'123456',new_email_code:'654321'}).toString()});
+    assert.equal(response.status,303);assert.equal(response.headers.get('Location'),'/profile');assert.equal(keys.length,1);assert.notEqual(keys[0],oldKey);
+    assert.equal(h.identity.session(h.session.token),undefined);assert.equal(h.identity.session(other.token),undefined);assert.equal(h.identity.userByEmail(h.user.email),undefined);
+    const updated=h.identity.userByEmail(newEmail)!;assert.equal(updated.user_id,h.user.user_id);assert.equal(updated.flint_customer_id,'cus_example');assert.ok(h.identity.isBound(updated,'sandbox_example'));
+    const cookie=response.headers.getSetCookie().at(-1)!.split(';')[0],token=cookie.slice(cookie.indexOf('=')+1),local=h.identity.session(token)!;assert.equal(local.user_id,h.user.user_id);assert.notEqual(local.csrf_token,h.session.session.csrf_token);
+    assert.equal((await h.app.request('/profile',{headers:{Cookie:cookie}})).status,200);assert.equal(h.identity.vault(h.user.user_id,'sandbox_example')!.secret,newAuthority);assert.equal(h.store.all('SELECT * FROM pending_email').length,0);
+    const signedOut=await h.app.request('/sign-out',{method:'POST',headers:{Cookie:cookie,Origin:config.appOrigin,'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({_csrf:local.csrf_token}).toString()});assert.equal(signedOut.status,303);
+    const anonymousCookie=signedOut.headers.getSetCookie().at(-1)!.split(';')[0],anonymous=h.identity.session(anonymousCookie.slice(anonymousCookie.indexOf('=')+1))!;
+    const login=await h.app.request('/sign-in',{method:'POST',headers:{Cookie:anonymousCookie,Origin:config.appOrigin,'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({_csrf:anonymous.csrf_token,email:newEmail,password:'example password'}).toString()});assert.equal(login.status,303);assert.equal(login.headers.get('Location'),'/');
+  }finally{h.close();}
+});
+test('an old profile 404 waits for email-confirmation replacement creation without ending its rotated browser',async()=>{
+  const newEmail='new-buyer@example.invalid',newAuthority='replacement example authority';
+  let startOld!:()=>void,releaseOld!:()=>void,startCreate!:()=>void,releaseCreate!:()=>void;
+  const oldStarted=new Promise<void>(resolve=>{startOld=resolve;}),oldReleased=new Promise<void>(resolve=>{releaseOld=resolve;});
+  const createStarted=new Promise<void>(resolve=>{startCreate=resolve;}),createReleased=new Promise<void>(resolve=>{releaseCreate=resolve;});
+  const emailRequest={email_change_request_id:'email_change_example',customer_id:'cus_example',new_email:newEmail,confirmed:false,current_email_confirmation_required:true,created_at:new Date().toISOString(),expires_at:new Date(Date.now()+3600000).toISOString()};
+  const h=await harness({
+    me:{createEmailChangeRequest:async()=>emailRequest,confirmEmailChangeRequest:async()=>({...emailRequest,confirmed:true}),get:async(_body:unknown,options:RequestOptions)=>{
+      if(options.customerToken==='example customer authority'){startOld();await oldReleased;throw new LocalError('CUSTOMER_SESSION_NOT_FOUND',404);}
+      assert.equal(options.customerToken,newAuthority);return {customer_id:'cus_example',email:newEmail};
+    }},
+    customerSessions:{create:async()=>{startCreate();await createReleased;return {customer_id:'cus_example',customer_session_id:'replacement_session_example',secret:newAuthority,refresh_token:'replacement example refresh',expires_at:new Date(Date.now()+3600000).toISOString(),refresh_token_expires_at:new Date(Date.now()+86400000).toISOString()};}}
+  });try{
+    assert.equal((await h.app.request('/profile/email',{method:'POST',headers:h.headers,body:JSON.stringify({new_email:newEmail})})).status,200);
+    const oldProfile=h.app.request('/profile',{headers:{Cookie:h.headers.Cookie}});await oldStarted;
+    const confirmation=h.app.request('/profile/email/confirm',{method:'POST',headers:{...h.headers,'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({_csrf:h.session.session.csrf_token,current_email_code:'123456',new_email_code:'654321'}).toString()});await createStarted;
+    assert.equal(h.identity.vault(h.user.user_id,'sandbox_example'),undefined);releaseOld();await new Promise<void>(resolve=>setImmediate(resolve));
+    assert.equal(h.identity.db.prepare('SELECT count(*) AS count FROM sessions WHERE user_id=?').get(h.user.user_id)!.count,1);
+    releaseCreate();const response=await confirmation;assert.equal(response.status,303);assert.equal(response.headers.get('Location'),'/profile');
+    assert.equal((await oldProfile).status,200);
+    const cookie=response.headers.getSetCookie().at(-1)!.split(';')[0],token=cookie.slice(cookie.indexOf('=')+1);assert.ok(h.identity.session(token));
+    assert.equal((await h.app.request('/profile',{headers:{Cookie:cookie}})).status,200);assert.equal(h.identity.vault(h.user.user_id,'sandbox_example')!.secret,newAuthority);
+  }finally{releaseOld();releaseCreate();h.close();}
 });
 test('foreign saved address mutations perform no write',async()=>{
   let writes=0;const h=await harness({me:{getAddress:async()=>{throw new LocalError('NOT_FOUND',404);},deleteAddress:async()=>{writes++;},setDefaultAddress:async()=>{writes++;}}});try{
