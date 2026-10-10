@@ -106,11 +106,12 @@ export const account: Record<string, Scenario> = {
     const page = await signed(d); await page.goto(invoiceLink); invariant(new URL(page.url()).pathname === `/invoices/${invoice.invoice_id}`, 'INVOICE_EMAIL_RESOURCE_DESTINATION'); await d.goto(page, d.config.origins.accountA, `/invoices/${invoice.invoice_id}/pay`);
     const first = await d.job(page, `/invoices/${invoice.invoice_id}/pay/attempt`); await page.reload(); const second = await d.job(page, `/invoices/${invoice.invoice_id}/pay/attempt`);
     invariant(first.status === 200 && second.status === 200, 'INVOICE_RELAUNCH_READ_FAILED');
-    const firstOrderId = first.body?.state?.order?.order_id, secondOrderId = second.body?.state?.order?.order_id;
-    invariant(typeof firstOrderId === 'string' && firstOrderId.length > 0 && typeof secondOrderId === 'string' && secondOrderId.length > 0, 'INVOICE_RELAUNCH_ORDER_MISSING');
-    invariant(firstOrderId === secondOrderId, 'INVOICE_RELAUNCH_CHANGED_ORDER');
+    const firstOrderNumber = first.body?.state?.order?.order_number, secondOrderNumber = second.body?.state?.order?.order_number;
+    invariant(typeof firstOrderNumber === 'string' && firstOrderNumber.length > 0 && typeof secondOrderNumber === 'string' && secondOrderNumber.length > 0, 'INVOICE_RELAUNCH_ORDER_MISSING');
+    invariant(firstOrderNumber === secondOrderNumber, 'INVOICE_RELAUNCH_CHANGED_ORDER');
     const buyer = await createBuyerClient(d, 'invoice-buyer-authority', d.fixtures.buyers.b1.customerId!);
     const reused = await buyerInvoiceLaunch(d, buyer, 'invoice-reuse', invoice.invoice_id); invariant(reused.reused_existing === true, 'INVOICE_SESSION_NOT_REUSED');
+    invariant(reused.checkout_session.order_id === invoice.order_id, 'INVOICE_RELAUNCH_CHANGED_ORDER');
     const idle = await d.operator.issueInvoice('idle-invoice', d.fixtures.buyers.b1.customerId!, d.fixtures.buyers.b1.email);
     const hosted = await hostedInvoiceLaunch(d, 'idle-hosted', idle.invoice_id); const embedded = await buyerInvoiceLaunch(d, buyer, 'idle-embedded-replace', idle.invoice_id);
     invariant(embedded.reused_existing === false && embedded.checkout_session.surface === 'embedded' && hosted.checkout_session.checkout_session_id !== embedded.checkout_session.checkout_session_id, 'HOSTED_IDLE_NOT_REPLACED');
@@ -141,7 +142,7 @@ export const account: Record<string, Scenario> = {
     await d.track('A', 'return_resolution', resolution.return_resolution_id, 'return_resolution');
     await accountPayment(d, id, 'card', 'returns'); invariant(resolution.replacement_order_id, 'REPLACEMENT_ORDER_MISSING'); const replacement = await d.trackOrder('A', resolution.replacement_order_id); invariant(replacement.payment_status === 'paid' && replacement.return_credit_settlements?.length, 'RETURN_CREDIT_AND_SETTLEMENT');
     invariant(!(await d.operator.clients.clients.A.returnResolutions.get(resolution.return_resolution_id)).execution_blockers.some(b => b.code === 'buyer_payment_pending'), 'RESOLUTION_STILL_PENDING');
-    const withdraw = await fixture(d, 'withdrawReturnId'); d.requireOwned('A', withdraw); await d.goto(page, d.config.origins.accountA, `/returns/${withdraw}`); await page.getByTestId('ac-return-withdraw').click(); invariant((await d.operator.clients.clients.A.returns.get(withdraw)).status === 'canceled', 'RETURN_WITHDRAW_FAILED');
+    const withdraw = await fixture(d, 'withdrawReturnId'); d.requireOwned('A', withdraw); await d.goto(page, d.config.origins.accountA, `/returns/${withdraw}`); await page.getByTestId('ac-return-withdraw').click(); await expect(page.getByTestId('ac-return-withdraw-dialog')).toBeVisible(); await page.getByTestId('ac-return-withdraw-confirm').click(); await expect.poll(async () => (await d.operator.clients.clients.A.returns.get(withdraw)).status, { timeout: 60_000 }).toBe('canceled');
     await d.axe(page, 'ac-return'); return ['BUYER_RETURN_EXCHANGE_CREDIT_EMBEDDED_BALANCE_WITHDRAW'];
   },
   'AC-07': async d => {

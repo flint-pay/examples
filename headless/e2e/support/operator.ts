@@ -38,7 +38,7 @@ export const operations = {
   'packages.transition': { creates: [], cleanup: '' },
   'fulfillments.transition': { creates: [], cleanup: '' },
   'returns.decide': { creates: [], cleanup: '' },
-  'returns.createResolution': { creates: ['return_resolution', 'order'], cleanup: 'return_resolution' },
+  'returns.createResolution': { creates: ['return_resolution'], cleanup: 'return_resolution' },
   'returnResolutions.confirm': { creates: [], cleanup: '' },
   'subscriptions.update': { creates: [], cleanup: '' },
   'subscriptions.updateBillingSchedule': { creates: [], cleanup: '' },

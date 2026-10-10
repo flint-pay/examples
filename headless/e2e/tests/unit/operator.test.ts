@@ -366,3 +366,19 @@ for(const trips of [true,false])test(`challenge trip ${trips?'proves a shared di
  assert.ok(requests.every(options=>options.authMode==='checkout'&&options.apiKey===undefined&&options.maxAttempts===1));assert.ok(ledger.state.resources.filter(resource=>resource.type==='checkout_session').every(resource=>resource.status==='CLEANED UP'));
  const saved=await import('node:fs/promises').then(fs=>fs.readFile(join(dir,'ledger.json'),'utf8'));for(const code of codes)assert.equal(saved.includes(code),false);assert.equal(saved.includes('fixture authority'),false);
 }));
+
+// Exchange orders materialize after confirmation through the asynchronous return effect.
+test('return proposals track the resolution before a replacement order exists', async () => setup(async ledger => {
+  const reviewAt = '2000-02-01T00:00:00Z';
+  await ledger.record({ resource: 'ret_PLACEHOLDER', type: 'return', mode: 'test', sandbox: 'A', merchant: config.pins.A.merchantId, sandboxId: config.pins.A.sandboxId, createdBy: run, purpose: 'unit', cleanup: 'review', owner: 'unit', reviewAt, owned: true });
+  let calls = 0;
+  const clients = { config, writable: async () => ({ returns: { createResolutionWithResponse: async () => {
+    calls++; return { body: { data: { return_resolution: { return_resolution_id: 'rres_PLACEHOLDER', status: 'proposed' } } }, meta: {} };
+  } } }) } as unknown as VerifiedClients;
+  const op = new Operator(clients, ledger, {} as Fixtures);
+  const step: PlanStep = { name: 'exchange-proposal', sandbox: 'A', operation: 'returns.createResolution', args: ['ret_PLACEHOLDER', { resolution_type: 'exchange', line_items: [{ return_line_item_id: 'rtli_PLACEHOLDER', quantity: '1' }] }], creates: [{ type: 'return_resolution', path: 'return_resolution.return_resolution_id', cleanup: 'return_resolution', reviewAt }], purpose: 'unit-exchange' };
+  assert.throws(() => op.validate({ ...step, creates: [] }), { code: 'ALL_CREATED_RESOURCES_MUST_BE_TRACKED' });
+  await op.execute(step); await op.execute(step);
+  assert.equal(calls, 1);
+  assert.deepEqual(ledger.state.resources.map(r => [r.type, r.resource]), [['return', 'ret_PLACEHOLDER'], ['return_resolution', 'rres_PLACEHOLDER']]);
+}));
