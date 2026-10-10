@@ -355,8 +355,9 @@ test('unsupported settings absence and null remain blocked before any write',asy
  await assert.rejects(()=>op.settings('A',{checkout:{}}),{message:'SETTINGS_PATCH_NOT_RESTORABLE'});assert.equal(writes,0);}
 }));
 
-test('challenge probe declares a non-taxable line through the published SDK before probing without payment', async () => setup(async ledger => {
+test('challenge probe satisfies order tax and embedded checkout inputs through the published SDK without payment', async () => setup(async ledger => {
   const orderId = 'ord_UNIT_FAKE', sessionId = 'cs_UNIT_FAKE', paths: string[] = [];
+  const origin = 'http://localhost:4100', returnUrl = `${origin}/`;
   const zero = { amount: '0', currency: 'USD' }, total = { amount: '200', currency: 'USD' };
   const order: Order = {
     order_id: orderId, order_revision: '5', buyer_actions: [], status: 'open', payment_status: 'unpaid', refund_status: 'none',
@@ -365,7 +366,7 @@ test('challenge probe declares a non-taxable line through the published SDK befo
     settlement_amounts: { balance_money: total, outstanding_money: total, paid_money: zero, credit_money: zero, net_collected_money: zero, refunded_money: zero, settled_tip_money: zero },
     tax: { enabled: true, mode: 'automatic', status: 'calculated', taxability_reason: 'not_taxable' },
   };
-  const session: CheckoutSession = { checkout_session_id: sessionId, order_id: orderId, status: 'open', surface: 'embedded', delivery_method_ids: [], delivery_selection_required: false, problems: [], recovery_mode: false };
+  const session: CheckoutSession = { checkout_session_id: sessionId, order_id: orderId, status: 'open', surface: 'embedded', page_origin: origin, redirects: { success_redirect_url: returnUrl }, payments: { enabled_payment_options: ['card', 'affirm'] }, delivery_method_ids: [], delivery_selection_required: false, problems: [], recovery_mode: false };
   const client = new Client({ baseUrl: 'https://api.staging.withflintpay.com', apiKey: 'flint_test_PLACEHOLDER', maxAttempts: 1, transport: async (input, init) => {
     const path = new URL(String(input)).pathname, method = init!.method!, headers = new Headers(init!.headers);
     const body = init!.body ? JSON.parse(String(init!.body)) : undefined;
@@ -374,12 +375,13 @@ test('challenge probe declares a non-taxable line through the published SDK befo
     if (method === 'POST' && path === '/v1/orders') {
       // An enabled merchant tax default requires explicit ad hoc line taxability.
       if (typeof body.line_items[0]?.tax?.taxable !== 'boolean') return Response.json({ error: { type: 'validation', code: 'ORDER_LINE_ITEM_TAX_INPUT_REQUIRED', message: 'Explicit line-item taxability is required.' } }, { status: 400 });
-      assert.equal(body.line_items[0].tax.taxable, false);
-      assert.equal(body.tax, undefined);
+      assert.deepEqual(body, { line_items: [{ name: 'Gift card verification probe', quantity: 1, unit_price_money: { amount: 200, currency: 'USD' }, fulfillment: { requirement: 'none' }, tax: { taxable: false } }], metadata: { e2e_run: run } });
       return Response.json({ data: order });
     }
     if (method === 'POST' && path === '/v1/checkout-sessions') {
-      assert.equal(body.order_id, orderId);
+      // Embedded checkout inherits Affirm, which requires a clean return destination.
+      if (!body.redirects?.success_redirect_url) return Response.json({ error: { type: 'validation', code: 'EMBEDDED_PAYMENT_RETURN_URL_REQUIRED', message: 'Embedded Affirm checkout requires a success redirect URL.' } }, { status: 400 });
+      assert.deepEqual(body, { order_id: orderId, surface: 'embedded', page_origin: origin, redirects: { success_redirect_url: returnUrl } });
       return Response.json({ data: { checkout_session: session, checkout_access: { checkout_auth_token: 'fixture authority' }, reused_existing: false } });
     }
     if (method === 'GET' && path === `/v1/orders/${orderId}`) return Response.json({ data: order });
@@ -387,12 +389,15 @@ test('challenge probe declares a non-taxable line through the published SDK befo
       assert.equal(headers.get('Authorization'), null);
       assert.equal(headers.get('X-Checkout-Session-ID'), sessionId);
       assert.equal(headers.get('X-Checkout-Session-Secret'), 'fixture authority');
+      assert.equal(body.order_revision, 5);
+      assert.match(body.gift_card_code, /^E2ENOPE[A-Za-z0-9_-]{16}$/);
       return Response.json({ error: { type: 'validation', code: 'GIFT_CARD_CHALLENGE_REQUIRED', message: 'Complete the verification challenge.' } }, { status: 400 });
     }
     assert.equal(method, 'POST'); assert.equal(path, `/v1/checkout-sessions/${sessionId}/close`);
+    assert.deepEqual(body, {});
     return Response.json({ data: { ...session, status: 'closed' } });
   } });
-  const clients = { config: { ...config, origins: { storefrontA: 'http://localhost:4100' } }, writable: async () => client } as unknown as VerifiedClients;
+  const clients = { config: { ...config, origins: { storefrontA: origin } }, writable: async () => client } as unknown as VerifiedClients;
   await new Operator(clients, ledger, {} as Fixtures).tripGiftChallenge();
   assert.deepEqual(paths, ['POST /v1/orders', 'POST /v1/checkout-sessions', `GET /v1/orders/${orderId}`, `POST /v1/orders/${orderId}/gift-cards`, `POST /v1/checkout-sessions/${sessionId}/close`]);
   assert.ok(ledger.state.giftChallengeTrippedAt);
