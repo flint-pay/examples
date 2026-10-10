@@ -153,9 +153,19 @@ export const storefront: Record<string, Scenario> = {
     await d.operator.execute({ name: 'mutate-checkout', sandbox: 'A', operation: 'orders.addLineItems', args: [c.orderId, { line_items: [{ variant_id: variant.variantId, quantity: '1' }] }], creates: [{ type: 'order_line_item', path: 'line_items.0.order_line_item_id', cleanup: 'review', reviewAt }], purpose: 'refresh-checkout' });
     await c.page.reload(); await expect(c.page.getByTestId('sf-notice-checkout_refreshed')).toBeVisible(); await d.state(c); invariant(c.state.order.line_items.some((l: any) => !before.includes(l.order_line_item_id)), 'CHECKOUT_NOT_REFRESHED');
     await d.delivery(c); const oldMoney = money(c.state.order.settlement_amounts.outstanding_money);
-    const tab = await c.page.context().newPage(); await tab.goto(c.page.url()); await d.job(tab, `/checkout/${c.ref}/discount`, { promotion_code: 'WELCOME10' }); await d.card(c.page); await c.page.getByTestId('sf-pay-button').click();
-    await expect(c.page.getByTestId('sf-payment')).toHaveAttribute('data-state', 'total_changed'); await d.auditKnownStates(c.page); await d.state(c); invariant(c.state.order.settlement_amounts.outstanding_money.amount !== oldMoney.amount, 'TOTAL_DID_NOT_CHANGE');
-    await d.delivery(c); await d.pay(c); await d.settled(c); await tab.close(); return ['SESSION_REPLACEMENT_AND_REAPPROVAL'];
+    // The page keeps no cross-tab sync, so the order is changed after the buyer's Pay press is captured and before it reaches the server: the request still carries the former approval.
+    let mutated = false;
+    await c.page.route(`**/checkout/${c.ref}/pay`, async route => {
+      if (!mutated) {
+        mutated = true; invariant(route.request().postDataJSON()?.approved_outstanding_money?.amount === oldMoney.amount, 'PAY_REQUEST_NOT_OLD_APPROVAL');
+        const discount = await d.job(c.page, `/checkout/${c.ref}/discount`, { promotion_code: 'WELCOME10' }); invariant(discount.status === 200, 'MUTATION_DISCOUNT_REJECTED');
+      }
+      await route.continue();
+    });
+    await d.card(c.page); await expect(c.page.getByTestId('sf-pay-button')).toBeEnabled(); await c.page.getByTestId('sf-pay-button').click();
+    await expect(c.page.getByTestId('sf-payment')).toHaveAttribute('data-state', 'total_changed'); invariant(mutated, 'PAY_REQUEST_NOT_INTERCEPTED'); await c.page.unroute(`**/checkout/${c.ref}/pay`);
+    await d.auditKnownStates(c.page); await d.state(c); invariant(c.state.order.settlement_amounts.outstanding_money.amount !== oldMoney.amount, 'TOTAL_DID_NOT_CHANGE');
+    await d.delivery(c); await d.pay(c); await d.settled(c); return ['SESSION_REPLACEMENT_AND_REAPPROVAL'];
   },
   'SF-12': async d => {
     const page = await d.page('b1'); await d.login(page, 'b1', d.sf()); const c = await d.checkout(page); await d.delivery(c);
