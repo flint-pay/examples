@@ -157,9 +157,10 @@ async function run(root, boot) {
     }
     if (payButton instanceof HTMLButtonElement) payButton.textContent = label();
     paintGift();
-    // Elements collects only what the gift cards leave over.
+    // Elements collects only what the gift cards leave over. Stripe.js rejects an amount that is not
+    // positive, so a settled or fully covered total is shown but never sent to Elements.
     const value = stripeAmount(processorMoney(state));
-    if (value !== null && value !== lastElementsAmount && elements) {
+    if (value !== null && value > 0 && value !== lastElementsAmount && elements) {
       lastElementsAmount = value;
       elements.update({ amount: value });
       expressElements?.update({ amount: value });
