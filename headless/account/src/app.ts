@@ -131,6 +131,8 @@ export function createApp(deps:Dependencies){
   app.onError(async(error,c)=>{
     const safe=/\/pay\/gift-card(?:\/|$)/.test(c.req.path)?giftPayError(error):appError(error),status=errorStatus(error);
     if(/\/pay\/gift-card(?:\/challenge)?$/.test(c.req.path)&&unknownOutcome(error))safe.message_key='gift_challenge_unconfirmed';
+    const giftInvalid=c.req.method==='POST'&&c.req.path==='/gift-cards'&&status===404&&safe.code==='GIFT_CARD_NOT_FOUND';
+    if(giftInvalid)safe.message_key='gift_card_invalid';
     if(safe.code==='INVALID_PAGE_ORIGIN')logLaunchInvalid('invalid_page_origin',safe.request_id);
     const errorField=safe.code==='EMAIL_ALREADY_USED'||safe.code==='INVALID_EMAIL'?(c.req.path.startsWith('/profile/email')?'new_email':'email'):safe.code==='PASSWORD_TOO_SHORT'?(c.req.path==='/sign-up'?'password':'new_password'):safe.code==='CURRENT_PASSWORD_INCORRECT'?'current_password':undefined;
     if(errorField)Object.assign(safe,{field_errors:{[errorField]:safe.message_key}});
@@ -138,7 +140,7 @@ export function createApp(deps:Dependencies){
     if(status===401&&c.get('session')){identity.destroy(c.get('session'));setCookie(c,config.cookieName,'',{path:'/',maxAge:0,httpOnly:true,sameSite:'Lax',secure});}
     if(isJson(c))return c.json({error:safe},status as 400);
     if(status===401)return c.redirect('/sign-in?notice=session_ended&next='+encodeURIComponent(returnPath(c.req.path+new URL(c.req.url).search)),303);
-    if(status===404&&c.get('user')){flash(c,'not_in_account');return c.redirect('/',303);}
+    if(status===404&&c.get('user')&&!giftInvalid){flash(c,'not_in_account');return c.redirect('/',303);}
     if(c.req.method!=='GET'&&c.get('errorReturn')){identity.db.prepare('UPDATE sessions SET flash=? WHERE session_hash=?').run(JSON.stringify({notices:[],error:safe,form:safeFormState(c)}),c.get('session').session_hash);return c.redirect(c.get('errorReturn'),303);}
     c.set('flash',{notices:[],error:safe});return page(c,status===404?'not-found':'error',{},status);
   });
