@@ -96,12 +96,13 @@ export const storefront: Record<string, Scenario> = {
   },
   'SF-04': async d => {
     const c = await d.checkout(await d.page('discount'));
-    await c.page.getByTestId('sf-discount-code').fill('WELCOME10'); await c.page.getByTestId('sf-discount-apply').click(); await d.state(c);
+    await c.page.getByTestId('sf-discount-code').fill('WELCOME10'); await c.page.getByTestId('sf-discount-apply').click(); await expect(c.page.getByTestId('sf-discount-applied-0')).toBeVisible({ timeout: 30_000 }); await d.state(c);
     invariant(BigInt(money(c.state.order.pricing_amounts.discount_money).amount) > 0n, 'DISCOUNT_NOT_APPLIED');
-    await c.page.getByTestId('sf-discount-code').fill('INVALID-ACCEPTANCE'); await c.page.getByTestId('sf-discount-apply').click(); await expect(c.page.getByRole('alert')).toBeVisible();
-    await d.state(c); const discounts = c.state.order.applied_discounts.map((x: any) => x.order_discount_id); await d.job(c.page, `/checkout/${c.ref}/discount/remove`, { order_discount_ids: discounts }); await c.page.reload(); await d.state(c);
+    await c.page.getByTestId('sf-discount-code').fill('INVALID-ACCEPTANCE'); await c.page.getByTestId('sf-discount-apply').click(); await expect(c.page.locator('[data-job-error="discount"]')).toBeVisible();
+    const applied = c.page.locator('[data-testid^="sf-discount-applied-"]'); for (let n = await applied.count(); n > 0; n--) { await applied.first().getByRole('button').click(); await expect(applied).toHaveCount(n - 1, { timeout: 30_000 }); }
+    await c.page.reload(); await d.state(c);
     await d.delivery(c); await c.page.getByTestId('sf-discount-code').fill('WELCOME10'); await c.page.getByTestId('sf-discount-apply').click();
-    await d.state(c); invariant(!c.state.delivery_selection && c.state.notices.includes('delivery_released'), 'DISCOUNT_MUST_RELEASE_DELIVERY');
+    await expect(c.page.getByTestId('sf-notice-delivery_released')).toBeVisible({ timeout: 30_000 }); await d.state(c); invariant(!c.state.delivery_selection && c.state.notices.includes('delivery_released'), 'DISCOUNT_MUST_RELEASE_DELIVERY');
     await expect(c.page.getByTestId('sf-pay-button')).toBeDisabled(); return ['DISCOUNT_INVALID_AND_DELIVERY_RELEASE'];
   },
   'SF-05': async d => {
