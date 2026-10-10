@@ -214,7 +214,7 @@ export const account: Record<string, Scenario> = {
     invariant(!d.operator.ledger.state.actions['A:invalid-account-gift-marker'], 'INVALID_GIFT_ALREADY_ATTEMPTED');
     await d.operator.ledger.action('invalid-account-gift-marker', 'A', 'local-marker', [], async () => true, async () => {});
     invariant(!d.created.has('invalidAccountGift'), 'INVALID_GIFT_ALREADY_ATTEMPTED'); d.created.set('invalidAccountGift', '1');
-    await d.goto(page, d.config.origins.accountA, '/gift-cards/add'); await page.getByTestId('ac-gift-card-add-code').fill('INVALID-ACCOUNT-ONCE'); await page.getByTestId('ac-gift-card-code-submit').click(); await expect(page.getByRole('alert')).toContainText("isn't valid");
+    await d.goto(page, d.config.origins.accountA, '/gift-cards/add'); await page.getByTestId('ac-gift-card-add-code').fill('INVALID-ACCOUNT-ONCE'); await d.form(page, '/gift-cards'); await expect(page.getByRole('alert')).toContainText("isn't valid");
     await d.goto(page, d.config.origins.accountA, '/gift-cards/add?tab=link'); let saves = 0;
     const listener = (r: import('@playwright/test').Request) => { if (r.method() === 'POST' && new URL(r.url()).pathname === '/gift-cards') saves++; }; page.on('request', listener);
     await page.getByTestId('ac-gift-card-add-link').fill('https://example.invalid/gift-cards/invalid#token=PLACEHOLDER'); await page.getByTestId('ac-gift-card-link-submit').click(); await expect(page.getByTestId('ac-gift-card-link-error')).toBeVisible(); page.off('request', listener); invariant(saves === 0, 'MALFORMED_GIFT_LINK_MUST_NOT_SAVE');
