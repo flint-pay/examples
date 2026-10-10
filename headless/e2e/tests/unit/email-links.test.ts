@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { classify, auditEmail, CHECKOUT_ORIGIN } from '../../support/email-links.ts';
+import { parseLinks } from '../../support/inbox.ts';
 import { API_ORIGIN } from '../../support/config.ts';
 import { navigationDecision, validateRelayResponse } from '../../support/flint-boundary.ts';
 import type { LinkRole, LinkConfig } from '../../support/email-links.ts';
@@ -40,6 +41,41 @@ test('LA-6 subscription actions use the exact allowlist without duplicate or ext
 test('LA-7 preference relay is limited to unsubscribe email families and carries no query or fragment', () => {
   auditEmail(mail(preference), 'fulfillment_updates', config);
   for (const [href, family] of [[preference, 'verification'], [`${preference}?token=PLACEHOLDER`, 'fulfillment_updates'], [`${preference}#token=PLACEHOLDER`, 'fulfillment_updates']]) assert.throws(() => auditEmail(mail(href), family, config));
+});
+// Public fake JWT-shaped fixture, never a signed credential.
+const fixtureToken = 'PUBLIC_FAKE_HEADER.PUBLIC_FAKE_PAYLOAD.PUBLIC_FAKE_SIGNATURE';
+const fixtureRelay = `${API_ORIGIN}/account/${fixtureToken}`;
+const fixturePreference = `${API_ORIGIN}/email-preferences/${fixtureToken}`;
+test('HTML preference relay followed by a plaintext sentence period is audited once', () => {
+  const html = `<a href="${fixtureRelay}">Order</a><a href="https://withflintpay.com/">Flint</a><a href="${fixturePreference}">Preferences</a>`;
+  const links = parseLinks(html, `Manage preferences at ${fixturePreference}.`);
+  assert.deepEqual(links.map(l => l.href), [fixtureRelay, 'https://withflintpay.com/', fixturePreference]);
+  assert.deepEqual(classify({ links }, 'fulfillment_updates', config).map(r => r.verdict), ['pass', 'record', 'pass']);
+  assert.deepEqual(auditEmail({ links }, 'fulfillment_updates', config).map(r => r.role), ['flint_account_link_relay', 'flint_brand_credit', 'flint_email_preferences_relay']);
+});
+test('a distinct plaintext relay with a period remains intact and fails audit', () => {
+  const distinct = `${fixturePreference}OTHER.`;
+  const links = parseLinks(`<a href="${fixturePreference}">Preferences</a>`, `Preferences at ${distinct}`);
+  assert.deepEqual(links.map(l => l.href), [fixturePreference, distinct]);
+  assert.equal(classify({ links }, 'fulfillment_updates', config)[1].code, 'EMAIL_FLINT_COMMERCE_LINK');
+  assert.throws(() => auditEmail({ links }, 'fulfillment_updates', config), { message: 'EMAIL_FLINT_COMMERCE_LINK' });
+});
+test('a malformed HTML href ending with a period remains intact and fails audit', () => {
+  const malformed = `${fixturePreference}.`;
+  const links = parseLinks(`<a href="${fixturePreference}">Preferences</a><a href="${malformed}">Malformed</a>`, `Preferences at ${malformed}`);
+  assert.deepEqual(links.map(l => l.href), [fixturePreference, malformed]);
+  assert.equal(classify({ links }, 'fulfillment_updates', config)[1].code, 'EMAIL_FLINT_COMMERCE_LINK');
+  assert.throws(() => auditEmail({ links }, 'fulfillment_updates', config), { message: 'EMAIL_FLINT_COMMERCE_LINK' });
+});
+test('plaintext punctuation is preserved without an exact HTML href match', () => {
+  for (const html of ['', `<a href="${fixtureRelay}">Order</a>`]) {
+    const links = parseLinks(html, `${fixturePreference} ${fixturePreference}. https://unknown.example.invalid/help.`);
+    assert.deepEqual(links.slice(html ? 1 : 0).map(l => l.href), [fixturePreference, `${fixturePreference}.`, 'https://unknown.example.invalid/help.']);
+    const result = classify({ links }, 'fulfillment_updates', config);
+    assert.equal(result.at(-2)?.code, 'EMAIL_FLINT_COMMERCE_LINK');
+    assert.equal(result.at(-1)?.code, 'EMAIL_UNDOCUMENTED_EXTERNAL_LINK');
+    assert.throws(() => auditEmail({ links }, 'fulfillment_updates', config), { message: 'EMAIL_FLINT_COMMERCE_LINK' });
+  }
 });
 test('LA-8 unknown Flint commerce links and nonloopback HTTP links fail', () => {
   for (const href of [`${CHECKOUT_ORIGIN}/checkout/PLACEHOLDER`, 'https://account.withflintpay.com/', `${API_ORIGIN}/payment-returns/PLACEHOLDER`, `${API_ORIGIN}/v1/orders`, 'https://withflintpay.com/pricing', 'https://withflintpay.com/?code=PLACEHOLDER', 'http://account.example.invalid/orders/ord_PLACEHOLDER']) assert.throws(() => auditEmail(mail(href), 'order_receipts', config));
