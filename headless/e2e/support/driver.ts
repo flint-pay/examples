@@ -189,14 +189,34 @@ export class Driver {
       const address = this.fixtures.values.shippingAddress;
       invariant(address, 'DELIVERY_FIXTURE_REQUIRED');
       const form = c.page.locator(`form[action="/checkout/${c.ref}/delivery/quote"]`);
-      for (const [name, value] of Object.entries(address)) if (await form.locator(`[name="${name}"]`).count()) await form.locator(`[name="${name}"]`).fill(String(value));
+      for (const [name, value] of Object.entries(address)) {
+        const input = form.locator(`[name="${name}"]`);
+        if (!await input.count()) continue;
+        if (await input.first().getAttribute('type') === 'hidden') await expect(input.first()).toHaveValue(String(value));
+        else await input.first().fill(String(value));
+      }
       await c.page.getByTestId('sf-delivery-quote').click();
     }
     const option = c.page.locator(pickup ? '[data-testid^="sf-pickup-location-"]' : '[data-testid^="sf-delivery-option-"]').first();
-    await option.check();
-    // Choosing is an ordinary merchant UI form submission, following its settled action.
-    await c.page.getByTestId(pickup ? 'sf-pickup-select' : 'sf-delivery-choose').click();
-    await expect(c.page.getByTestId('sf-delivery-selected')).toBeVisible();
+    await expect(option).toBeVisible({ timeout: 30_000 });
+    if (pickup) {
+      await option.check();
+      // Pickup is data-no-autosubmit and needs its explicit select.
+      await c.page.getByTestId('sf-pickup-select').click();
+    } else {
+      // checkout.js autosubmits only a single-group shipping selection; multiple groups need a choice in each, then an explicit submit.
+      const form = c.page.getByTestId('sf-delivery-options');
+      const groups = form.locator('fieldset[data-group-id]');
+      const count = await groups.count();
+      invariant(count > 0, 'DELIVERY_GROUPS_REQUIRED');
+      for (let i = 0; i < count; i++) {
+        const first = groups.nth(i).locator('input[type="radio"]').first();
+        invariant(await first.count() > 0, 'DELIVERY_GROUP_OPTIONS_REQUIRED');
+        await first.check();
+      }
+      if (count > 1) await c.page.getByTestId('sf-delivery-choose').click();
+    }
+    await expect(c.page.getByTestId('sf-delivery-selected')).toBeVisible({ timeout: 30_000 });
     await this.state(c);
     await this.auditKnownStates(c.page);
   }
