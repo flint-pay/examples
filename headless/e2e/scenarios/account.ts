@@ -12,8 +12,9 @@ import type { SealedCredential, VaultSnapshot } from '../support/app-vault.ts';
 import { runChild } from '../support/child.ts';
 import { checkoutRoot } from '../support/private-files.ts';
 import { join } from 'node:path';
-import type { Client } from '@flintpay/node';
+import type { Client, SubscriptionPaymentRetry } from '@flintpay/node';
 import { syncAppAudit, revocationCheckpoint, assertFreshRevocation } from '../support/audit-feed.ts';
+import { assertExclusiveRetryStart, assertRetrySettlement } from '../support/account-retry.ts';
 
 async function signed(d: Driver, buyer: 'b1' | 'b2' | 'd' = 'b1') {
   const page = await d.page(buyer); if (!d.fixtures.buyers[buyer].verified) await d.signup(page, buyer); else await d.login(page, buyer); return page;
@@ -162,9 +163,25 @@ export const account: Record<string, Scenario> = {
     const id = await fixture(d, 'pastDueSubscription'), after = new Date(); d.requireOwned('A', id); await namedPlan(d, 'makePastDue', { subscriptionId: id });
     await expect.poll(async () => (await d.operator.clients.clients.A.subscriptions.get(id)).status, { timeout: 15 * 60_000, intervals: [5000] }).toBe('past_due'); const mail = await d.email('b1', after, 'dunning'); const dunningLink = d.emailLink(mail, 'flint_account_link_relay');
     const page = await signed(d); await page.goto(dunningLink); invariant(new URL(page.url()).pathname === `/subscriptions/${id}`, 'DUNNING_RESOURCE_DESTINATION'); await d.job(page, `/subscriptions/${id}/payment-method`, { payment_method_id: await fixture(d, 'alternateOffSessionMethod') });
-    const responses = await Promise.all([d.job(page, `/subscriptions/${id}/retry-payment`, {}), d.job(page, `/subscriptions/${id}/retry-payment`, {})]);
-    invariant(responses.some(r => r.body?.error?.code === 'SUBSCRIPTION_PAYMENT_RETRY_IN_PROGRESS'), 'DOUBLE_RETRY_NOT_REJECTED');
-    await expect.poll(async () => (await d.operator.clients.clients.A.subscriptions.get(id)).status, { timeout: 60_000 }).toBe('active'); await page.reload(); await expect(page.getByTestId('ac-retry-status')).toHaveAttribute('data-state', 'succeeded'); return ['REAL_PAST_DUE_DUNNING_BUYER_RETRY_AND_DUPLICATE'];
+    const subscriptions = d.operator.clients.clients.A.subscriptions;
+    const before: string[] = [];
+    for await (const retry of subscriptions.listPaymentRetriesItems(id, { page_size: 100 })) before.push(retry.subscription_payment_retry_id);
+    const responses = await Promise.all([
+      d.job(page, `/subscriptions/${id}/retry-payment`, {}, { action: 'ac08-retry-primary' }),
+      d.job(page, `/subscriptions/${id}/retry-payment`, {}, { action: 'ac08-retry-competing' }),
+    ]);
+    const retries: SubscriptionPaymentRetry[] = [];
+    for await (const retry of subscriptions.listPaymentRetriesItems(id, { page_size: 100 })) retries.push(retry);
+    const retryId = assertExclusiveRetryStart(id, before, responses, retries);
+    await d.track('A', 'subscription_payment_retry', retryId, 'review'); d.requireOwned('A', retryId);
+    await expect.poll(async () => (await subscriptions.getPaymentRetry(id, retryId)).status, { timeout: 60_000, message: 'RETRY_NOT_SUCCEEDED' }).toBe('succeeded');
+    await expect.poll(async () => (await subscriptions.get(id)).status, { timeout: 60_000 }).toBe('active');
+    const retry = await subscriptions.getPaymentRetry(id, retryId), customerId = d.fixtures.buyers.b1.customerId;
+    invariant(retry.order_id && customerId, 'RETRY_ORDER_AND_CUSTOMER_REQUIRED');
+    const order = await d.trackOrder('A', retry.order_id);
+    assertRetrySettlement(retry, id, retryId, customerId, order, (await d.operator.clients.clients.A.orders.listPaymentAttempts(retry.order_id)).data);
+    await d.goto(page, d.config.origins.accountA, `/subscriptions/${id}?retry=${retryId}`);
+    await expect(page.getByTestId('ac-retry-status')).toHaveAttribute('data-state', 'succeeded'); return ['REAL_PAST_DUE_DUNNING_BUYER_RETRY_AND_DUPLICATE'];
   },
   'AC-09': async d => {
     const page = await signed(d);

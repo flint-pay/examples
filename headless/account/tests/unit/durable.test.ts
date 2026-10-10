@@ -29,3 +29,25 @@ test('uncertain mutations reuse the persisted key; foreign resources have separa
     await assert.rejects(store.mutate('user-a:resource','another',{name:'Example'},async()=>{throw new LocalError('REJECTED');}));
   }finally{store.close();}
 });
+test('concurrent retry replays coalesce across connections with the same nonce or the implicit action',async()=>{
+  for(const nonce of [undefined,'retry-primary']){
+    const dir=mkdtempSync(join(tmpdir(),'account-retry-')),path=join(dir,'local.sqlite'),a=new Store(path),b=new Store(path);let calls=0;
+    try{
+      const send=async(key:string)=>{calls++;await new Promise(resolve=>setTimeout(resolve,35));return {subscription_payment_retry_id:'retry_example',idempotency_key:key};};
+      const results=await Promise.all([a,b].map(store=>store.mutate('user:subscription:example','retry',{},send,nonce)));
+      assert.deepEqual(results[0],results[1]);assert.equal(calls,1);
+      assert.equal(a.all("SELECT * FROM actions WHERE kind='retry' AND status='succeeded'").length,1);
+    }finally{a.close();b.close();rmSync(dir,{recursive:true,force:true});}
+  }
+});
+test('distinct retry nonces preserve independent keys and journal the competing rejection',async()=>{
+  const store=new Store(':memory:'),keys:string[]=[];
+  try{
+    const send=async(key:string)=>{keys.push(key);if(keys.length===1){await new Promise(resolve=>setTimeout(resolve,35));return {subscription_payment_retry_id:'retry_example'};}throw new LocalError('SUBSCRIPTION_PAYMENT_RETRY_IN_PROGRESS',409);};
+    const results=await Promise.allSettled(['retry-primary','retry-competing'].map(nonce=>store.mutate('user:subscription:example','retry',{},send,nonce)));
+    assert.equal(results[0].status,'fulfilled');assert.equal(results[1].status,'rejected');
+    if(results[1].status==='rejected')assert.equal(results[1].reason.code,'SUBSCRIPTION_PAYMENT_RETRY_IN_PROGRESS');
+    assert.equal(keys.length,2);assert.notEqual(keys[0],keys[1]);
+    assert.deepEqual(store.all<{status:string}>("SELECT status FROM actions WHERE kind='retry' ORDER BY status").map(row=>row.status),['rejected','succeeded']);
+  }finally{store.close();}
+});
