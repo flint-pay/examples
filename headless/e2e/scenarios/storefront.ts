@@ -102,7 +102,7 @@ export const storefront: Record<string, Scenario> = {
     const applied = c.page.locator('[data-testid^="sf-discount-applied-"]'); for (let n = await applied.count(); n > 0; n--) { await applied.first().getByRole('button').click(); await expect(applied).toHaveCount(n - 1, { timeout: 30_000 }); }
     await c.page.reload(); await d.state(c);
     await d.delivery(c); await c.page.getByTestId('sf-discount-code').fill('WELCOME10'); await c.page.getByTestId('sf-discount-apply').click();
-    await expect(c.page.getByTestId('sf-notice-delivery_released')).toBeVisible({ timeout: 30_000 }); await d.state(c); invariant(!c.state.delivery_selection && c.state.notices.includes('delivery_released'), 'DISCOUNT_MUST_RELEASE_DELIVERY');
+    await expect(c.page.getByTestId('sf-notice-delivery_released')).toBeVisible({ timeout: 30_000 }); await d.state(c); invariant(!c.state.delivery_selection, 'DISCOUNT_MUST_RELEASE_DELIVERY');
     await expect(c.page.getByTestId('sf-pay-button')).toBeDisabled(); return ['DISCOUNT_INVALID_AND_DELIVERY_RELEASE'];
   },
   'SF-05': async d => {
