@@ -18,6 +18,32 @@ test('every operator method exists in the exact published SDK', () => {
   for (const operation of Object.keys(operations)) { const [resource, method] = operation.split('.'); assert.equal(typeof (client as any)[resource]?.[`${method}WithResponse`], 'function', operation); }
 });
 
+test('invoice fixture declares taxable service input and resumes without duplicate create or issue', async () => setup(async (ledger, dir) => {
+  const calls: string[] = [];
+  const invoice = { invoice_id: 'inv_UNIT_FAKE', order_id: 'ord_UNIT_FAKE' };
+  const fake = { invoices: {
+    createWithResponse: async (body: any) => {
+      assert.equal(body.quick_pay.customer_id, 'cus_UNIT_FAKE');
+      assert.equal(body.quick_pay.line_items[0].tax.taxable, true);
+      assert.deepEqual(body.quick_pay.line_items[0].unit_price_money, { amount: '12000', currency: 'USD' });
+      assert.equal(body.quick_pay.line_items[0].fulfillment.requirement, 'none');
+      assert.equal(body.quick_pay.tax?.enabled === false, false);
+      calls.push('create'); return { body: { data: invoice }, meta: { requestId: 'req_UNIT_FAKE' } };
+    },
+    issueWithResponse: async (id: string, body: unknown) => {
+      assert.equal(id, invoice.invoice_id); assert.deepEqual(body, { delivery_mode: 'email' });
+      assert.equal(ledger.state.resources.filter(r => r.owned).length, 2);
+      calls.push('issue'); return { body: { data: invoice }, meta: {} };
+    },
+  } };
+  const clients = { config, writable: async () => fake } as unknown as VerifiedClients;
+  assert.deepEqual(await new Operator(clients, ledger, {} as Fixtures).issueInvoice('acceptance-invoice', 'cus_UNIT_FAKE', 'buyer@example.invalid'), invoice);
+  const loaded = new Ledger(join(dir, 'ledger.json'), run); await loaded.load();
+  assert.deepEqual(await new Operator(clients, loaded, {} as Fixtures).issueInvoice('acceptance-invoice', 'cus_UNIT_FAKE', 'buyer@example.invalid'), invoice);
+  assert.deepEqual(calls, ['create', 'issue']);
+  assert.deepEqual(loaded.state.resources.map(r => [r.type, r.resource, r.cleanup]), [['invoice', invoice.invoice_id, 'invoice'], ['order', invoice.order_id, 'review']]);
+}));
+
 function subscriptionPlanStep(quantity: unknown = 1): PlanStep {
   return { name: 'numeric-plan', sandbox: 'A', operation: 'subscriptionPlans.create', args: [{
     name: 'Unit subscription', billing_interval: 'monthly', billing_interval_count: 1, currency: 'USD',

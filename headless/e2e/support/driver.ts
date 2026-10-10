@@ -72,7 +72,8 @@ export class Driver {
     for (const [name, value] of Object.entries(values)) {
       const input = form.locator(`[name="${name}"]`);
       const tag = await input.first().evaluate(e => e.tagName.toLowerCase());
-      if (tag === 'select') await input.selectOption(value); else await input.fill(value);
+      if (await input.first().getAttribute('type') === 'hidden') await expect(input.first()).toHaveValue(value);
+      else if (tag === 'select') await input.selectOption(value); else await input.fill(value);
     }
     await form.locator('button[type="submit"], input[type="submit"], button:not([type])').first().click();
     await page.waitForLoadState('domcontentloaded');
@@ -243,7 +244,9 @@ export class Driver {
   async challenge(page: Page, outcome: 'success' | 'fail'): Promise<void> {
     for (let i = 0; i < 300; i++) {
       for (const frame of page.frames()) {
-        const button = frame.getByRole('button', { name: outcome === 'success' ? /Complete authentication/i : /Fail authentication/i });
+        let url: URL; try { url = new URL(frame.url()); } catch { continue; }
+        if (url.protocol !== 'https:' || url.username || url.password || url.port || !(url.hostname === 'stripe.com' || url.hostname.endsWith('.stripe.com'))) continue;
+        const button = frame.getByRole('button', { name: outcome === 'success' ? /^(?:Complete authentication|Complete)$/i : /^(?:Fail authentication|Fail)$/i });
         if (await button.isVisible()) { await this.auditKnownStates(page); await button.click(); return; }
       }
       await page.waitForTimeout(100);

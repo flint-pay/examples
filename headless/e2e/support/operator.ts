@@ -109,7 +109,7 @@ export class Operator {
     const date = this.runDate();
     const reviewAt = new Date(date + 30 * 86400_000).toISOString();
     const response = await this.execute({ name, sandbox: 'A', operation: 'invoices.create', args: [{
-      quick_pay: { customer_id: customerId, line_items: [{ name: 'Acceptance service', quantity: '1', unit_price_money: { amount: '12000', currency: 'USD' }, fulfillment: { requirement: 'none' } }] },
+      quick_pay: { customer_id: customerId, line_items: [{ name: 'Acceptance service', quantity: '1', unit_price_money: { amount: '12000', currency: 'USD' }, fulfillment: { requirement: 'none' }, tax: { taxable: true } }] },
       collection: { mode: 'buyer_initiated', payment_policy: { enabled_payment_options: ['card', 'ach_debit', 'affirm'] } },
       payment_due: { type: 'absolute', due_at: new Date(date + 14 * 86400_000).toISOString() }, recipient_email: email, metadata: { e2e_run: this.ledger.run },
     }], creates: [{ path: 'invoice_id', type: 'invoice', cleanup: 'invoice', reviewAt }, { path: 'order_id', type: 'order', cleanup: 'review', reviewAt }], purpose: name });
