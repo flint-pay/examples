@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { navigationDecision } from '../../support/flint-boundary.ts';
+import type { BrowserContext, Request, Route } from '@playwright/test';
+import { BrowserGuard, navigationDecision } from '../../support/flint-boundary.ts';
 import { CredentialScanner } from '../../support/credential-scan.ts';
 import { pinApiOrigin, origin, API_ORIGIN, alias } from '../../support/config.ts';
 import { pinnedFetch } from '../../support/sdk.ts';
@@ -72,4 +73,130 @@ test('a proof is admitted exactly once in its scoped challenge request and remem
  const proof='gccp_'+ 'X'.repeat(30),scanner=new CredentialScanner();scanner.scan(proof,'request',{challengeProofSubmit:true});scanner.assertClean();scanner.scan(proof,'request',{challengeProofSubmit:true});assert.throws(()=>scanner.assertClean());
  for(const surface of ['url','body','dom','storage','console','cookie','child'] as const){const scanner=new CredentialScanner();scanner.scan(proof,surface,{challengeProofSubmit:true});assert.throws(()=>scanner.assertClean());}
  const ordinary=new CredentialScanner();ordinary.scan(proof,'request',{submittedGift:true});assert.throws(()=>ordinary.assertClean());
+});
+
+const verificationOrigin = 'https://store.example.invalid';
+async function verificationGuard(options: {
+  url?: string; method?: string; body?: string; status?: number;
+  fail?: 'fetch' | 'body' | 'fulfill'; readBody?: () => Promise<Buffer>; onDeliver?: () => void;
+} = {}) {
+  const scanner = new CredentialScanner(), guard = new BrowserGuard(scanner, [verificationOrigin]);
+  const listeners = new Map<string, (event: any) => void>();
+  let routeHandler!: (route: Route) => Promise<void>;
+  const context = {
+    serviceWorkers: () => [], pages: () => [], cookies: async () => [],
+    on: (event: string, listener: (event: any) => void) => { listeners.set(event, listener); },
+    route: async (_pattern: string, listener: (route: Route) => Promise<void>) => { routeHandler = listener; },
+  } as unknown as BrowserContext;
+  const request = {
+    url: () => options.url ?? `${verificationOrigin}/checkout/unit-ref/verification`,
+    method: () => options.method ?? 'POST', isNavigationRequest: () => false,
+    postData: () => '{}', headers: () => ({}), frame: () => { throw new Error('no frame'); },
+  } as unknown as Request;
+  const body = Buffer.from(options.body ?? '{"state":{"verification":{"status":"code_sent"}}}');
+  const headers = { 'content-type': 'application/json', 'x-unit-header': 'preserved' };
+  const response = {
+    status: () => options.status ?? 200, headers: () => headers,
+    body: async () => {
+      if (options.fail === 'body') throw new Error('body capture unavailable');
+      return options.readBody ? options.readBody() : body;
+    },
+  };
+  let fetches = 0, continues = 0, aborts = 0, deliveries = 0, duplicateReads = 0;
+  let delivered: any;
+  const route = {
+    request: () => request,
+    fetch: async (settings: unknown) => {
+      fetches++; assert.deepEqual(settings, { maxRedirects: 0, maxRetries: 0, timeout: 10_000 });
+      if (options.fail === 'fetch') throw new Error('fetch unavailable');
+      return response;
+    },
+    fulfill: async (settings: any) => {
+      if (options.fail === 'fulfill') throw new Error('delivery unavailable');
+      options.onDeliver?.();
+      delivered = settings; deliveries++;
+      // Model the immediate reload: Chromium can no longer provide this body.
+      listeners.get('response')!({
+        url: request.url, request: () => request, status: response.status, headers: response.headers,
+        text: async () => { duplicateReads++; throw new Error('body lost on reload'); },
+      });
+    },
+    continue: async () => { continues++; },
+    abort: async (reason: string) => { assert.equal(reason, 'blockedbyclient'); aborts++; },
+  } as unknown as Route;
+  await guard.attach(context);
+  return {
+    scanner, guard, context, body, headers, response,
+    run: async () => { listeners.get('request')!(request); await routeHandler(route); },
+    counts: () => ({ fetches, continues, aborts, deliveries, duplicateReads }),
+    delivered: () => delivered,
+    inspect: () => guard.inspect(context),
+    browserResponse: (text: string, responseHeaders: Record<string, string> = headers) => listeners.get('response')!({
+      url: request.url, request: () => ({ ...request }), status: () => 200, headers: () => responseHeaders,
+      text: async () => text,
+    }),
+  };
+}
+
+test('verification capture scans before delivery and survives an immediate reload', async () => {
+  let completeBody!: (body: Buffer) => void;
+  const bodyReady = new Promise<Buffer>(resolve => { completeBody = resolve; });
+  let bodyScans = 0;
+  const f = await verificationGuard({ readBody: () => bodyReady, onDeliver: () => assert.equal(bodyScans, 1) });
+  const scan = f.scanner.scan.bind(f.scanner);
+  f.scanner.scan = (value, surface, context) => { if (surface === 'body') bodyScans++; scan(value, surface, context); };
+  const handling = f.run();
+  await Promise.resolve();
+  assert.equal(f.guard.pending.size, 1);
+  assert.equal(f.counts().deliveries, 0); assert.equal(bodyScans, 0);
+  completeBody(f.body); await handling; await f.inspect();
+  assert.equal(bodyScans, 1);
+  assert.deepEqual(f.counts(), { fetches: 1, continues: 0, aborts: 0, deliveries: 1, duplicateReads: 0 });
+  assert.equal(f.delivered().response, f.response); assert.deepEqual(f.delivered().body, f.body);
+  assert.deepEqual(f.delivered().response.headers(), f.headers);
+});
+
+for (const body of ['{"credential":"flint_test_PLACEHOLDER"}', '{"client_setup":"seti_PLACEHOLDER_secret_PLACEHOLDER"']) {
+  test('verification capture rejects leaked authority even in malformed JSON', async () => {
+    const f = await verificationGuard({ body }); await f.run();
+    assert.equal(f.counts().deliveries, 0); assert.equal(f.counts().aborts, 1);
+    assert.equal(f.guard.violations.has('GUARD_INSPECTION_FAILED'), true);
+    await assert.rejects(f.inspect, { code: 'CREDENTIAL_LEAK' });
+  });
+}
+
+for (const fail of ['fetch', 'body', 'fulfill'] as const) test(`verification ${fail} failure aborts without falling back`, async () => {
+  const f = await verificationGuard({ fail }); await f.run();
+  assert.deepEqual(f.counts(), { fetches: 1, continues: 0, aborts: 1, deliveries: 0, duplicateReads: 0 });
+  await assert.rejects(f.inspect, { code: 'BROWSER_BOUNDARY_VIOLATION' });
+});
+
+for (const options of [
+  { url: 'https://other.example.invalid/checkout/unit-ref/verification' },
+  { method: 'GET' },
+  { url: `${verificationOrigin}/checkout/unit-ref/verification/confirm/extra` },
+  { url: `${verificationOrigin}/checkout/unit-ref/verification/` },
+  { url: `${verificationOrigin}/checkout/unit-ref/state` },
+  { url: `${verificationOrigin}/checkout/unit-ref/other/verification` },
+]) test('verification capture leaves other origins, methods and paths on their existing route', async () => {
+  const f = await verificationGuard(options); await f.run(); await f.inspect();
+  assert.deepEqual(f.counts(), { fetches: 0, continues: 1, aborts: 0, deliveries: 0, duplicateReads: 0 });
+});
+
+for (const status of [200, 204, 303, 503]) test(`verification confirm preserves the original ${status} response and bytes`, async () => {
+  const f = await verificationGuard({ url: `${verificationOrigin}/checkout/unit-ref/verification/confirm`, status });
+  await f.run(); await f.inspect();
+  assert.equal(f.delivered().response.status(), status);
+  assert.deepEqual(f.delivered().response.headers(), f.headers); assert.deepEqual(f.delivered().body, f.body);
+});
+
+test('capture skips only the original request body, retaining other response and URL scans', async () => {
+  const f = await verificationGuard(); await f.run(); await f.inspect();
+  f.browserResponse('flint_test_PLACEHOLDER');
+  await assert.rejects(f.inspect, { code: 'CREDENTIAL_LEAK' });
+  assert.equal(f.scanner.violations.has('CREDENTIAL_BODY'), true);
+  const second = await verificationGuard(); await second.run();
+  second.browserResponse('{}', { ...second.headers, location: `${verificationOrigin}/?client_secret=seti_PLACEHOLDER_secret_PLACEHOLDER` });
+  await assert.rejects(second.inspect, { code: 'CREDENTIAL_LEAK' });
+  assert.equal(second.scanner.violations.has('SENSITIVE_URL'), true);
 });
