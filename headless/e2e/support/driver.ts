@@ -111,7 +111,12 @@ export class Driver {
     const sandbox = buyer === 'b1b' ? 'B' : 'A';
     if (!this.supportUrls.has(sandbox)) this.supportUrls.set(sandbox, (await this.operator.clients.clients[sandbox].merchants.get()).support_url);
     const classifications = auditEmail(mail, family, { appOrigins: Object.values(this.config.origins), apiOrigin: this.config.apiOrigin, checkoutOrigin: CHECKOUT_ORIGIN, merchantSupportUrl: this.supportUrls.get(sandbox) });
-    for (let i = 0; i < mail.links.length; i++) if (['flint_account_link_relay', 'flint_email_preferences_relay'].includes(classifications[i].role)) this.auditedRelays.set(mail.links[i].href, classifications[i].role);
+    for (let i = 0; i < mail.links.length; i++) if (['flint_account_link_relay', 'flint_email_preferences_relay'].includes(classifications[i].role)) {
+      const relay = new URL(mail.links[i].href);
+      if (relay.hash) this.scanner.addCredential(new URLSearchParams(relay.hash.slice(1)).get('invoice_token')!);
+      relay.hash = '';
+      this.auditedRelays.set(relay.href, classifications[i].role);
+    }
     this.mails.push({ family, mail, buyer, classifications }); return mail;
   }
   emailLink(mail: Mail, role: LinkRole): string {
