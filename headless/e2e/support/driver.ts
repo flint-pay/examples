@@ -237,7 +237,12 @@ export class Driver {
           if (await input.first().getAttribute('type') === 'hidden') await expect(input.first()).toHaveValue(String(value));
           else await input.first().fill(String(value));
         }
-        await c.page.getByTestId('sf-delivery-quote').click();
+        const quoteUrl = new URL(`/checkout/${c.ref}/delivery/quote`, c.origin).href;
+        // The app may retry a temporary quote failure; wait for its successful response without another click.
+        await Promise.all([
+          c.page.waitForResponse(response => response.url() === quoteUrl && response.request().method() === 'POST' && response.status() === 200, { timeout: 60_000 }),
+          c.page.getByTestId('sf-delivery-quote').click(),
+        ]);
       }
     }
     const option = c.page.locator(pickup ? '[data-testid^="sf-pickup-location-"]' : '[data-testid^="sf-delivery-option-"]').first();
