@@ -118,13 +118,12 @@ export function createApp(options:AppOptions){
     try{event=asRecord(client.verifyWebhook(raw,c.req.raw.headers,config.webhookSecret).event);}catch{return c.json({error:'invalid_signature'},400);}
     if(event.mode!=='test')return c.json({error:'invalid_mode'},400);
     const eventId=c.req.header('webhook-id');if(!eventId||typeof event.event_type!=='string')return c.json({error:'invalid_event'},400);
-    const data=asRecord(event.data);const object=(data.order??data.checkout_session??data.payment_intent??data.subscription) as Body|undefined;
-    const objectId=object?.order_id??object?.checkout_session_id??object?.payment_intent_id??object?.subscription_id;
+    const data=asRecord(event.data);const objectId=data[`${event.event_type.split('.')[0]}_id`];
     store.transaction(()=>{
       const inserted=store.run('INSERT OR IGNORE INTO webhook_events VALUES(?,?,?,?)',eventId,event.event_type as string,typeof objectId==='string'?objectId:null,Date.now());
       if(inserted.changes!==1)return;
-      if(event.event_type==='order.paid'&&typeof object?.order_id==='string')store.run('INSERT OR IGNORE INTO order_signals VALUES(?,?)',object.order_id,Date.now());
-      if(event.event_type==='checkout_session.invalidated'&&typeof object?.checkout_session_id==='string')store.run('UPDATE checkouts SET needs_replacement=1 WHERE checkout_session_id=?',object.checkout_session_id);
+      if(event.event_type==='order.paid'&&typeof data.order_id==='string')store.run('INSERT OR IGNORE INTO order_signals VALUES(?,?)',data.order_id,Date.now());
+      if(event.event_type==='checkout_session.invalidated'&&typeof data.checkout_session_id==='string')store.run('UPDATE checkouts SET needs_replacement=1 WHERE checkout_session_id=?',data.checkout_session_id);
     });
     return c.json({received:true});
   });
