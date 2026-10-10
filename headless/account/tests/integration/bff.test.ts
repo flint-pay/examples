@@ -179,3 +179,17 @@ test('malformed recipient proofs stop before customer authority or save and form
     const shown=await h.app.request('/gift-cards/add',{headers:{Cookie:h.headers.Cookie}});assert.equal(shown.status,200);assert.equal(JSON.stringify(h.rendered()).includes(token),false);assert.equal(JSON.stringify(h.rendered()).includes('gcg_example'),false);
   }finally{h.close();}
 });
+test('an unknown gift card code returns to the add form while foreign resources still redirect home',async()=>{
+  const code='SYNTHETIC-EXAMPLE-CODE';let reads=0;
+  const h=await harness({me:{saveGiftCard:async()=>{throw new LocalError('GIFT_CARD_NOT_FOUND',404);},getGiftCard:async()=>{reads++;throw new LocalError('NOT_FOUND',404);}}});try{
+    const form={Cookie:h.headers.Cookie,Origin:config.appOrigin,'Content-Type':'application/x-www-form-urlencoded'};
+    const save=await h.app.request('/gift-cards',{method:'POST',headers:form,body:new URLSearchParams({_csrf:h.session.session.csrf_token,credential_type:'code',code}).toString()});
+    assert.equal(save.status,303);assert.equal(save.headers.get('Location'),'/gift-cards/add');
+    const shown=await h.app.request('/gift-cards/add',{headers:{Cookie:h.headers.Cookie}});assert.equal(shown.status,200);
+    const page=h.rendered() as {pageId:string;notices:string[];error:{code:string;message_key:string}};
+    assert.equal(page.pageId,'ac-gift-card-add');assert.equal(page.error.message_key,'gift_card_invalid');assert.deepEqual(page.notices,[]);assert.equal(JSON.stringify(page).includes(code),false);
+    const foreign=await h.app.request('/gift-cards/gfc_foreign/remove',{method:'POST',headers:form,body:new URLSearchParams({_csrf:h.session.session.csrf_token}).toString()});
+    assert.equal(foreign.status,303);assert.equal(foreign.headers.get('Location'),'/');assert.equal(reads,1);
+    assert.deepEqual(JSON.parse((h.identity.db.prepare('SELECT flash FROM sessions WHERE session_hash=?').get(h.session.session.session_hash) as {flash:string}).flash),{notices:['not_in_account']});
+  }finally{h.close();}
+});
