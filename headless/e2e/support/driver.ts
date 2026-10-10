@@ -8,6 +8,7 @@ import { auditEmail, CHECKOUT_ORIGIN } from './email-links.ts';
 import type { LinkClassification, LinkRole } from './email-links.ts';
 import { CredentialScanner } from './credential-scan.ts';
 import { BrowserGuard } from './flint-boundary.ts';
+import type { PreferenceRelayBinding } from './flint-boundary.ts';
 import { Operator } from './operator.ts';
 import { equalMoney, money, assertOneCharge } from './money.ts';
 import { invariant, HarnessError } from './safe.ts';
@@ -20,6 +21,7 @@ export class Driver {
   scanner: CredentialScanner;
   mails: { family: string; mail: Mail; buyer: Buyer; classifications: LinkClassification[] }[] = [];
   auditedRelays = new Map<string, LinkRole>();
+  preferenceBindings = new Map<string, PreferenceRelayBinding>();
   supportUrls = new Map<Sandbox, string | undefined>();
   created = new Map<string, string>();
   visitedAxeStates = new Set<string>();
@@ -37,7 +39,7 @@ export class Driver {
     let context = this.contexts.get(key);
     if (!context) {
       context = await this.browser.newContext({ serviceWorkers: 'block', viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce', acceptDownloads: false });
-      const guard = new BrowserGuard(this.scanner, Object.values(this.config.origins), this.config.origins.accountA, this.auditedRelays);
+      const guard = new BrowserGuard(this.scanner, Object.values(this.config.origins), this.config.origins.accountA, this.auditedRelays, this.preferenceBindings);
       await guard.attach(context); this.contexts.set(key, context); this.guards.set(context, guard);
     }
     return context.pages()[0] ?? await context.newPage();
@@ -125,6 +127,10 @@ export class Driver {
       if (relay.hash) this.scanner.addCredential(new URLSearchParams(relay.hash.slice(1)).get('invoice_token')!);
       relay.hash = '';
       this.auditedRelays.set(relay.href, classifications[i].role);
+      if (classifications[i].role === 'flint_email_preferences_relay') {
+        const { merchantId, sandboxId } = this.config.pins[sandbox];
+        this.preferenceBindings.set(relay.href, { merchantId, sandboxId });
+      }
     }
     this.mails.push({ family, mail, buyer, classifications }); return mail;
   }
