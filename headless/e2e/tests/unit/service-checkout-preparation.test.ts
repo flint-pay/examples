@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import type { WebhookEvent } from '@flintpay/node';
 import type { Driver, Checkout } from '../../support/driver.ts';
 import { storefront } from '../../scenarios/storefront.ts';
 import { crossApp } from '../../scenarios/cross-app.ts';
@@ -8,12 +9,12 @@ type State = { ref: string; billed: boolean; consent: boolean; verified: boolean
 function harness(billingNeeded = true, savingCards = true) {
   const events: string[] = []; let sequence = 0, savedCard = false;
   const states: State[] = [];
-  type Page = { current: State; getByTestId: (id: string) => Locator; locator: (selector: string) => Locator; getByText: (text: string) => Locator; reload: () => Promise<void> };
+  type Page = { current: State; completionLoaded: boolean; getByTestId: (id: string) => Locator; locator: (selector: string) => Locator; getByText: (text: string) => Locator; reload: () => Promise<void> };
   class Locator {
     readonly page: Page; readonly id: string;
     constructor(page: Page, id: string) { this.page = page; this.id = id; }
     first() { return this; }
-    async isVisible() { return this.id !== 'sf-billing' || billingNeeded; }
+    async isVisible() { return this.id === 'webhook' ? this.page.completionLoaded : this.id !== 'sf-billing' || billingNeeded; }
     async getAttribute(name: string) {
       assert.equal(name, 'data-state');
       return this.id === 'sf-billing' ? this.page.current.billed ? 'set' : 'needed' : this.page.current.billed ? 'ready' : 'needs_billing';
@@ -35,7 +36,7 @@ function harness(billingNeeded = true, savingCards = true) {
       }
     }
     async _expect(expression: string, options: { expectedText?: { string: string }[]; expressionArg?: string }) {
-      if (expression === 'to.be.visible') return { matches: this.id !== 'sf-pay-form' || this.page.current.billed, log: [] };
+      if (expression === 'to.be.visible') return { matches: this.id === 'webhook' ? this.page.completionLoaded : this.id !== 'sf-pay-form' || this.page.current.billed, log: [] };
       assert.equal(expression, 'to.have.attribute.value');
       const received = await this.getAttribute(options.expressionArg!);
       return { matches: received === options.expectedText![0].string, received, log: [] };
@@ -44,6 +45,7 @@ function harness(billingNeeded = true, savingCards = true) {
   function page(): Page {
     const p = {
       current: undefined as unknown as State,
+      completionLoaded: false,
       getByTestId: (id: string) => new Locator(p, id),
       locator: (selector: string) => { assert.equal(selector, '[data-testid^="sf-saved-method-"]'); return new Locator(p, 'saved'); },
       getByText: (text: string) => { assert.equal(text, 'Payment confirmed by Flint'); return new Locator(p, 'webhook'); },
@@ -54,11 +56,17 @@ function harness(billingNeeded = true, savingCards = true) {
   const d = {
     fixtures: { buyers: { b1b: { email: 'buyer@example.invalid' } }, values: { sandboxSmsPhone: '+12025550123', realWebhookForwarding: { owned: true, ready: true } } },
     page: async () => page(),
+    sf: () => 'https://storefront.example.invalid',
+    goto: async (p: Page, origin: string, path: string) => {
+      assert.equal(origin, d.sf()); assert.equal(path, `/checkout/${p.current.ref}/complete`);
+      assert.equal(events.filter(event => event === 'webhook-read').length, 2, 'unrelated and synthetic metadata must be skipped before reloading completion');
+      p.completionLoaded = true; events.push(`completion:${p.current.ref}`);
+    },
     checkout: async (p: Page, product: string, sandbox?: string, buyer?: string) => {
       assert.equal(product, 'brewing-class'); if (sandbox) { assert.equal(sandbox, 'B'); assert.equal(buyer, 'b1b'); }
       const s: State = { ref: `chk_UNIT_${++sequence}`, billed: !billingNeeded, consent: false, verified: false, saved: false, paid: false, fields: {} };
       p.current = s; states.push(s); events.push(`checkout:${s.ref}`);
-      return { page: p, ref: s.ref, orderId: `ord_UNIT_${sequence}` } as unknown as Checkout;
+      return { page: p, ref: s.ref, origin: d.sf(), orderId: `ord_UNIT_${sequence}` } as unknown as Checkout;
     },
     state: async (c: Checkout) => { const p = c.page as unknown as Page; assert.equal(p.current.billed, true); events.push(`state:${c.ref}`); },
     email: async (buyer: string, _after: Date, family: string) => { assert.equal(buyer, 'b1b'); assert.equal(family, 'checkout_verification'); return { codes: ['246810'] }; },
@@ -77,7 +85,11 @@ function harness(billingNeeded = true, savingCards = true) {
       s.paid = true; if (s.verified) savedCard = true; events.push(`pay:${c.ref}`);
     },
     settled: async (c: Checkout) => { assert.equal((c.page as unknown as Page).current.paid, true); events.push(`settled:${c.ref}`); },
-    operator: { clients: { clients: { A: { webhookEvents: { list: async (query: unknown) => { assert.deepEqual(query, { event_type: 'order.paid' }); events.push('webhook-read'); return { data: [{ data: { order_id: 'ord_UNIT_1' } }] }; } } } } } },
+    operator: { clients: { clients: { A: { webhookEvents: { list: async (query: unknown) => {
+      assert.deepEqual(query, { event_type: 'order.paid', resource_type: 'order', resource_id: 'ord_UNIT_1' }); events.push('webhook-read');
+      const event={webhook_event_id:'evt_UNIT_1',event_type:'order.paid',event_origin:'business_event',created_at:new Date().toISOString(),resource_type:'order',resource_id:'ord_UNIT_1',test:false} satisfies WebhookEvent;
+      return { data: events.filter(event => event === 'webhook-read').length === 1 ? [{...event,resource_type:'invoice'}, {...event,resource_id:'ord_UNIT_OTHER'}, {...event,event_origin:'test_api',test:true}] : [event] };
+    } } } } } },
   };
   return { driver: d as unknown as Driver, events, states };
 }
@@ -95,8 +107,8 @@ test('SF-24 renews save-card consent after verification reload even without bill
   assert.deepEqual(events.filter(e => e.endsWith(':chk_UNIT_1')), ['checkout:chk_UNIT_1', 'consent:chk_UNIT_1', 'reload:chk_UNIT_1', 'consent:chk_UNIT_1', 'pay:chk_UNIT_1', 'settled:chk_UNIT_1']);
 });
 
-test('SF-26X prepares billing before payment and retains the delivered webhook check', async () => {
+test('SF-26X correlates payload-free event metadata before reloading its owned completion', async () => {
   const { driver, events } = harness(true, false);
   assert.deepEqual(await crossApp['SF-26X'](driver), ['REAL_FLINT_WEBHOOK_DELIVERY']);
-  assert.deepEqual(events, ['checkout:chk_UNIT_1', 'billing:chk_UNIT_1', 'state:chk_UNIT_1', 'pay:chk_UNIT_1', 'settled:chk_UNIT_1', 'webhook-read']);
+  assert.deepEqual(events, ['checkout:chk_UNIT_1', 'billing:chk_UNIT_1', 'state:chk_UNIT_1', 'pay:chk_UNIT_1', 'settled:chk_UNIT_1', 'webhook-read', 'webhook-read', 'completion:chk_UNIT_1']);
 });
