@@ -225,10 +225,27 @@ export const storefront: Record<string, Scenario> = {
     invariant(limited, 'RATE_LIMIT_NOT_ENFORCED'); await d.guardCheck(); return ['CSRF_CHECKOUT_ISOLATION_RATE_LIMIT'];
   },
   'SF-24': async d => {
-    const page = await d.page('b1b', 'B'), c = await d.checkout(page, 'brewing-class', 'B', 'b1b');
+    const page = await d.page('b1b', 'B');
+    // Contact blur starts recognition on its own. Let it finish before requesting
+    // a save code, because even recognition that sends no code replaces earlier codes.
+    const recognition = page.waitForResponse(response => {
+      const url = new URL(response.url()), request = response.request();
+      if (url.origin !== d.sf('B') || !/^\/checkout\/[^/]+\/verification$/.test(url.pathname) || request.method() !== 'POST') return false;
+      const input = request.postDataJSON();
+      return input?.purpose === 'use_saved_payment_methods' && input.channel === 'auto' && typeof input.email === 'string' && input.email.toLowerCase() === d.fixtures.buyers.b1b.email.toLowerCase();
+    }, { timeout: 60_000 }).then(async response => ({ path: new URL(response.url()).pathname, status: response.status(), body: await response.json() }));
+    const [c, recognized] = await Promise.all([d.checkout(page, 'brewing-class', 'B', 'b1b'), recognition]);
+    invariant(recognized.path === `/checkout/${c.ref}/verification`, 'RECOGNITION_CHECKOUT_MISMATCH');
+    invariant(recognized.status === 200 || recognized.status === 409 && recognized.body?.error?.code === 'CUSTOMER_VERIFICATION_NOT_SENT', 'NATIVE_RECOGNITION_FAILED');
     await billing(d, c);
-    await page.getByTestId('sf-save-card').check(); const after = new Date(); await d.job(page, `/checkout/${c.ref}/verification`, { purpose: 'save_payment_method', channel: 'email', email: d.fixtures.buyers.b1b.email });
-    const mail = await d.email('b1b', after, 'checkout_verification'); await d.job(page, `/checkout/${c.ref}/verification/confirm`, { code: mail.codes[0] }); await page.reload(); await page.getByTestId('sf-save-card').check(); await d.pay(c); await d.settled(c);
+    await page.getByTestId('sf-save-card').check(); const after = new Date();
+    const requested = await d.job(page, `/checkout/${c.ref}/verification`, { purpose: 'save_payment_method', channel: 'email', email: d.fixtures.buyers.b1b.email });
+    invariant(requested.status === 200, 'SAVE_CARD_VERIFICATION_REQUEST_FAILED');
+    const mail = await d.email('b1b', after, 'checkout_verification'); invariant(mail.codes.length === 1, 'EMAIL_CODE_AMBIGUOUS');
+    const confirmed = await d.job(page, `/checkout/${c.ref}/verification/confirm`, { code: mail.codes[0] }); invariant(confirmed.status === 200, 'SAVE_CARD_VERIFICATION_CONFIRM_FAILED');
+    const verified = await d.state(c);
+    invariant(verified.session.save_payment_method_offered === true && verified.session.save_payment_method_requires_verification === false, 'SAVE_CARD_AUTHORIZATION_REQUIRED');
+    await page.reload(); await page.getByTestId('sf-save-card').check(); await d.pay(c); await d.settled(c);
     const next = await d.checkout(page, 'brewing-class', 'B', 'b1b'); const returning = await d.email('b1b', new Date(Date.now() - 5000), 'checkout_verification');
     await page.getByTestId('sf-returning-code').fill(returning.codes[0]); await d.form(page, `/checkout/${next.ref}/verification/confirm`); await billing(d, next); const saved = page.locator('[data-testid^="sf-saved-method-"]').first(); await expect(saved).toBeVisible(); await saved.check(); await page.getByTestId('sf-pay-button').click(); await d.settled(next);
     const phone = d.fixtures.values.sandboxSmsPhone; invariant(phone, 'SMS_FIXTURE_REQUIRED');
