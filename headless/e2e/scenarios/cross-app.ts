@@ -34,7 +34,7 @@ export const crossApp: Record<string, Scenario> = {
     const b = d.operator.clients.clients.B;
     await notFound(b.orders.get(order)); await notFound(b.customers.get(d.fixtures.buyers.b1.customerId)); await notFound(b.invoices.get(invoice));
     const buyer = await buyerClient(d, d.fixtures.buyers.b1b.customerId, 'B'); await notFound(buyer.me.getOrder(order));
-    const key = `fx-${d.config.run}-same-key-two-sandboxes`, args = [{ external_reference_id: key, line_items: [{ name: 'Isolation acceptance service', quantity: '1', unit_price_money: { amount: '100', currency: 'USD' }, fulfillment: { requirement: 'none' as const } }] }];
+    const key = `fx-${d.config.run}-same-key-two-sandboxes`, args = [{ external_reference_id: key, line_items: [{ name: 'Isolation acceptance service', quantity: '1', unit_price_money: { amount: '100', currency: 'USD' }, fulfillment: { requirement: 'none' as const }, tax: { taxable: true } }] }];
     const ids: string[] = [];
     for (const sandbox of ['A', 'B'] as const) {
       const result = await d.operator.ledger.action('cross-sandbox-key', sandbox, 'orders.create', args, async durableKey => {
