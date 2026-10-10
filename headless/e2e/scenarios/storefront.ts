@@ -247,7 +247,16 @@ export const storefront: Record<string, Scenario> = {
     invariant(verified.session.save_payment_method_offered === true && verified.session.save_payment_method_requires_verification === false, 'SAVE_CARD_AUTHORIZATION_REQUIRED');
     await page.reload(); await page.getByTestId('sf-save-card').check(); await d.pay(c, undefined, { activation: 'keyboard' }); await d.settled(c);
     const next = await d.checkout(page, 'brewing-class', 'B', 'b1b'); const returning = await d.email('b1b', new Date(Date.now() - 5000), 'checkout_verification');
-    await page.getByTestId('sf-returning-code').fill(returning.codes[0]); await d.form(page, `/checkout/${next.ref}/verification/confirm`); await billing(d, next); const saved = page.locator('[data-testid^="sf-saved-method-"]').first(); await expect(saved).toBeVisible(); await saved.check();
+    await page.getByTestId('sf-returning-code').fill(returning.codes[0]);
+    const [returningConfirmed] = await Promise.all([
+      page.waitForResponse(response => {
+        const url = new URL(response.url());
+        return url.origin === d.sf('B') && url.pathname === `/checkout/${next.ref}/verification/confirm` && response.request().method() === 'POST';
+      }, { timeout: 30_000 }),
+      d.form(page, `/checkout/${next.ref}/verification/confirm`),
+    ]);
+    invariant(returningConfirmed.status() === 200, 'RETURNING_VERIFICATION_CONFIRM_FAILED');
+    await billing(d, next); const saved = page.locator('[data-testid^="sf-saved-method-"]').first(); await expect(saved).toBeVisible({ timeout: 30_000 }); await saved.check();
     const savedPay = page.getByTestId('sf-pay-button'); await expect(savedPay).toBeEnabled(); await savedPay.focus(); await expect(savedPay).toBeFocused(); await page.keyboard.press('Enter'); await d.settled(next);
     const phone = d.fixtures.values.sandboxSmsPhone; invariant(phone, 'SMS_FIXTURE_REQUIRED');
     const sms = await d.checkout(await d.page('phone-save', 'B'), 'brewing-class', 'B', 'b1b'); await billing(d, sms); await sms.page.getByTestId('sf-save-card').check(); await sms.page.getByTestId('sf-save-phone').fill(phone); await d.pay(sms, undefined, { activation: 'keyboard' }); await d.settled(sms);

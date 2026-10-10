@@ -7,7 +7,7 @@ import { storefront } from '../../scenarios/storefront.ts';
 import { crossApp } from '../../scenarios/cross-app.ts';
 
 type State = { ref: string; billed: boolean; consent: boolean; verified: boolean; saved: boolean; paid: boolean; focused?: string; fields: Record<string, string> };
-type Verification = { nativeStatus?: number; nativeCode?: string; nativeCompletion?: Promise<void>; nativeStarted?: () => void; requestStatus?: number; confirmStatus?: number; codes?: string[]; authorized?: boolean };
+type Verification = { nativeStatus?: number; nativeCode?: string; nativeCompletion?: Promise<void>; nativeStarted?: () => void; returningStatus?: number; returningCompletion?: Promise<void>; returningStarted?: () => void; requestStatus?: number; confirmStatus?: number; codes?: string[]; authorized?: boolean };
 function harness(billingNeeded = true, savingCards = true, verification: Verification = {}) {
   const events: string[] = []; let sequence = 0, savedCard = false;
   const activations: { ref: string; activation: string }[] = [], keypresses: { ref: string; key: string }[] = [];
@@ -43,8 +43,11 @@ function harness(billingNeeded = true, savingCards = true, verification: Verific
         throw new Error('saved-card payment must use one keyboard activation');
       }
     }
-    async _expect(expression: string, options: { expectedText?: { string: string }[]; expressionArg?: string }) {
-      if (expression === 'to.be.visible') return { matches: this.id === 'webhook' ? this.page.completionLoaded : this.id !== 'sf-pay-form' || this.page.current.billed, log: [] };
+    async _expect(expression: string, options: { expectedText?: { string: string }[]; expressionArg?: string; timeout?: number }) {
+      if (expression === 'to.be.visible') {
+        if (this.id === 'saved') { assert.equal(options.timeout, 30_000); assert.ok(events.includes(`returning-confirmed:${this.page.current.ref}`)); }
+        return { matches: this.id === 'webhook' ? this.page.completionLoaded : this.id !== 'sf-pay-form' || this.page.current.billed, log: [] };
+      }
       if (expression === 'to.be.enabled') { events.push(`enabled:${this.page.current.ref}`); return { matches: this.page.current.billed && this.page.current.saved, log: [] }; }
       if (expression === 'to.be.focused') { events.push(`focused:${this.page.current.ref}`); return { matches: this.page.current.focused === this.id, log: [] }; }
       assert.equal(expression, 'to.have.attribute.value');
@@ -61,8 +64,17 @@ function harness(billingNeeded = true, savingCards = true, verification: Verific
       getByText: (text: string) => { assert.equal(text, 'Payment confirmed by Flint'); return new Locator(p, 'webhook'); },
       reload: async () => { p.current.consent = false; events.push(`reload:${p.current.ref}`); },
       waitForResponse: (predicate, options) => {
-        assert.equal(options.timeout, 60_000);
-        return new Promise(resolve => { p.nativeResponse = response => { assert.equal(predicate(response), true); resolve(response); }; });
+        assert.ok(options.timeout === 60_000 || options.timeout === 30_000);
+        return new Promise(resolve => { p.nativeResponse = response => {
+          if (options.timeout === 30_000) {
+            for (const url of ['https://foreign.example.invalid' + new URL(response.url()).pathname,
+              `${d.sf()}/checkout/chk_OTHER/verification/confirm`, `${d.sf()}/checkout/${p.current.ref}/verification`]) {
+              assert.equal(predicate({ ...response, url: () => url } as Response), false);
+            }
+            assert.equal(predicate({ ...response, request: () => ({ method: () => 'GET' }) } as unknown as Response), false);
+          }
+          assert.equal(predicate(response), true); resolve(response);
+        }; });
       },
       keyboard: { press: async key => {
         const s = p.current;
@@ -107,7 +119,20 @@ function harness(billingNeeded = true, savingCards = true, verification: Verific
       if (path.endsWith('/confirm') && body.code === '246810') { p.current.verified = verification.confirmStatus === undefined || verification.confirmStatus === 200; return { status: verification.confirmStatus ?? 200 }; }
       return { status: body.code === '000000' ? 400 : body.code === '999999' ? 503 : 200 };
     },
-    form: async (p: Page, path: string) => { assert.equal(path, `/checkout/${p.current.ref}/verification/confirm`); p.current.verified = true; },
+    form: async (p: Page, path: string) => {
+      assert.equal(path, `/checkout/${p.current.ref}/verification/confirm`);
+      assert.ok(p.nativeResponse, 'wait for the returning confirmation before native form submission');
+      const response = {
+        url: () => `${d.sf()}${path}`, status: () => verification.returningStatus ?? 200,
+        request: () => ({ method: () => 'POST' }),
+      } as unknown as Response;
+      const deliver = p.nativeResponse; delete p.nativeResponse;
+      void (async () => {
+        verification.returningStarted?.(); await verification.returningCompletion;
+        p.current.verified = response.status() === 200;
+        events.push(`returning-confirmed:${p.current.ref}`); deliver(response);
+      })();
+    },
     pay: async (c: Checkout, number?: string, options: { activation?: string } = {}) => {
       const s = (c.page as unknown as Page).current; assert.equal(s.billed, true, 'billing must precede pay');
       if (savingCards) {
@@ -140,7 +165,7 @@ test('SF-24 uses two keyboard card payments and one focused saved-card Enter wit
   await storefront['SF-24'](driver);
   assert.deepEqual(activations, [{ ref: 'chk_UNIT_1', activation: 'keyboard' }, { ref: 'chk_UNIT_3', activation: 'keyboard' }]);
   assert.deepEqual(keypresses, [{ ref: 'chk_UNIT_2', key: 'Enter' }]);
-  assert.deepEqual(events.filter(event => event.endsWith(':chk_UNIT_2')), ['checkout:chk_UNIT_2', 'billing:chk_UNIT_2', 'state:chk_UNIT_2', 'enabled:chk_UNIT_2', 'focus:chk_UNIT_2', 'focused:chk_UNIT_2', 'pay:chk_UNIT_2', 'settled:chk_UNIT_2']);
+  assert.deepEqual(events.filter(event => event.endsWith(':chk_UNIT_2')), ['checkout:chk_UNIT_2', 'returning-confirmed:chk_UNIT_2', 'billing:chk_UNIT_2', 'state:chk_UNIT_2', 'enabled:chk_UNIT_2', 'focus:chk_UNIT_2', 'focused:chk_UNIT_2', 'pay:chk_UNIT_2', 'settled:chk_UNIT_2']);
   assert.equal(events.filter(event => event.startsWith('pay:')).length, 3);
   assert.equal(events.filter(event => event.startsWith('settled:')).length, 3);
 });
@@ -168,6 +193,27 @@ test('SF-24 accepts successful native recognition before requesting its save cod
   await storefront['SF-24'](driver);
   assert.ok(events.includes('save-code:chk_UNIT_1'));
 });
+
+test('SF-24 waits for returning native confirmation before checking saved cards', async () => {
+  let release!: () => void, started!: () => void;
+  const returningCompletion = new Promise<void>(resolve => { release = resolve; });
+  const returningStarted = new Promise<void>(resolve => { started = resolve; });
+  const { driver, events } = harness(false, true, { returningCompletion, returningStarted: started });
+  const execution = storefront['SF-24'](driver);
+  await returningStarted;
+  assert.equal(events.includes('returning-confirmed:chk_UNIT_2'), false);
+  assert.deepEqual(events.filter(event => event.startsWith('pay:')), ['pay:chk_UNIT_1']);
+  release(); await execution;
+  assert.ok(events.indexOf('returning-confirmed:chk_UNIT_2') < events.indexOf('pay:chk_UNIT_2'));
+});
+
+for (const returningStatus of [400, 500]) {
+  test(`SF-24 stops before saved-card payment after returning confirmation ${returningStatus}`, async () => {
+    const { driver, events } = harness(false, true, { returningStatus });
+    await assert.rejects(storefront['SF-24'](driver), { code: 'RETURNING_VERIFICATION_CONFIRM_FAILED' });
+    assert.deepEqual(events.filter(event => event.startsWith('pay:')), ['pay:chk_UNIT_1']);
+  });
+}
 
 for (const [name, verification, code] of [
   ['unexpected native failure', { nativeCode: 'PAYMENT_ATTEMPT_IN_PROGRESS' }, 'NATIVE_RECOGNITION_FAILED'],
