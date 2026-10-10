@@ -406,7 +406,8 @@ export async function runAppSignoutTransition(d: Driver, ports: SignoutPorts): P
   for (const send of negatives) await assertSignoutNegative(reader, d, page, secret, familyId, sessions, checkpoint, send, ports.sync);
   const before = await ports.sync().then(() => d.revocations.length); await d.form(page, '/sign-out'); await ports.sync();
   assertSignoutRevoked(d, before, familyId, await reader.count('pendingCount', familyId), await reader.count('vaultCount'));
-  const destination = new URL(page.url()); invariant(destination.pathname === '/sign-in' && destination.searchParams.get('notice') === 'signed_out', 'APP_SIGNOUT_NOTICE_REQUIRED');
+  const destination = new URL(page.url()); invariant(destination.pathname === '/sign-in', 'APP_SIGNOUT_NOTICE_REQUIRED');
+  await expect(page.getByTestId('ac-notice')).toHaveText("You're signed out.");
   await ports.verify();
   await assertAppSecretInvalid(anonymous, secret, 'OLD_APP_SECRET_STILL_VALID'); secret = undefined;
   await d.goto(page, d.config.origins.accountA, '/orders'); invariant(new URL(page.url()).pathname === '/sign-in', 'NEXT_PAGE_NOT_SIGNED_OUT');
