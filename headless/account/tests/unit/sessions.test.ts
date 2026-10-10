@@ -42,12 +42,23 @@ test('sign-out followed by a new login mints a new family with a distinct durabl
     const service=new CustomerSessions(identity,client,createAuth(config.apiKey),config,'sandbox_example');await service.vault(user);await service.revoke(user);await service.vault(user);assert.equal(keys.length,2);assert.notEqual(keys[0],keys[1]);
   }finally{identity.close();}
 });
-test('an old credential failure cannot invalidate a newer customer-session pair',async()=>{
+for(const failure of ['INVALID_CUSTOMER_SESSION','CUSTOMER_SESSION_NOT_FOUND'])test(`an old ${failure} cannot invalidate a newer customer-session pair`,async()=>{
   const identity=new IdentityStore(':memory:');try{
     const created=await identity.createUser('Example','buyer@example.invalid','example password');identity.bind(created.user_id,'sandbox_example','cus_example',created.email);const user=identity.user(created.user_id)!;
     const service=new CustomerSessions(identity,{} as Client,createAuth(config.apiKey),config,'sandbox_example');service.save(user,result('old example'));const session=identity.createSession(user.user_id);let calls=0;
-    const value=await service.call(user,async options=>{calls++;if(calls===1){service.save(user,result('new example'));throw new LocalError('INVALID_CUSTOMER_SESSION',401);}assert.equal(options.customerToken,'new example');return 'ok';});
+    const value=await service.call(user,async options=>{calls++;if(calls===1){service.save(user,result('new example'));throw new LocalError(failure,failure==='CUSTOMER_SESSION_NOT_FOUND'?404:401);}assert.equal(options.customerToken,'new example');return 'ok';});
     assert.equal(value,'ok');assert.equal(calls,2);assert.ok(identity.session(session.token));
+  }finally{identity.close();}
+});
+test('a missing customer session ends every local session without minting replacement authority',async()=>{
+  const identity=new IdentityStore(':memory:');try{
+    const created=await identity.createUser('Example','buyer@example.invalid','example password');identity.bind(created.user_id,'sandbox_example','cus_example',created.email);const user=identity.user(created.user_id)!;
+    const first=identity.createSession(user.user_id),second=identity.createSession(user.user_id);
+    let minted=0;
+    const client={customerSessions:{create:async()=>{minted++;return result('unexpected');}}} as unknown as Client;
+    const service=new CustomerSessions(identity,client,createAuth(config.apiKey),config,'sandbox_example');service.save(user,result('old example'));
+    await assert.rejects(service.call(user,async()=>{throw new LocalError('CUSTOMER_SESSION_NOT_FOUND',404);}),{code:'SESSION_ENDED',status:401});
+    assert.equal(minted,0);assert.equal(identity.session(first.token),undefined);assert.equal(identity.session(second.token),undefined);assert.equal(identity.vault(user.user_id,'sandbox_example'),undefined);
   }finally{identity.close();}
 });
 test('failed sign-out revocation remains queued and sweep replays the original key',async()=>{

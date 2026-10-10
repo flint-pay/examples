@@ -515,7 +515,18 @@ export function createApp(deps:Dependencies){
     const request={new_email_code:code(b.new_email_code),current_email_code:pending.current_email_confirmation_required?code(b.current_email_code):undefined};
     const confirmed=await mutate(c,'email-confirm',`email:${pending.email_change_request_id}`,request,opts=>client.me.confirmEmailChangeRequest(pending.email_change_request_id,request,opts));
     if(!confirmed.confirmed||confirmed.new_email!==pending.new_email)throw new LocalError('EMAIL_CHANGE_NOT_CONFIRMED',409);
-    identity.db.prepare('UPDATE users SET email=? WHERE user_id=?').run(normalizeEmail(confirmed.new_email),current.user_id);store.run('DELETE FROM pending_email WHERE user_id=? AND sandbox_id=?',current.user_id,preflight.sandboxId);identity.db.prepare('DELETE FROM account_email_reservations WHERE user_id=?').run(current.user_id);
+    // Flint revoked the old address's sessions. Keep only the browser that proved both inboxes.
+    await sessions.locks.locked(`customer-session:${preflight.sandboxId}:${current.user_id}`,async()=>{
+      identity.db.exec('BEGIN IMMEDIATE');
+      try{
+        identity.db.prepare('UPDATE users SET email=? WHERE user_id=?').run(normalizeEmail(confirmed.new_email),current.user_id);
+        identity.db.prepare('DELETE FROM sessions WHERE user_id=? AND session_hash<>?').run(current.user_id,c.get('session').session_hash);
+        sessions.resetVault(current);identity.db.prepare('DELETE FROM account_email_reservations WHERE user_id=?').run(current.user_id);identity.db.exec('COMMIT');
+      }catch(error){identity.db.exec('ROLLBACK');throw error;}
+    });
+    store.run('DELETE FROM pending_email WHERE user_id=? AND sandbox_id=?',current.user_id,preflight.sandboxId);
+    const rotated=identity.rotate(c.get('session'),current.user_id);cookie(c,rotated.token);c.set('session',rotated.session);c.set('user',identity.user(current.user_id));
+    await sessions.vault(user(c));
     flash(c,'email_changed',{email:confirmed.new_email});return finish(c,'/profile',{confirmed:true});
   });
   app.get('/profile/password',c=>page(c,'ac-profile-password',{}));
