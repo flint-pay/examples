@@ -53,15 +53,24 @@ export class Driver {
     const value = await page.locator('meta[name="csrf-token"], input[name="_csrf"]').first().evaluate(e => e.getAttribute('content') ?? (e as HTMLInputElement).value);
     invariant(typeof value === 'string' && value.length > 0, 'CSRF_MARKUP_MISSING'); return value;
   }
-  async job(page: Page, path: string, body?: any, options: { noCsrf?: boolean; action?: string; method?: string; headers?: Record<string, string> } = {}): Promise<{ status: number; body: any }> {
+  async job(page: Page, path: string, body?: any, options: { noCsrf?: boolean; action?: string; method?: string; headers?: Record<string, string>; initialStateDeadline?: number } = {}): Promise<{ status: number; body: any }> {
     const origin = new URL(page.url()).origin;
     invariant(Object.values(this.config.origins).includes(origin) && path.startsWith('/') && !path.startsWith('//'), 'BFF_ORIGIN_REQUIRED');
     const token = options.noCsrf ? undefined : await this.csrf(page);
     const response = await page.evaluate(async ({ path, body, token, options }) => {
-      const r = await fetch(path, { method: options.method ?? (body === undefined ? 'GET' : 'POST'), headers: { 'Accept': 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(token ? { 'X-CSRF-Token': token } : {}), ...(options.action ? { 'X-Action-ID': options.action } : {}), ...(options.headers ?? {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-      const text = await r.text(); let value; try { value = JSON.parse(text); } catch { value = null; }
-      return { status: r.status, body: value };
+      const remaining = options.initialStateDeadline === undefined ? undefined : options.initialStateDeadline - Date.now();
+      if (remaining !== undefined && remaining <= 0) return { status: 0, body: null };
+      const signal = remaining === undefined ? undefined : AbortSignal.timeout(remaining);
+      try {
+        const r = await fetch(path, { method: options.method ?? (body === undefined ? 'GET' : 'POST'), headers: { 'Accept': 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(token ? { 'X-CSRF-Token': token } : {}), ...(options.action ? { 'X-Action-ID': options.action } : {}), ...(options.headers ?? {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), ...(signal ? { signal } : {}) });
+        const text = await r.text(); let value; try { value = JSON.parse(text); } catch { value = null; }
+        return { status: r.status, body: value };
+      } catch (error) {
+        if (signal?.aborted) return { status: 0, body: null };
+        throw error;
+      }
     }, { path, body, token, options });
+    if (options.initialStateDeadline !== undefined) invariant(Date.now() < options.initialStateDeadline, 'CHECKOUT_STATE_INVALID');
     const state = response.body?.state;
     if (state?.order?.order_id) await this.trackOrder(origin === this.sf('B') ? 'B' : 'A', state.order.order_id);
     return response;
@@ -167,16 +176,24 @@ export class Driver {
     await page.waitForURL(/\/checkout\/[^/]+$/);
     const ref = new URL(page.url()).pathname.split('/')[2];
     const c: Checkout = { page, ref, sandbox, origin: this.sf(sandbox), orderId: '', state: null };
-    await this.state(c);
+    await this.state(c, { initial: true });
     await page.getByTestId('sf-contact-name').fill('Acceptance buyer');
     const email = page.getByTestId('sf-contact-email');
     if (await email.isEditable()) { await email.fill(this.fixtures.buyers[buyer].email); await email.blur(); }
     return c;
   }
-  async state(c: Checkout): Promise<any> {
-    const response = await this.job(c.page, `/checkout/${c.ref}/state`);
-    invariant(response.status === 200 && response.body?.state?.order?.order_id, 'CHECKOUT_STATE_INVALID');
-    c.state = response.body.state; c.orderId = c.state.order.order_id; return c.state;
+  async state(c: Checkout, options: { initial?: boolean } = {}): Promise<any> {
+    // Boot's timezone job can hold the order lock longer than its 10-second read wait.
+    // Only initial reads may repeat that exact conflict; a fresh 200 remains required.
+    const deadline = Date.now() + 30_000;
+    const attempts = options.initial ? 3 : 1;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      if (options.initial) invariant(Date.now() < deadline, 'CHECKOUT_STATE_INVALID');
+      const response = await this.job(c.page, `/checkout/${c.ref}/state`, undefined, options.initial ? { initialStateDeadline: deadline } : {});
+      if (options.initial && response.status === 409 && response.body?.error?.code === 'CHECKOUT_PAYMENT_RESOLVING' && attempt + 1 < attempts && Date.now() < deadline) continue;
+      invariant(response.status === 200 && response.body?.state?.order?.order_id, 'CHECKOUT_STATE_INVALID');
+      c.state = response.body.state; c.orderId = c.state.order.order_id; return c.state;
+    }
   }
   async registerGiftChallenge(page:Page,orderId:string,origin:string):Promise<string>{
     await syncAppAudit(this);const url=await this.operator.challengeUrlFor(orderId,origin);

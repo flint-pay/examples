@@ -2,6 +2,113 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { Page } from '@playwright/test';
 import { Driver } from '../../support/driver.ts';
+import type { Checkout } from '../../support/driver.ts';
+
+type StateResponse = { status: number; body: any };
+const resolving: StateResponse = { status: 409, body: { error: { code: 'CHECKOUT_PAYMENT_RESOLVING' }, state: { order: { order_id: 'conflict-projection' } } } };
+const ready: StateResponse = { status: 200, body: { state: { order: { order_id: 'authoritative-order' } } } };
+function stateDriver(reply: (request: number) => Promise<StateResponse>) {
+  const checkout: Checkout = { page: {} as Page, ref: 'test-checkout', origin: 'https://store.example.invalid', sandbox: 'A', orderId: '', state: null };
+  let requests = 0;
+  const driver = { job: async (page: Page, path: string, body?: unknown) => {
+    assert.equal(page, checkout.page); assert.equal(path, '/checkout/test-checkout/state');
+    assert.equal(body, undefined, 'state recovery must only read');
+    return reply(++requests);
+  } } as unknown as Driver;
+  return { checkout, driver, requests: () => requests };
+}
+
+test('initial state repeats only the resolving conflict and requires a fresh authoritative 200', async () => {
+  const f = stateDriver(async request => {
+    await new Promise(resolve => setTimeout(resolve, 5));
+    return request === 1 ? resolving : ready;
+  });
+  const state = await Driver.prototype.state.call(f.driver, f.checkout, { initial: true });
+  assert.equal(state, ready.body.state); assert.equal(f.checkout.orderId, 'authoritative-order');
+  assert.equal(f.requests(), 2);
+});
+
+for (const response of [
+  { status: 409, body: { error: { code: 'PAYMENT_ATTEMPT_IN_PROGRESS' } } },
+  { status: 503, body: { error: { code: 'CHECKOUT_PAYMENT_RESOLVING' } } },
+  { status: 401, body: { error: { code: 'SESSION_ENDED' } } },
+  { status: 409, body: null },
+]) test(`initial state refuses unexpected ${response.status}/${response.body?.error?.code ?? 'no error code'} without retrying`, async () => {
+  const f = stateDriver(async () => response);
+  await assert.rejects(() => Driver.prototype.state.call(f.driver, f.checkout, { initial: true }), { code: 'CHECKOUT_STATE_INVALID' });
+  assert.equal(f.requests(), 1); assert.equal(f.checkout.state, null); assert.equal(f.checkout.orderId, '');
+});
+
+test('initial state stops after three resolving responses without accepting their projections', async () => {
+  const f = stateDriver(async () => resolving);
+  await assert.rejects(() => Driver.prototype.state.call(f.driver, f.checkout, { initial: true }), { code: 'CHECKOUT_STATE_INVALID' });
+  assert.equal(f.requests(), 3); assert.equal(f.checkout.state, null); assert.equal(f.checkout.orderId, '');
+});
+
+for (const phase of ['fetch', 'body']) test(`initial state aborts a stalled ${phase} within the shared deadline without late ledger writes`, async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 });
+  t.mock.method(AbortSignal, 'timeout', (milliseconds: number) => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), milliseconds); return controller.signal;
+  });
+  let secondStarted!: () => void;
+  const started = new Promise<void>(resolve => { secondStarted = resolve; });
+  let requests = 0, aborted = 0;
+  let resolveLate!: (value: any) => void;
+  t.mock.method(globalThis, 'fetch', async (path: string, options: RequestInit) => {
+    assert.equal(path, '/checkout/test-checkout/state'); assert.equal(options.method, 'GET');
+    if (++requests === 1) {
+      t.mock.timers.tick(20_000);
+      return new Response(JSON.stringify({ error: { code: 'CHECKOUT_PAYMENT_RESOLVING' } }), { status: 409 });
+    }
+    const stalled = new Promise<any>((resolve, reject) => {
+      resolveLate = resolve;
+      options.signal!.addEventListener('abort', () => { aborted++; reject(options.signal!.reason); }, { once: true });
+    });
+    secondStarted();
+    return phase === 'fetch' ? stalled : { status: 200, text: () => stalled };
+  });
+  const tracked: string[] = [];
+  const f = stateDriver(async () => { throw new Error('must use the actual job'); });
+  f.checkout.page = {
+    url: () => f.checkout.origin,
+    evaluate: (fn: (args: any) => Promise<unknown>, args: any) => fn(args),
+  } as unknown as Page;
+  Object.assign(f.driver, {
+    job: Driver.prototype.job,
+    config: { origins: { storefrontA: f.checkout.origin } },
+    csrf: async () => 'synthetic-csrf', sf: () => f.checkout.origin,
+    trackOrder: async (_sandbox: string, orderId: string) => { tracked.push(orderId); },
+  });
+  const reading = Driver.prototype.state.call(f.driver, f.checkout, { initial: true });
+  const rejected = assert.rejects(reading, { code: 'CHECKOUT_STATE_INVALID' });
+  await started;
+  t.mock.timers.tick(10_000);
+  await rejected;
+  assert.equal(aborted, 1); assert.equal(requests, 2);
+  resolveLate(phase === 'fetch' ? new Response(JSON.stringify(ready.body)) : JSON.stringify(ready.body));
+  await Promise.resolve();
+  assert.deepEqual(tracked, []); assert.equal(f.checkout.state, null); assert.equal(f.checkout.orderId, '');
+});
+
+test('initial state refuses another request when the shared deadline has expired', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 0 });
+  const f = stateDriver(async () => { t.mock.timers.tick(30_000); return resolving; });
+  await assert.rejects(() => Driver.prototype.state.call(f.driver, f.checkout, { initial: true }), { code: 'CHECKOUT_STATE_INVALID' });
+  assert.equal(f.requests(), 1);
+});
+
+test('initial state rejects a 200 without an authoritative order ID after resolving', async () => {
+  const f = stateDriver(async request => request === 1 ? resolving : { status: 200, body: { state: { order: {} } } });
+  await assert.rejects(() => Driver.prototype.state.call(f.driver, f.checkout, { initial: true }), { code: 'CHECKOUT_STATE_INVALID' });
+  assert.equal(f.requests(), 2); assert.equal(f.checkout.state, null); assert.equal(f.checkout.orderId, '');
+});
+
+test('ordinary state reads still reject resolving immediately', async () => {
+  const f = stateDriver(async () => resolving);
+  await assert.rejects(() => Driver.prototype.state.call(f.driver, f.checkout), { code: 'CHECKOUT_STATE_INVALID' });
+  assert.equal(f.requests(), 1); assert.equal(f.checkout.state, null); assert.equal(f.checkout.orderId, '');
+});
 
 type Field = { tagName: string; type?: string; value: string };
 function formPage() {
