@@ -22,7 +22,7 @@ async function fixture(d: Driver, name: string): Promise<any> {
   const v = d.fixtures.values[name] ?? d.created.get(name); invariant(v, 'SCENARIO_FIXTURE_REQUIRED'); return v;
 }
 export async function namedPlan(d: Driver, name: string, refs: Record<string, string> = {}): Promise<void> {
-  const steps = d.fixtures.values.plans?.[name]; invariant(Array.isArray(steps) && steps.length, 'OPERATOR_PLAN_REQUIRED');
+  const steps = d.fixtures.values.plans?.[name]; invariant(Array.isArray(steps) && (steps.length > 0 || name === 'prepareDeletion'), 'OPERATOR_PLAN_REQUIRED');
   const replace = (v: any): any => typeof v === 'string' && v.startsWith('$') ? refs[v.slice(1)] ?? v : Array.isArray(v) ? v.map(replace) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, replace(x)])) : v;
   for (const step of steps) await d.operator.execute(replace(step));
 }
