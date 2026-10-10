@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Client,SdkError } from '@flintpay/node';
-import type { CreateCheckoutSessionRequestInput, CreateInvoiceRequestInput, CreateOrderRequestInput, CreateSubscriptionPlanRequestInput, Invoice, IssueInvoiceResult, Order, UpdateSubscriptionRequestInput } from '@flintpay/node';
+import type { CreateCheckoutSessionRequestInput, CreateInvoiceRequestInput, CreateOrderRequestInput, CreateSubscriptionPlanRequestInput, Invoice, InvoicePaymentPolicyInput, IssueInvoiceResult, Order, UpdateSubscriptionRequestInput } from '@flintpay/node';
 import { Ledger } from '../../support/ledger.ts';
 import { Operator, operations } from '../../support/operator.ts';
 import type { VerifiedClients } from '../../support/sdk.ts';
@@ -33,7 +33,7 @@ test('invoice fixture creates a taxed order before drafting and replays interrup
     tax: { enabled: true, location: { address_source: 'provided', address_type: 'billing_address', address: { line1: '11 Wall Street', city: 'New York', state: 'NY', postal_code: '10005', country: 'US' } } }, metadata: { e2e_run: run },
   };
   const invoiceInput: CreateInvoiceRequestInput = {
-    order_id: order.order_id, collection: { mode: 'buyer_initiated', payment_policy: { enabled_payment_options: ['card', 'ach_debit', 'affirm'] } },
+    order_id: order.order_id, collection: { mode: 'buyer_initiated', payment_policy: { enabled_payment_options: ['card'] } },
     payment_due: { type: 'absolute', due_at: '2000-01-15T00:00:00.000Z' }, recipient_email: 'buyer@example.invalid', metadata: { e2e_run: run },
   };
   const calls: { method: string; path: string; key: string | null; body: unknown }[] = [];
@@ -81,6 +81,44 @@ test('invoice fixture creates a taxed order before drafting and replays interrup
   await assert.rejects(() => client.orders.updateWithResponse(order.order_id, { tax: orderInput.tax }), { code: 'INVOICE_LOCKED_ORDER_FINANCIALS' });
   assert.equal('orders.update' in operations, false);
 }));
+
+test('invoice fixtures use card by default and request only the explicit provider policy', async t => {
+  type Options = InvoicePaymentPolicyInput['enabled_payment_options'];
+  const cases: { name: string; options?: Options; expected: Options; merchantOptions: Options }[] = [
+    { name: 'card works without ACH enabled', expected: ['card'], merchantOptions: ['card', 'apple_pay', 'google_pay', 'affirm'] },
+    { name: 'Affirm does not request ACH', options: ['card', 'affirm'], expected: ['card', 'affirm'], merchantOptions: ['card', 'affirm'] },
+    { name: 'ACH does not request Affirm', options: ['card', 'ach_debit'], expected: ['card', 'ach_debit'], merchantOptions: ['card', 'ach_debit'] },
+  ];
+  for (const item of cases) await t.test(item.name, async () => setup(async ledger => {
+    const zero = { amount: '0', currency: 'USD' }, total = { amount: '12000', currency: 'USD' };
+    const order: Order = {
+      order_id: 'ord_UNIT_FAKE', buyer_actions: [], status: 'open', payment_status: 'unpaid', refund_status: 'none', line_items: [],
+      pricing_amounts: { charge_money: zero, discount_money: zero, requested_tip_money: zero, subtotal_money: total, tax_money: zero, total_money: total },
+      settlement_amounts: { balance_money: total, outstanding_money: total, paid_money: zero, credit_money: zero, net_collected_money: zero, refunded_money: zero, settled_tip_money: zero },
+      tax: { enabled: true, mode: 'automatic', status: 'calculated', taxability_reason: 'standard_rated' },
+    };
+    const invoiceFixture: Invoice = { invoice_id: 'inv_UNIT_FAKE', order_id: order.order_id, merchant_id: config.pins.A.merchantId, status: 'draft', version: '1', collection_block_status: 'none', credit_money: zero, currently_due_money: zero, outstanding_money: total, paid_money: zero, refunded_money: zero, refund_status: 'none', is_overdue: false, late_fees: [], reminders_paused: false };
+    let policy: InvoicePaymentPolicyInput | undefined;
+    const client = new Client({ baseUrl: 'https://api.staging.withflintpay.com', apiKey: 'flint_test_PLACEHOLDER', maxAttempts: 1, transport: async (input, init) => {
+      const path = new URL(String(input)).pathname, body = JSON.parse(String(init!.body));
+      assert.equal(init!.method, 'POST');
+      assert.ok(new Headers(init!.headers).get('Idempotency-Key'));
+      if (path === '/v1/orders') return Response.json({ data: order });
+      if (path === '/v1/invoices') {
+        policy = body.collection.payment_policy;
+        assert.deepEqual(policy?.enabled_payment_options, item.expected);
+        assert.ok(policy?.enabled_payment_options.every(option => item.merchantOptions.includes(option)), 'invoice options must be enabled for merchant checkout');
+        return Response.json({ data: { ...invoiceFixture, payment_policy: policy } });
+      }
+      assert.equal(path, '/v1/invoices/inv_UNIT_FAKE/issue');
+      return Response.json({ data: { invoice: { ...invoiceFixture, status: 'open', payment_policy: policy } } });
+    } });
+    const clients = { config, writable: async () => client } as unknown as VerifiedClients;
+    const invoice = await new Operator(clients, ledger, {} as Fixtures).issueInvoice('policy-invoice', 'cus_UNIT_FAKE', 'buyer@example.invalid', item.options);
+    assert.deepEqual(invoice.payment_policy.enabled_payment_options, item.expected);
+    assert.deepEqual(Object.values(ledger.state.actions).map(action => action.operation), ['orders.create', 'invoices.create', 'invoices.issue']);
+  }));
+});
 
 test('invoice draft refuses absent, unowned or foreign-sandbox source orders before SDK calls', async () => setup(async ledger => {
   let calls = 0;
