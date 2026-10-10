@@ -11,7 +11,7 @@ type State = { run: string;giftChallengeTrippedAt?:number; resources: Resource[]
 export function redactJournalResponse(value: any): any {
   if (Array.isArray(value)) return value.map(redactJournalResponse);
   if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(Object.entries(value).filter(([key]) => !/^(secret|refresh_token|checkout_auth_token|client_secret|code|gift_card_code|recipient_token|recipient_access_token|token|proof|customer_session_secret|checkout_session_secret|checkout_access|url|[a-z_]+_url)$/.test(key)).map(([key, item]) => [key, redactJournalResponse(item)]));
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !/^(secret|refresh_token|checkout_auth_token|checkout_session_id|superseding_checkout_session_id|recovery_payment_attempt_id|client_secret|code|gift_card_code|recipient_token|recipient_access_token|token|proof|customer_session_secret|checkout_session_secret|checkout_access|url|[a-z_]+_url)$/.test(key)).map(([key, item]) => [key, redactJournalResponse(item)]));
 }
 export class Ledger {
   state: State;
