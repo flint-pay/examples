@@ -36,3 +36,12 @@ export function assertOneCharge(order: Record<string, any>, attempts: Record<str
   invariant(ids.every(id => typeof id === 'string') && new Set(ids).size === count, 'SETTLED_PAYMENT_COUNT');
   invariant(order.payment_status === 'paid' && money(order.settlement_amounts.outstanding_money).amount === '0', 'ORDER_NOT_SETTLED');
 }
+export function assertTrialSetup(order: Record<string, any>, attempts: Record<string, any>[], browserConfirmSetup: boolean): void {
+  invariant(attempts.length === 1, 'TRIAL_SETUP_ATTEMPT_COUNT');
+  const attempt = attempts[0];
+  invariant(attempt.mode === 'setup' && attempt.status === 'succeeded' && attempt.is_resumable === false && !browserConfirmSetup, 'TRIAL_MUST_USE_PUBLIC_SETUP_COLLECTION');
+  // A completed setup is in history; active_payment_attempt is recovery state.
+  invariant(!order.active_payment_attempt, 'TRIAL_SETUP_STILL_ACTIVE');
+  invariant(!order.payment_intent_ids?.length && !attempt.payment_intents?.length, 'TRIAL_MUST_NOT_CHARGE');
+  assertOneCharge(order, attempts, 0);
+}
