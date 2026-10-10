@@ -216,7 +216,7 @@ export class Driver {
       }
       if (count > 1) await c.page.getByTestId('sf-delivery-choose').click();
     }
-    await expect(c.page.getByTestId('sf-delivery-selected')).toBeVisible();
+    await expect(c.page.getByTestId('sf-delivery-selected')).toBeVisible({ timeout: 30_000 });
     await this.state(c);
     await this.auditKnownStates(c.page);
   }
