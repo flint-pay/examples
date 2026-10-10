@@ -162,7 +162,7 @@ export class Operator {
     let lookups=0,tripped=false;
     for(let index=0;index<3&&!tripped;index++){
       const name=`challenge-probe-${++this.giftChallengeProbeSequence}`,reviewAt=new Date(this.runDate()+86400000).toISOString();
-      const order=await this.execute({name:`${name}-order`,sandbox:'A',operation:'orders.create',args:[{line_items:[{name:'Gift card verification probe',quantity:'1',unit_price_money:{amount:'200',currency:'USD'},fulfillment:{requirement:'none'}}],metadata:{e2e_run:this.ledger.run}}],creates:[{path:'order_id',type:'order',cleanup:'review',reviewAt}],purpose:'gift-challenge-probe'});
+      const order=await this.execute({name:`${name}-order`,sandbox:'A',operation:'orders.create',args:[{line_items:[{name:'Gift card verification probe',quantity:'1',unit_price_money:{amount:'200',currency:'USD'},fulfillment:{requirement:'none'},tax:{taxable:false}}],metadata:{e2e_run:this.ledger.run}}],creates:[{path:'order_id',type:'order',cleanup:'review',reviewAt}],purpose:'gift-challenge-probe'});
       const launched=await this.execute({name:`${name}-session`,sandbox:'A',operation:'checkoutSessions.create',args:[{order_id:order.data.order_id,surface:'embedded',page_origin:origin}],creates:[{path:'checkout_session.checkout_session_id',type:'checkout_session',cleanup:'checkout_session',reviewAt}],purpose:'gift-challenge-probe'});
       const sessionId=launched.data.checkout_session.checkout_session_id,secret=launched.data.checkout_access.checkout_auth_token;
       invariant(sessionId&&secret,'CHALLENGE_PROBE_AUTHORITY_REQUIRED');
