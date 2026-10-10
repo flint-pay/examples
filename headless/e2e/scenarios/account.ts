@@ -117,7 +117,7 @@ export const account: Record<string, Scenario> = {
     invariant(embedded.reused_existing === false && embedded.checkout_session.surface === 'embedded' && hosted.checkout_session.checkout_session_id !== embedded.checkout_session.checkout_session_id, 'HOSTED_IDLE_NOT_REPLACED');
     const conflict = await d.operator.issueInvoice('conflict-invoice', d.fixtures.buyers.b1.customerId!, d.fixtures.buyers.b1.email);
     const pending = await hostedInvoiceLaunch(d, 'conflict-hosted', conflict.invoice_id); await beginHostedAuthentication(d, 'conflict-hosted-pay', pending);
-    await d.goto(page, d.config.origins.accountA, `/invoices/${conflict.invoice_id}/pay`); await expect(page.getByTestId('ac-invoice-pay')).toHaveAttribute('data-state', 'surface_conflict');
+    await d.goto(page, d.config.origins.accountA, `/invoices/${conflict.invoice_id}/pay`); await expect(page.getByTestId('ac-payment')).toHaveAttribute('data-state', 'surface_conflict');
     await accountPayment(d, invoice.invoice_id, 'card', 'invoices', true);
     const value = await d.operator.clients.clients.A.invoices.get(invoice.invoice_id); invariant(value.status === 'paid', 'INVOICE_NOT_PAID');
     assertOneCharge(await d.operator.clients.clients.A.orders.get(value.order_id), (await d.operator.clients.clients.A.orders.listPaymentAttempts(value.order_id)).data);
@@ -236,8 +236,23 @@ export const account: Record<string, Scenario> = {
       await d.track('A', 'deletion_request', request.customer_deletion_request_id, 'review');
       if (buyer === 'd') await namedPlan(d, 'prepareDeletion', { customerId: d.fixtures.buyers.d.customerId! });
       await d.operator.execute({ name: `delete-${buyer}-decision`, sandbox: 'A', operation: 'customerDeletionRequests.resolve', args: [request.customer_deletion_request_id, { decision: buyer === 'd' ? 'approve' : 'reject' }], creates: [], purpose: 'deletion-acceptance' });
-      await page.reload(); await expect(page.getByTestId('ac-deletion-status').first()).toHaveAttribute('data-state', buyer === 'd' ? 'completed' : 'rejected', { timeout: 60_000 });
-      if (buyer === 'd') { await d.form(page, '/sign-out'); await d.goto(page, d.config.origins.accountA, '/sign-in'); await d.form(page, '/sign-in', { email: d.fixtures.buyers.d.email, password: d.fixtures.buyers.d.password }); await expect(page.getByRole('alert')).toContainText('closed'); }
+      if (buyer === 'd') {
+        const customerId = d.fixtures.buyers.d.customerId!, requestId = request.customer_deletion_request_id;
+        // Approval revokes the buyer's session, so completion is read through merchant authority.
+        await expect.poll(async () => {
+          const deletion = await d.operator.clients.clients.A.customers.getDeletionRequest(customerId, requestId);
+          return deletion.customer_id === customerId && deletion.customer_deletion_request_id === requestId && deletion.status === 'completed' && typeof deletion.resolved_at === 'string' && Number.isFinite(Date.parse(deletion.resolved_at));
+        }, { timeout: 60_000 }).toBe(true);
+        await page.reload();
+        const assertSignIn = () => { const url = new URL(page.url()); invariant(url.origin === d.config.origins.accountA && url.pathname === '/sign-in', 'DELETION_SESSION_NOT_ENDED'); };
+        assertSignIn();
+        const credentials = { email: d.fixtures.buyers.d.email, password: d.fixtures.buyers.d.password };
+        // A first sign-in discovers remote closure when creating a replacement session and records it locally.
+        await d.form(page, '/sign-in', credentials); assertSignIn();
+        await d.form(page, '/sign-in', credentials); await expect(page.getByRole('alert')).toContainText('closed');
+      } else {
+        await page.reload(); await expect(page.getByTestId('ac-deletion-status').first()).toHaveAttribute('data-state', 'rejected', { timeout: 60_000 });
+      }
     }
     return ['DELETION_PENDING_DUPLICATE_REJECT_APPROVE_CLOSED'];
   },
