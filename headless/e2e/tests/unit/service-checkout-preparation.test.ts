@@ -1,15 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import type { Response } from '@playwright/test';
 import type { WebhookEvent } from '@flintpay/node';
 import type { Driver, Checkout } from '../../support/driver.ts';
 import { storefront } from '../../scenarios/storefront.ts';
 import { crossApp } from '../../scenarios/cross-app.ts';
 
 type State = { ref: string; billed: boolean; consent: boolean; verified: boolean; saved: boolean; paid: boolean; fields: Record<string, string> };
-function harness(billingNeeded = true, savingCards = true) {
+type Verification = { nativeStatus?: number; nativeCode?: string; nativeCompletion?: Promise<void>; nativeStarted?: () => void; requestStatus?: number; confirmStatus?: number; codes?: string[]; authorized?: boolean };
+function harness(billingNeeded = true, savingCards = true, verification: Verification = {}) {
   const events: string[] = []; let sequence = 0, savedCard = false;
   const states: State[] = [];
-  type Page = { current: State; completionLoaded: boolean; getByTestId: (id: string) => Locator; locator: (selector: string) => Locator; getByText: (text: string) => Locator; reload: () => Promise<void> };
+  type Page = { current: State; completionLoaded: boolean; nativeResponse?: (response: Response) => void; getByTestId: (id: string) => Locator; locator: (selector: string) => Locator; getByText: (text: string) => Locator; reload: () => Promise<void>; waitForResponse: (predicate: (response: Response) => boolean, options: { timeout: number }) => Promise<Response> };
   class Locator {
     readonly page: Page; readonly id: string;
     constructor(page: Page, id: string) { this.page = page; this.id = id; }
@@ -43,13 +45,17 @@ function harness(billingNeeded = true, savingCards = true) {
     }
   }
   function page(): Page {
-    const p = {
+    const p: Page = {
       current: undefined as unknown as State,
       completionLoaded: false,
       getByTestId: (id: string) => new Locator(p, id),
       locator: (selector: string) => { assert.equal(selector, '[data-testid^="sf-saved-method-"]'); return new Locator(p, 'saved'); },
       getByText: (text: string) => { assert.equal(text, 'Payment confirmed by Flint'); return new Locator(p, 'webhook'); },
       reload: async () => { p.current.consent = false; events.push(`reload:${p.current.ref}`); },
+      waitForResponse: (predicate, options) => {
+        assert.equal(options.timeout, 60_000);
+        return new Promise(resolve => { p.nativeResponse = response => { assert.equal(predicate(response), true); resolve(response); }; });
+      },
     };
     return p;
   }
@@ -66,13 +72,25 @@ function harness(billingNeeded = true, savingCards = true) {
       assert.equal(product, 'brewing-class'); if (sandbox) { assert.equal(sandbox, 'B'); assert.equal(buyer, 'b1b'); }
       const s: State = { ref: `chk_UNIT_${++sequence}`, billed: !billingNeeded, consent: false, verified: false, saved: false, paid: false, fields: {} };
       p.current = s; states.push(s); events.push(`checkout:${s.ref}`);
+      if (p.nativeResponse) {
+        const response = {
+          url: () => `${d.sf()}/checkout/${s.ref}/verification`, status: () => verification.nativeStatus ?? 409,
+          request: () => ({ method: () => 'POST', postDataJSON: () => ({ purpose: 'use_saved_payment_methods', channel: 'auto', email: d.fixtures.buyers.b1b.email }) }),
+          json: async () => { verification.nativeStarted?.(); await verification.nativeCompletion; events.push(`recognition:${s.ref}`); return { error: { code: verification.nativeCode ?? 'CUSTOMER_VERIFICATION_NOT_SENT' } }; },
+        } as unknown as Response;
+        p.nativeResponse(response); delete p.nativeResponse;
+      }
       return { page: p, ref: s.ref, origin: d.sf(), orderId: `ord_UNIT_${sequence}` } as unknown as Checkout;
     },
-    state: async (c: Checkout) => { const p = c.page as unknown as Page; assert.equal(p.current.billed, true); events.push(`state:${c.ref}`); },
-    email: async (buyer: string, _after: Date, family: string) => { assert.equal(buyer, 'b1b'); assert.equal(family, 'checkout_verification'); return { codes: ['246810'] }; },
+    state: async (c: Checkout) => { const p = c.page as unknown as Page; assert.equal(p.current.billed, true); events.push(`state:${c.ref}`); return { session: { save_payment_method_offered: true, save_payment_method_requires_verification: !p.current.verified || verification.authorized === false } }; },
+    email: async (buyer: string, _after: Date, family: string) => { assert.equal(buyer, 'b1b'); assert.equal(family, 'checkout_verification'); return { codes: verification.codes ?? ['246810'] }; },
     job: async (p: Page, path: string, body: { purpose?: string; code?: string }) => {
       assert.ok(path.startsWith(`/checkout/${p.current.ref}/verification`));
-      if (path.endsWith('/confirm') && body.code === '246810') p.current.verified = true;
+      if (body.purpose === 'save_payment_method') {
+        assert.ok(events.includes(`recognition:${p.current.ref}`), 'native recognition must finish before requesting a save code');
+        events.push(`save-code:${p.current.ref}`); return { status: verification.requestStatus ?? 200 };
+      }
+      if (path.endsWith('/confirm') && body.code === '246810') { p.current.verified = verification.confirmStatus === undefined || verification.confirmStatus === 200; return { status: verification.confirmStatus ?? 200 }; }
       return { status: body.code === '000000' ? 400 : body.code === '999999' ? 503 : 200 };
     },
     form: async (p: Page, path: string) => { assert.equal(path, `/checkout/${p.current.ref}/verification/confirm`); p.current.verified = true; },
@@ -104,8 +122,42 @@ test('SF-24 prepares billing for all three service checkouts before payment', as
 test('SF-24 renews save-card consent after verification reload even without billing', async () => {
   const { driver, events } = harness(false);
   await storefront['SF-24'](driver);
-  assert.deepEqual(events.filter(e => e.endsWith(':chk_UNIT_1')), ['checkout:chk_UNIT_1', 'consent:chk_UNIT_1', 'reload:chk_UNIT_1', 'consent:chk_UNIT_1', 'pay:chk_UNIT_1', 'settled:chk_UNIT_1']);
+  assert.deepEqual(events.filter(e => e.endsWith(':chk_UNIT_1')), ['checkout:chk_UNIT_1', 'recognition:chk_UNIT_1', 'consent:chk_UNIT_1', 'save-code:chk_UNIT_1', 'state:chk_UNIT_1', 'reload:chk_UNIT_1', 'consent:chk_UNIT_1', 'pay:chk_UNIT_1', 'settled:chk_UNIT_1']);
 });
+
+test('SF-24 waits for the native recognition response body before requesting a save code', async () => {
+  let release!: () => void, started!: () => void;
+  const nativeCompletion = new Promise<void>(resolve => { release = resolve; });
+  const nativeStarted = new Promise<void>(resolve => { started = resolve; });
+  const { driver, events } = harness(false, true, { nativeCompletion, nativeStarted: started });
+  const execution = storefront['SF-24'](driver);
+  await nativeStarted;
+  assert.deepEqual(events, ['checkout:chk_UNIT_1']);
+  release(); await execution;
+  assert.ok(events.indexOf('recognition:chk_UNIT_1') < events.indexOf('save-code:chk_UNIT_1'));
+});
+
+test('SF-24 accepts successful native recognition before requesting its save code', async () => {
+  const { driver, events } = harness(false, true, { nativeStatus: 200 });
+  await storefront['SF-24'](driver);
+  assert.ok(events.includes('save-code:chk_UNIT_1'));
+});
+
+for (const [name, verification, code] of [
+  ['unexpected native failure', { nativeCode: 'PAYMENT_ATTEMPT_IN_PROGRESS' }, 'NATIVE_RECOGNITION_FAILED'],
+  ['rejected save-code request', { requestStatus: 409 }, 'SAVE_CARD_VERIFICATION_REQUEST_FAILED'],
+  ['missing delivered code', { codes: [] }, 'EMAIL_CODE_AMBIGUOUS'],
+  ['ambiguous delivered codes', { codes: ['246810', '135790'] }, 'EMAIL_CODE_AMBIGUOUS'],
+  ['rejected actual-code confirmation', { confirmStatus: 400 }, 'SAVE_CARD_VERIFICATION_CONFIRM_FAILED'],
+  ['missing saved-card authorization', { authorized: false }, 'SAVE_CARD_AUTHORIZATION_REQUIRED'],
+] as const) {
+  test(`SF-24 stops before paying after ${name}`, async () => {
+    const { driver, events } = harness(false, true, verification as Verification);
+    await assert.rejects(storefront['SF-24'](driver), { code });
+    assert.equal(events.some(event => event.startsWith('pay:')), false);
+    assert.equal(events.some(event => event.startsWith('reload:')), false);
+  });
+}
 
 test('SF-26X correlates payload-free event metadata before reloading its owned completion', async () => {
   const { driver, events } = harness(true, false);
