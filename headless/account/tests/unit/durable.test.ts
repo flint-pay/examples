@@ -16,6 +16,23 @@ test('logical actions survive restart and reject reuse with a different request'
     await assert.rejects(store.mutate('user:example:resource','update',{name:'Changed'},async()=>({}), 'example-nonce'),{code:'ACTION_BODY_MISMATCH'});
   }finally{store.close();rmSync(dir,{recursive:true,force:true});}
 });
+test('a new payment-method nonce applies a repeated selection after an intervening selection',async()=>{
+  const store=new Store(':memory:'),selections:string[]=[],keys:string[]=[];let selected='pm_recovery_example';
+  const select=(method:string,nonce?:string)=>store.mutate('user:subscription:example','payment-method',{payment_method_id:method},async key=>{
+    selected=method;selections.push(method);keys.push(key);return {payment_method_id:method};
+  },nonce);
+  try{
+    const first=await select('pm_recovery_example');await select('pm_declining_example');
+    assert.deepEqual(await select('pm_recovery_example'),first);
+    assert.equal(selected,'pm_declining_example');assert.equal(selections.length,2);
+    const recovered=await select('pm_recovery_example','ac08-recovery-payment-method');
+    assert.equal(selected,'pm_recovery_example');assert.equal(recovered.payment_method_id,selected);
+    assert.deepEqual(selections,['pm_recovery_example','pm_declining_example','pm_recovery_example']);
+    assert.equal(new Set(keys).size,3);
+    assert.deepEqual(await select('pm_recovery_example','ac08-recovery-payment-method'),recovered);
+    assert.equal(selections.length,3);
+  }finally{store.close();}
+});
 test('independent SQLite connections serialize the same resource',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'account-lock-')),path=join(dir,'local.sqlite'),a=new Store(path),b=new Store(path);let active=0,max=0;
   try{await Promise.all([a,b].map(store=>store.locked('same-resource',async assertOwnership=>{active++;max=Math.max(max,active);await new Promise(resolve=>setTimeout(resolve,35));assertOwnership();active--;})));assert.equal(max,1);}finally{a.close();b.close();rmSync(dir,{recursive:true,force:true});}
