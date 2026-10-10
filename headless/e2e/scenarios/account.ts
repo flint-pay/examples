@@ -162,8 +162,12 @@ export const account: Record<string, Scenario> = {
   'AC-08': async d => {
     const id = await fixture(d, 'pastDueSubscription'), after = new Date(); d.requireOwned('A', id); await namedPlan(d, 'makePastDue', { subscriptionId: id });
     await expect.poll(async () => (await d.operator.clients.clients.A.subscriptions.get(id)).status, { timeout: 15 * 60_000, intervals: [5000] }).toBe('past_due'); const mail = await d.email('b1', after, 'dunning'); const dunningLink = d.emailLink(mail, 'flint_account_link_relay');
-    const page = await signed(d); await page.goto(dunningLink); invariant(new URL(page.url()).pathname === `/subscriptions/${id}`, 'DUNNING_RESOURCE_DESTINATION'); await d.job(page, `/subscriptions/${id}/payment-method`, { payment_method_id: await fixture(d, 'alternateOffSessionMethod') });
+    const page = await signed(d); await page.goto(dunningLink); invariant(new URL(page.url()).pathname === `/subscriptions/${id}`, 'DUNNING_RESOURCE_DESTINATION');
+    const method = await fixture(d, 'alternateOffSessionMethod'); d.requireOwned('A', method);
+    const changed = await d.job(page, `/subscriptions/${id}/payment-method`, { payment_method_id: method }, { action: 'ac08-recovery-payment-method' });
+    invariant(changed.status === 200, 'SUBSCRIPTION_METHOD_CHANGE_FAILED');
     const subscriptions = d.operator.clients.clients.A.subscriptions;
+    await expect.poll(async () => (await subscriptions.get(id)).payment_method_id, { timeout: 60_000, message: 'SUBSCRIPTION_METHOD_NOT_CHANGED' }).toBe(method);
     const before: string[] = [];
     for await (const retry of subscriptions.listPaymentRetriesItems(id, { page_size: 100 })) before.push(retry.subscription_payment_retry_id);
     const responses = await Promise.all([

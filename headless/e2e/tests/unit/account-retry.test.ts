@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { SubscriptionPaymentRetry } from '@flintpay/node';
 import { assertExclusiveRetryStart, assertRetrySettlement } from '../../support/account-retry.ts';
+import { account } from '../../scenarios/account.ts';
+import type { Driver } from '../../support/driver.ts';
 
 const subscriptionId = 'sub_UNIT_EXAMPLE', retryId = 'retry_UNIT_EXAMPLE', customerId = 'cus_UNIT_EXAMPLE';
 const identity = { subscription_id: subscriptionId, subscription_payment_retry_id: retryId };
@@ -54,4 +56,59 @@ test('retry settlement requires the exact retry, subscription, customer, order a
   assert.throws(() => assertRetrySettlement(retry, subscriptionId, retryId, customerId, order, [{ ...attempts[0], status: 'failed' }]));
   assert.throws(() => assertRetrySettlement(retry, subscriptionId, retryId, customerId, order, [...attempts, { ...attempts[0], order_payment_attempt_id: 'attempt_UNIT_SECOND' }]), { code: 'SUCCEEDED_ATTEMPT_COUNT' });
   assert.throws(() => assertRetrySettlement(retry, subscriptionId, retryId, customerId, order, [{ ...attempts[0], payment_intents: [...attempts[0].payment_intents, { payment_intent_id: 'pi_UNIT_SECOND', status: 'succeeded' }] }]), { code: 'SETTLED_PAYMENT_COUNT' });
+});
+
+function recoveryHarness(responseStatus = 200) {
+  const goodMethod = 'pm_UNIT_RECOVERY', decliningMethod = 'pm_UNIT_DECLINING';
+  const actions: (string | undefined)[] = [];
+  let recoveryRequested = false, readbacks = 0, retryLists = 0;
+  const origin = 'https://account.example.invalid', retryReady = new Error('RECOVERY_READBACK_CONFIRMED');
+  let url = origin;
+  const page = { goto: async (destination: string) => { url = destination; }, url: () => url };
+  const subscriptions = {
+    get: async (id: string) => {
+      assert.equal(id, subscriptionId);
+      if (!recoveryRequested) return { status: 'past_due', payment_method_id: decliningMethod };
+      readbacks++;
+      // A successful write response alone does not establish the authoritative readback.
+      return { payment_method_id: readbacks === 1 ? decliningMethod : goodMethod };
+    },
+    listPaymentRetriesItems: async function* (id: string) {
+      assert.equal(id, subscriptionId); retryLists++;
+      assert.ok(readbacks >= 2);
+      throw retryReady;
+    },
+  };
+  const driver = {
+    fixtures: {
+      buyers: { b1: { verified: true } },
+      values: { pastDueSubscription: subscriptionId, alternateOffSessionMethod: goodMethod, plans: { makePastDue: [{ name: 'unit-renewal' }] } },
+    },
+    config: { origins: { accountA: origin } },
+    operator: { execute: async () => {}, clients: { clients: { A: { subscriptions } } } },
+    requireOwned: (sandbox: string, id: string) => { assert.equal(sandbox, 'A'); assert.ok([subscriptionId, goodMethod].includes(id)); },
+    email: async () => ({}), emailLink: () => `${origin}/subscriptions/${subscriptionId}`,
+    page: async () => page, login: async () => {},
+    job: async (_page: unknown, path: string, body: { payment_method_id: string }, options?: { action?: string }) => {
+      assert.equal(path, `/subscriptions/${subscriptionId}/payment-method`); assert.equal(body.payment_method_id, goodMethod);
+      recoveryRequested = true; actions.push(options?.action);
+      return { status: responseStatus, body: { subscription: { payment_method_id: goodMethod } } };
+    },
+  } as unknown as Driver;
+  return { driver, actions, retryReady, readbacks: () => readbacks, retryLists: () => retryLists };
+}
+
+test('AC08 uses a distinct recovery action and waits for authoritative readback before retrying', async () => {
+  const h = recoveryHarness();
+  await assert.rejects(account['AC-08'](h.driver), error => error === h.retryReady);
+  assert.deepEqual(h.actions, ['ac08-recovery-payment-method']);
+  assert.equal(h.readbacks(), 2); assert.equal(h.retryLists(), 1);
+});
+
+test('AC08 refuses a failed recovery response before reading or starting retries', async t => {
+  for (const status of [409, 500]) await t.test(String(status), async t => {
+    const h = recoveryHarness(status);
+    await assert.rejects(account['AC-08'](h.driver), { code: 'SUBSCRIPTION_METHOD_CHANGE_FAILED' });
+    assert.equal(h.readbacks(), 0); assert.equal(h.retryLists(), 0);
+  });
 });
