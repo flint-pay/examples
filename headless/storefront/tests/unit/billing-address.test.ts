@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { derivePaymentState, serverBlockers, taxLocationState } from '../../public/js/checkout-logic.js';
+import { buyerBillingCountry, derivePaymentState, serverBlockers, taxLocationState } from '../../public/js/checkout-logic.js';
 import { checkoutPage } from '../../src/views/pages/checkout.ts';
 import { browserMessages, copy, messages } from '../../src/copy.ts';
 import type { CheckoutData, CheckoutState, PageContext } from '../../src/views/types.ts';
@@ -116,4 +116,12 @@ test('billing copy has the agreed words, reaches the browser, and has no dashes'
   assert.equal(copy.checkout.billingHeading, 'Billing address');
   assert.equal(copy.checkout.saveBillingAddress, 'Save address');
   assert.equal(copy.checkout.taxPendingBilling, 'Calculated after you enter your billing address');
+});
+
+test('the buyer billing country comes only from the saved billing address', () => {
+  assert.equal(buyerBillingCountry(state()), '');
+  assert.equal(buyerBillingCountry(state({ billing: { country: 'US' } })), 'US');
+  const provided = state({ tax: { enabled: true, status: 'calculated', location: { address_source: 'provided', address_type: 'billing_address' } } });
+  assert.equal(buyerBillingCountry(provided), '');
+  for (const key of ['billing_country_missing', 'billing_country_unsupported'] as const) assert.equal(browserMessages[key], messages[key]);
 });

@@ -28,7 +28,7 @@
  * }} ClientAction
  */
 /** @typedef {{ kind: 'confirmation_token' | 'payment_method_token', value: string }} Credential */
-/** @typedef {{ name: string, email: string }} Billing */
+/** @typedef {{ name: string, email: string, country?: string }} Billing */
 /** @typedef {{ name: string, address: { line1?: string, line2?: string, city?: string, state?: string, postal_code?: string, country?: string } } | null} Shipping */
 
 const STRIPE_WAIT_MS = 10_000;
@@ -210,7 +210,10 @@ export async function createStripePayment(options) {
    */
   async function makeToken(elements, source) {
     const billing = options.getBilling();
+    /** @type {Record<string, any>} */
     const billingDetails = { name: billing.name, email: billing.email };
+    // Affirm needs the billing country. The Payment Element keeps its own country field, so only Affirm sends one.
+    if (source === 'card' && selectedType === 'affirm' && billing.country) billingDetails.address = { country: billing.country };
     if (guidance?.next_step === 'create_confirmation_token') {
       /** @type {Record<string, any>} */
       const params = { payment_method_data: { billing_details: billingDetails } };

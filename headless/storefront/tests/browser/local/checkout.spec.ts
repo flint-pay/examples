@@ -588,3 +588,148 @@ test('the polite live region announces the amount after an update', async ({ pag
   await page.getByTestId('sf-discount-apply').click();
   await expect(page.getByTestId('sf-live')).toHaveText(/Amount due now \$54\.00/);
 });
+
+// ----- Affirm billing country -----
+
+const affirmCountry = (page: any) => page.getByTestId('sf-affirm-country');
+const tokenCalls = async (page: any) => (await stripeCalls(page)).filter((call) => call.name === 'createConfirmationToken');
+
+/** Presses Pay with the Pay request held, so the token's parameters can be read before the page leaves. */
+async function payHeld(page: any, ref: string) {
+  const pay = await hold(page, ref, 'pay');
+  await page.getByTestId('sf-pay-button').click();
+  await pay.sent;
+  const calls = await tokenCalls(page);
+  await pay.release();
+  return calls;
+}
+
+test('Affirm on a delivery checkout asks for the billing country, then the token carries US with shipping unchanged', async ({ page }) => {
+  await readyOrder(page);
+  await shipAndSelect(page);
+  await expect(affirmCountry(page)).toBeHidden();
+  await typeCard(page, 'affirm');
+  await expect(affirmCountry(page)).toBeVisible();
+  await expect(affirmCountry(page)).toHaveValue('');
+  await expect(affirmCountry(page)).toHaveAttribute('required', '');
+  await expect(page.getByLabel('Billing country')).toBeVisible();
+  await expect(affirmCountry(page).locator('option')).toHaveText(['Choose a country', 'United States', 'Another country']);
+  await expect(page.getByTestId('sf-pay-blocker')).toHaveAttribute('data-blocker', 'billing_country_missing');
+  await expect(page.getByTestId('sf-pay-blocker')).toHaveText('Choose your billing country to pay with Affirm.');
+  await expect(page.getByTestId('sf-pay-button')).toBeDisabled();
+  await affirmCountry(page).selectOption('US');
+  await expect(page.getByTestId('sf-pay-button')).toBeEnabled();
+  const tokens = await payHeld(page, 'chk_card');
+  expect(tokens).toHaveLength(1);
+  expect(tokens[0].params.payment_method_data.billing_details).toEqual({ name: 'Test Buyer', email: 'buyer@example.test', address: { country: 'US' } });
+  expect(tokens[0].params.shipping.address.postal_code).toBe('78701');
+  expect(tokens[0].params.shipping.address.country).toBe('US');
+  await expect(page).toHaveURL(/complete$/);
+});
+
+test('Another country keeps Pay disabled with the unsupported copy and makes no token', async ({ page }) => {
+  await readyOrder(page);
+  await shipAndSelect(page);
+  await typeCard(page, 'affirm');
+  await affirmCountry(page).selectOption('other');
+  await expect(page.getByTestId('sf-pay-blocker')).toHaveAttribute('data-blocker', 'billing_country_unsupported');
+  await expect(page.getByTestId('sf-pay-blocker')).toHaveText('Affirm is only available with a United States billing address. Choose another way to pay.');
+  await expect(page.getByTestId('sf-pay-button')).toBeDisabled();
+  await page.getByTestId('fake-card').press('Enter');
+  expect(await tokenCalls(page)).toHaveLength(0);
+  await page.getByTestId('fake-card').fill('ok');
+  await expect(affirmCountry(page)).toBeHidden();
+  await expect(page.getByTestId('sf-pay-button')).toBeEnabled();
+});
+
+test('a tax location marked provided without a billing address does not stand in for the country', async ({ page }) => {
+  await page.route('**/checkout/chk_card', async (route: any) => {
+    const response = await route.fetch();
+    const body = await response.text();
+    if (!/"tax":\{/.test(body)) throw new Error('tax not found in the page state');
+    await route.fulfill({ response, body: body.replace(/"tax":\{/, '"tax":{"location":{"address_source":"provided","address_type":"billing_address"},') });
+  });
+  await readyOrder(page);
+  await shipAndSelect(page);
+  await typeCard(page, 'affirm');
+  await expect(affirmCountry(page)).toBeVisible();
+  await expect(affirmCountry(page)).toHaveValue('');
+  await expect(page.getByTestId('sf-pay-blocker')).toHaveAttribute('data-blocker', 'billing_country_missing');
+  await expect(page.getByTestId('sf-pay-button')).toBeDisabled();
+});
+
+test('a saved US billing address hides the field and the token carries US', async ({ page }) => {
+  await readyOrder(page, 'taxset');
+  await typeCard(page, 'affirm');
+  await expect(page.getByTestId('sf-pay-button')).toBeEnabled();
+  await expect(affirmCountry(page)).toBeHidden();
+  const tokens = await payHeld(page, 'chk_taxset');
+  expect(tokens).toHaveLength(1);
+  expect(tokens[0].params.payment_method_data.billing_details).toEqual({ name: 'Test Buyer', email: 'buyer@example.test', address: { country: 'US' } });
+});
+
+test('a saved billing address outside the US blocks Affirm without showing the field', async ({ page }) => {
+  await page.route(/\/checkout\/chk_taxset(\/contact)?$/, async (route: any) => {
+    const response = await route.fetch();
+    const body = await response.text();
+    const saved = /("billing_address":\{[^}]*"country":")US"/;
+    if (!saved.test(body)) throw new Error('billing country not found in the page state');
+    await route.fulfill({ response, body: body.replace(saved, '$1CA"') });
+  });
+  await readyOrder(page, 'taxset');
+  await typeCard(page, 'affirm');
+  await expect(affirmCountry(page)).toBeHidden();
+  await expect(page.getByTestId('sf-pay-blocker')).toHaveAttribute('data-blocker', 'billing_country_unsupported');
+  await expect(page.getByTestId('sf-pay-button')).toBeDisabled();
+  expect(await tokenCalls(page)).toHaveLength(0);
+});
+
+test('card and bank payments keep the field hidden and send only name and email', async ({ page }) => {
+  await readyOrder(page);
+  await shipAndSelect(page);
+  await typeCard(page, 'ok');
+  await expect(affirmCountry(page)).toBeHidden();
+  await expect(page.getByTestId('sf-pay-button')).toBeEnabled();
+  const tokens = await payHeld(page, 'chk_card');
+  expect(tokens).toHaveLength(1);
+  expect(tokens[0].params.payment_method_data.billing_details).toEqual({ name: 'Test Buyer', email: 'buyer@example.test' });
+});
+
+test('a bank account payment keeps the field hidden and sends only name and email', async ({ page }) => {
+  await readyOrder(page);
+  await shipAndSelect(page);
+  await typeCard(page, 'bank');
+  await expect(affirmCountry(page)).toBeHidden();
+  await expect(page.getByTestId('sf-pay-button')).toBeEnabled();
+  const tokens = await payHeld(page, 'chk_card');
+  expect(tokens).toHaveLength(1);
+  expect(tokens[0].params.payment_method_data.billing_details).toEqual({ name: 'Test Buyer', email: 'buyer@example.test' });
+});
+
+test('a wallet is not blocked by the Affirm billing country blockers', async ({ page, request }) => {
+  await readyOrder(page, 'wallet');
+  await pickupSelected(page);
+  await typeCard(page, 'affirm');
+  await expect(page.getByTestId('sf-pay-blocker')).toHaveAttribute('data-blocker', 'billing_country_missing');
+  await page.getByTestId('fake-wallet-button').click();
+  await expect.poll(async () => (await fixtureLog(request, 'chk_wallet')).payCount).toBe(1);
+});
+
+test('the Affirm country select is disabled unless Affirm is selected, and while a payment is open', async ({ page }) => {
+  await readyOrder(page);
+  await shipAndSelect(page);
+  await expect(affirmCountry(page)).toBeDisabled();
+  await typeCard(page, 'affirm');
+  await expect(affirmCountry(page)).toBeEnabled();
+  await affirmCountry(page).selectOption('US');
+  await page.getByTestId('fake-card').fill('ok');
+  await expect(affirmCountry(page)).toBeDisabled();
+  await page.getByTestId('fake-card').fill('affirm');
+  await expect(affirmCountry(page)).toBeEnabled();
+  await expect(affirmCountry(page)).toHaveValue('US');
+  const pay = await hold(page, 'chk_card', 'pay');
+  await page.getByTestId('sf-pay-button').click();
+  await pay.sent;
+  await expect(affirmCountry(page)).toBeDisabled();
+  await pay.release();
+});

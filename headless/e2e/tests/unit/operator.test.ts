@@ -424,10 +424,10 @@ test('return proposals track the resolution before a replacement order exists', 
   await ledger.record({ resource: 'ret_PLACEHOLDER', type: 'return', mode: 'test', sandbox: 'A', merchant: config.pins.A.merchantId, sandboxId: config.pins.A.sandboxId, createdBy: run, purpose: 'unit', cleanup: 'review', owner: 'unit', reviewAt, owned: true });
   let calls = 0;
   const clients = { config, writable: async () => ({ returns: { createResolutionWithResponse: async () => {
-    calls++; return { body: { data: { return_resolution: { return_resolution_id: 'rres_PLACEHOLDER', status: 'proposed' } } }, meta: {} };
+    calls++; return { body: { data: { return_resolution_id: 'rres_PLACEHOLDER', status: 'proposed' } }, meta: {} };
   } } }) } as unknown as VerifiedClients;
   const op = new Operator(clients, ledger, {} as Fixtures);
-  const step: PlanStep = { name: 'exchange-proposal', sandbox: 'A', operation: 'returns.createResolution', args: ['ret_PLACEHOLDER', { resolution_type: 'exchange', line_items: [{ return_line_item_id: 'rtli_PLACEHOLDER', quantity: '1' }] }], creates: [{ type: 'return_resolution', path: 'return_resolution.return_resolution_id', cleanup: 'return_resolution', reviewAt }], purpose: 'unit-exchange' };
+  const step: PlanStep = { name: 'exchange-proposal', sandbox: 'A', operation: 'returns.createResolution', args: ['ret_PLACEHOLDER', { resolution_type: 'exchange', line_items: [{ return_line_item_id: 'rtli_PLACEHOLDER', quantity: '1' }] }], creates: [{ type: 'return_resolution', path: 'return_resolution_id', cleanup: 'return_resolution', reviewAt }], purpose: 'unit-exchange' };
   assert.throws(() => op.validate({ ...step, creates: [] }), { code: 'ALL_CREATED_RESOURCES_MUST_BE_TRACKED' });
   await op.execute(step); await op.execute(step);
   assert.equal(calls, 1);
