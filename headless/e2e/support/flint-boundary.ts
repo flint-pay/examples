@@ -67,11 +67,13 @@ export class BrowserGuard {
     invariant(context.serviceWorkers().length === 0, 'SERVICE_WORKERS_FORBIDDEN');
     context.on('serviceworker', () => this.violations.add('SERVICE_WORKER_UNINSPECTED'));
     context.on('request', request => {
-      this.scanner.scan(request.url(), 'url');
       const u = new URL(request.url());
+      const elementsTransport = u.origin === 'https://api.stripe.com' && u.pathname === '/v1/elements/sessions' && request.method() === 'GET' && !request.isNavigationRequest() && ['fetch', 'xhr'].includes(request.resourceType());
+      this.scanner.scan(request.url(), 'url', { stripeTransport: elementsTransport });
       const challengeProofSubmit=request.method()==='POST'&&this.appOrigins.includes(u.origin)&&(/^\/checkout\/[^/]+\/gift-card\/challenge$/.test(u.pathname)||u.origin===this.accountOrigin&&/^\/(invoices|returns)\/[^/]+\/pay\/gift-card\/challenge$/.test(u.pathname));
       const gift = challengeProofSubmit || request.method() === 'POST' && this.appOrigins.includes(u.origin) && (/^\/checkout\/[^/]+\/gift-card$/.test(u.pathname) || u.origin===this.accountOrigin&&/^\/(invoices|returns)\/[^/]+\/pay\/gift-card$/.test(u.pathname) || u.pathname === '/gift-cards');
       this.scanner.scan(request.postData() ?? '', 'request', { submittedGift: gift,challengeProofSubmit,stripeTransport: stripeOrigins.has(u.origin) });
+      const referer = request.headers()['referer']; if (referer) this.scanner.scan(referer, 'url');
       if ([...this.auditedRelays.keys()].some(url => request.headers()['referer']?.includes(url))) this.violations.add('EMAIL_RELAY_REFERRER_LEAK');
       this.scanner.scan(JSON.stringify(request.headers()), 'request', { stripeTransport: stripeOrigins.has(u.origin) });
     });

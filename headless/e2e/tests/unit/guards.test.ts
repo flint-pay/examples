@@ -200,3 +200,97 @@ test('capture skips only the original request body, retaining other response and
   await assert.rejects(second.inspect, { code: 'CREDENTIAL_LEAK' });
   assert.equal(second.scanner.violations.has('SENSITIVE_URL'), true);
 });
+
+const setupSecret = 'seti_PLACEHOLDER_secret_PLACEHOLDER';
+const elementsUrl = `https://api.stripe.com/v1/elements/sessions?client_secret=${setupSecret}&key=pk_test_PLACEHOLDER&locale=en&type=setup_intent&stripe_js_id=unit`;
+function elementsScan(value = elementsUrl, scanner = new CredentialScanner()): CredentialScanner {
+  scanner.scan(value, 'url', { stripeTransport: true }); return scanner;
+}
+test('Elements setup transport permits only the client-secret query slot and scans ordinary metadata', () => {
+  elementsScan().assertClean();
+  elementsScan(elementsUrl.replace(setupSecret, setupSecret.replaceAll('_', '%5F'))).assertClean();
+});
+
+for (const [name, value] of [
+  ['other origin', elementsUrl.replace('api.stripe.com', 'api.stripe.com.example.invalid')],
+  ['other Stripe origin', elementsUrl.replace('api.stripe.com', 'js.stripe.com')],
+  ['other path', elementsUrl.replace('/elements/sessions', '/setup_intents/unit')],
+  ['path suffix', elementsUrl.replace('/elements/sessions?', '/elements/sessions/extra?')],
+  ['basic auth', elementsUrl.replace('https://', 'https://user:pass@')],
+  ['fragment', elementsUrl + '#fragment'],
+  ['empty fragment', elementsUrl + '#'],
+  ['duplicate secret', elementsUrl + `&client_secret=${setupSecret}`],
+  ['encoded duplicate secret key', elementsUrl + `&%63lient_secret=${setupSecret}`],
+  ['duplicate publishable key', elementsUrl + '&key=pk_test_PLACEHOLDER'],
+  ['live publishable key', elementsUrl.replace('pk_test_', 'pk_live_')],
+  ['wrong publishable-key parameter', elementsUrl.replace('&key=', '&api_key=')],
+  ['invalid secret', elementsUrl.replace(setupSecret, 'pi_PLACEHOLDER_secret_PLACEHOLDER')],
+  ['wrong secret parameter', elementsUrl.replace('client_secret=', 'setup_secret=')],
+  ['another sensitive parameter', elementsUrl + '&email=buyer%40example.invalid'],
+  ['another encoded sensitive key', elementsUrl + '&%2574oken=unit'],
+  ['mixed-case sensitive key', elementsUrl + '&CLIENT_SECRET=unit'],
+  ['duplicate sensitive values', elementsUrl + '&code=one&code=two'],
+  ['non-slot provider secret', elementsUrl + `&metadata=${setupSecret}`],
+  ['encoded non-slot provider secret', elementsUrl + `&metadata=${setupSecret.replaceAll('_', '%5F')}`],
+  ['double-encoded non-slot provider secret', elementsUrl + `&metadata=${setupSecret.replaceAll('_', '%255F')}`],
+  ['malformed escape hiding an encoded extra secret', elementsUrl + '&metadata=%25ZZseti_EXTRA%255Fsecret%255FEXTRA'],
+  ['malformed encoded metadata key', elementsUrl + '&%25ZZ=unit'],
+  ['encoding beyond the five-layer bound', elementsUrl + '&metadata=' + setupSecret.replaceAll('_', '%2525252525255F')],
+]) test(`Elements URL exception rejects ${name}`, () => {
+  assert.throws(() => elementsScan(value).assertClean(), { code: 'CREDENTIAL_LEAK' });
+});
+
+test('Elements transport retains known, Flint, gift, and challenge authority checks across encoded URL values', () => {
+  for (const secret of ['flint_test_PLACEHOLDER', 'registered-authority', 'GIFT-PLACEHOLDER', 'gccp_' + 'X'.repeat(30)]) {
+    const scanner = new CredentialScanner(['registered-authority']); scanner.addGift('GIFT-PLACEHOLDER');
+    const encoded = [...secret].map(character => '%' + character.charCodeAt(0).toString(16)).join('');
+    assert.throws(() => elementsScan(elementsUrl + '&metadata=' + encoded, scanner).assertClean(), { code: 'CREDENTIAL_LEAK' });
+  }
+  const scanner = new CredentialScanner([setupSecret]);
+  assert.throws(() => elementsScan(elementsUrl, scanner).assertClean(), { code: 'CREDENTIAL_LEAK' });
+});
+
+test('transport context never permits a provider secret in persistent or visible surfaces', () => {
+  for (const surface of ['console', 'dom', 'storage', 'cookie', 'child'] as const) {
+    const scanner = new CredentialScanner(); scanner.scan(setupSecret, surface, { stripeTransport: true });
+    assert.throws(() => scanner.assertClean(), { code: 'CREDENTIAL_LEAK' });
+  }
+  const scanner = new CredentialScanner(); scanner.scan(elementsUrl, 'url');
+  assert.throws(() => scanner.assertClean(), { code: 'CREDENTIAL_LEAK' });
+});
+
+async function browserElementsRequest(options: { url?: string; method?: string; navigation?: boolean; resourceType?: string; referer?: string } = {}) {
+  const scanner = new CredentialScanner(), guard = new BrowserGuard(scanner, ['https://store.example.invalid']);
+  let listener!: (request: Request) => void;
+  const context = {
+    serviceWorkers: () => [], pages: () => [],
+    on: (event: string, callback: (request: Request) => void) => { if (event === 'request') listener = callback; },
+    route: async () => {},
+  } as unknown as BrowserContext;
+  await guard.attach(context);
+  listener({
+    url: () => options.url ?? elementsUrl, method: () => options.method ?? 'GET',
+    isNavigationRequest: () => options.navigation ?? false, resourceType: () => options.resourceType ?? 'fetch',
+    postData: () => '', headers: () => options.referer ? { referer: options.referer } : {},
+  } as unknown as Request);
+  return scanner;
+}
+
+test('BrowserGuard classifies only non-navigation GET fetch/xhr Elements requests', async () => {
+  for (const resourceType of ['fetch', 'xhr']) (await browserElementsRequest({ resourceType })).assertClean();
+  for (const options of [
+    { method: 'POST' }, { navigation: true }, { resourceType: 'document' }, { resourceType: 'image' },
+    { url: elementsUrl.replace('api.stripe.com', 'other.example.invalid') },
+    { url: elementsUrl.replace('/elements/sessions', '/other') },
+  ]) {
+    const scanner = await browserElementsRequest(options);
+    assert.throws(() => scanner.assertClean(), { code: 'CREDENTIAL_LEAK' });
+  }
+});
+
+test('BrowserGuard scans referrers independently of permitted Stripe transport', async () => {
+  for (const referer of [elementsUrl, elementsUrl.replace(setupSecret, setupSecret.replaceAll('_', '%5F'))]) {
+    const scanner = await browserElementsRequest({ referer });
+    assert.throws(() => scanner.assertClean(), { code: 'CREDENTIAL_LEAK' });
+  }
+});
