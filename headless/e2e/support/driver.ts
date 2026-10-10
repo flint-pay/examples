@@ -281,8 +281,12 @@ export class Driver {
     }
     throw new HarnessError('PROVIDER_CHALLENGE_CONTROL_MISSING');
   }
-  async pay(c: Checkout, number = '4242424242424242'): Promise<void> {
-    await this.card(c.page, number); await expect(c.page.getByTestId('sf-pay-button')).toBeEnabled(); await c.page.getByTestId('sf-pay-button').click();
+  async pay(c: Checkout, number = '4242424242424242', options: { activation?: 'pointer' | 'keyboard' } = {}): Promise<void> {
+    await this.card(c.page, number);
+    const button = c.page.getByTestId('sf-pay-button'); await expect(button).toBeEnabled();
+    if (options.activation === 'keyboard') {
+      await button.focus(); await expect(button).toBeFocused(); await c.page.keyboard.press('Enter');
+    } else await button.click();
   }
   async settled(c: Checkout, attemptCount?: number): Promise<any> {
     await expect(c.page.getByTestId('sf-complete')).toHaveAttribute('data-state', 'paid', { timeout: 60_000 });

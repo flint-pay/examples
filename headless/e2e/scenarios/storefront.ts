@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test';
 import type { Driver, Checkout } from '../support/driver.ts';
 import { invariant } from '../support/safe.ts';
-import { equalMoney, money, giftAllocation, assertOneCharge } from '../support/money.ts';
+import { equalMoney, money, giftAllocation, assertOneCharge, assertTrialSetup } from '../support/money.ts';
 import { bank, affirm } from './provider.ts';
 import { walletScenario } from './wallets.ts';
 
@@ -37,14 +37,14 @@ async function subscription(d: Driver, trial: boolean): Promise<any> {
   let browserConfirmSetup = false;
   const providerRequest = (request: import('@playwright/test').Request) => { if (/\/setup_intents\/[^/]+\/confirm/.test(new URL(request.url()).pathname)) browserConfirmSetup = true; };
   page.on('request', providerRequest);
-  const submitted = page.waitForRequest(r => new URL(r.url()).pathname === `/checkout/${c.ref}/pay` && r.method() === 'POST'); await d.pay(c);
+  const submitted = page.waitForRequest(r => new URL(r.url()).pathname === `/checkout/${c.ref}/pay` && r.method() === 'POST'); await d.pay(c, undefined, trial ? { activation: 'keyboard' } : {});
   const body = (await submitted).postDataJSON(); invariant(body.credential?.kind === (trial ? 'payment_method_token' : 'confirmation_token'), 'SUBSCRIPTION_COLLECTION_CREDENTIAL_KIND');
   await expect(page.getByTestId('sf-complete')).toHaveAttribute('data-state', trial ? 'subscription_trialing' : 'subscription_active', { timeout: 60_000 });
   const order = await d.trackOrder('A', c.orderId);
   invariant(order.subscription_id, 'SUBSCRIPTION_NOT_CREATED');
   const sub = await d.operator.clients.clients.A.subscriptions.get(order.subscription_id);
   invariant(sub.status === (trial ? 'trialing' : 'active'), 'SUBSCRIPTION_STATE_MISMATCH');
-  if (trial) invariant(order.active_payment_attempt?.mode === 'setup' && !browserConfirmSetup, 'TRIAL_MUST_USE_PUBLIC_SETUP_COLLECTION');
+  if (trial) assertTrialSetup(order, (await d.operator.clients.clients.A.orders.listPaymentAttempts(c.orderId)).data, browserConfirmSetup);
   invariant(sub.payment_method_id, 'SUBSCRIPTION_METHOD_REQUIRED'); const saved = await d.operator.clients.clients.A.paymentMethods.get(sub.payment_method_id);
   invariant(saved.status === 'active' && saved.usage === 'off_session', 'SUBSCRIPTION_OFF_SESSION_METHOD'); page.off('request', providerRequest);
   d.created.set(trial ? 'trialSubscription' : 'paidSubscription', sub.subscription_id);
