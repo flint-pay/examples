@@ -78,7 +78,7 @@ export const account: Record<string, Scenario> = {
     const times = await events.evaluateAll(es => es.map(e => e.querySelector('time')?.getAttribute('datetime'))); invariant(times.every((t, i) => t && (i === 0 || Date.parse(times[i - 1]!) >= Date.parse(t))), 'TRACKING_EVENT_SORT');
     const tracking = await fixture(d, 'trackingNumber'); await expect(page.getByTestId('ac-order')).toContainText(tracking);
     const after = new Date(); await page.getByTestId('ac-send-receipt').click(); await d.email('b1', after, 'order_receipts');
-    await d.goto(page, d.config.origins.accountA, `/orders/${id}/receipt`); await expect(page.getByRole('heading')).toBeVisible(); await d.axe(page, 'ac-order'); return ['DELIVERY_EVENTS_TRACKING_RECEIPT'];
+    await d.goto(page, d.config.origins.accountA, `/orders/${id}/receipt`); await expect(page.getByRole('heading', { level: 1, name: /^Receipt for order / })).toBeVisible(); await d.axe(page, 'ac-order'); return ['DELIVERY_EVENTS_TRACKING_RECEIPT'];
   },
   'AC-04': async d => {
     const families = ['order_receipts', 'fulfillment_updates', 'subscription_lifecycle', 'returns', 'invoices'];
