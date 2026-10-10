@@ -19,7 +19,8 @@ function fixture(){
   const money={amount:'1000',currency:'USD'};
   const order={order_id:'ord_fixture',status:'open',payment_status:'unpaid',order_revision:'1',line_items:[{order_line_item_id:'line_initial',variant_id:'variant_initial',quantity:'1'}],settlement_amounts:{outstanding_money:money,paid_money:{amount:'0',currency:'USD'}}} as unknown as Order;
   let session={checkout_session_id:'cs_initial',order_id:order.order_id,status:'open',page_origin:config.appOrigin} as CheckoutSession;
-  const launches:{body:Record<string,unknown>;key:string|undefined}[]=[],reads:string[]=[];
+  const launches:{body:Record<string,unknown>;key:string|undefined}[]=[],reads:string[]=[],updates:{id:string;body:Record<string,unknown>;key:string|undefined;authMode:string|undefined}[]=[];
+  let failUpdate:Error|undefined;
   const client={
     orders:{get:async()=>order,addLineItems:async(_id:string,body:{line_items:{variant_id:string;quantity:string}[]})=>{
       order.line_items.push(...body.line_items.map(line=>({order_line_item_id:'line_added',...line}) as Order['line_items'][number]));
@@ -29,6 +30,10 @@ function fixture(){
       reads.push(options.authMode??'merchant');
       if(options.authMode==='checkout'&&session.status!=='open')throw conflict('CHECKOUT_SESSION_NOT_OPEN');
       return session;
+    },update:async(id:string,body:{buyer_contact:{email?:string|null;phone?:string|null}},options:RequestOptions)=>{
+      updates.push({id,body,key:options.idempotencyKey,authMode:options.authMode});
+      if(failUpdate){const error=failUpdate;failUpdate=undefined;throw error;}
+      session={...session,buyer_contact:{...session.buyer_contact,...body.buyer_contact}} as CheckoutSession;return session;
     },getCurrentDeliverySelection:async()=>({}),create:async(body:Record<string,unknown>,options:RequestOptions)=>{
       launches.push({body,key:options.idempotencyKey});
       if(body.replace_checkout_session_id&&session.status!=='open')throw conflict('ORDER_COLLECTION_IN_PROGRESS');
@@ -43,7 +48,8 @@ function fixture(){
   const app=new Checkouts(client,auth,store,identity,config,'sandbox_fixture',carts,new PaymentEngine(client,auth,store));
   const record=()=>app.record('chk_fixture');
   const endSession=(status:CheckoutSession['status']='invalidated')=>{session={...session,status};store.run('UPDATE checkouts SET needs_replacement=1 WHERE checkout_ref=?','chk_fixture');};
-  return {store,identity,app,cart,order,launches,reads,record,endSession,client,close(){store.close();identity.close();}};
+  const saveContact=(contact:unknown)=>{const details=app.details(record());details.contact=contact as typeof details.contact;details.delivery_quote={delivery_quote_id:'quote_old'} as typeof details.delivery_quote;app.saveDetails(record(),details);};
+  return {store,identity,app,cart,order,launches,reads,updates,record,endSession,saveContact,failNextUpdate(error:Error){failUpdate=error;},client,close(){store.close();identity.close();}};
 }
 async function use(fn:(f:ReturnType<typeof fixture>)=>Promise<void>){const f=fixture();try{await fn(f);}finally{f.close();}}
 
@@ -100,4 +106,49 @@ test('a failed authoritative session read cannot turn replacement into creation'
     if(options.authMode==='checkout')throw conflict('CHECKOUT_SESSION_NOT_OPEN');throw new Error('Fixture merchant read unavailable');
   }});
   await assert.rejects(()=>f.app.read('chk_fixture'),/Fixture merchant read unavailable/);assert.equal(f.launches.length,0);
+}));
+
+const lost=()=>new SdkError('transport','Fixture transport lost','unknown',true,{status:0,headers:{},attempts:1,durationMs:1});
+const sessionContact=(read:{session:unknown})=>(read.session as {buyer_contact?:unknown}).buyer_contact;
+
+for(const [label,end] of [['an invalidated',true],['a still-open',false]] as const)test(`${label} replacement restores explicitly saved contact, including cleared fields`,async()=>use(async f=>{
+  f.saveContact({email:'buyer@example.com',phone:null});
+  if(end)f.endSession();else f.store.run('UPDATE checkouts SET needs_replacement=1 WHERE checkout_ref=?','chk_fixture');
+  const read=await f.app.read('chk_fixture');
+  assert.equal(f.launches.length,1);assert.equal(f.updates.length,1);
+  assert.deepEqual(f.updates[0],{id:'cs_fresh',body:{buyer_contact:{email:'buyer@example.com',phone:null}},key:f.updates[0]!.key,authMode:'checkout'});
+  assert.deepEqual(sessionContact(read),{email:'buyer@example.com',phone:null});
+  assert.equal(read.record.needs_replacement,0);assert.equal(f.app.details(read.record).delivery_quote,undefined);assert.deepEqual(f.app.details(read.record).contact,{email:'buyer@example.com',phone:null});
+  assert.deepEqual(f.app.displayNotices(read.record),['checkout_refreshed']);
+  await f.app.read('chk_fixture');assert.equal(f.updates.length,1);assert.equal(f.launches.length,1);
+}));
+
+for(const saved of [undefined,{}])test(`a replacement without saved contact sends no contact update (${JSON.stringify(saved)})`,async()=>use(async f=>{
+  f.saveContact(saved);f.endSession();await f.app.read('chk_fixture');
+  assert.equal(f.updates.length,0);assert.equal(f.store.get<ActionRecord>("SELECT * FROM actions WHERE kind='contact_restore'"),undefined);
+}));
+
+test('an unknown restoration outcome replays its key and body on the next read without creating another session',async()=>use(async f=>{
+  f.saveContact({email:null,phone:'+15555550100'});f.endSession();f.failNextUpdate(lost());
+  await assert.rejects(()=>f.app.read('chk_fixture'),{message:/Fixture transport lost/});
+  const journal=f.store.get<ActionRecord>("SELECT * FROM actions WHERE kind='contact_restore'")!;
+  assert.equal(journal.status,'unknown');assert.equal(f.record().needs_replacement,0);assert.equal(f.record().checkout_session_id,'cs_fresh');
+  assert.equal(f.app.details(f.record()).delivery_quote,undefined);assert.deepEqual(f.app.displayNotices(f.record()),['checkout_refreshed']);
+  await assert.rejects(()=>f.app.mutate('chk_fixture','gift',{},async()=>undefined),{code:'ACTION_RECONCILIATION_REQUIRED'});
+  const read=await f.app.read('chk_fixture');
+  assert.equal(f.launches.length,1);assert.equal(f.updates.length,2);assert.deepEqual(f.updates[1],f.updates[0]);assert.equal(f.updates[0]!.key,journal.idempotency_key);
+  assert.deepEqual(f.updates[1]!.body,{buyer_contact:{email:null,phone:'+15555550100'}});
+  assert.equal(f.store.get<ActionRecord>('SELECT * FROM actions WHERE action_id=?',journal.action_id)?.status,'succeeded');
+  assert.deepEqual(sessionContact(read),{email:null,phone:'+15555550100'});
+}));
+
+test('a restoration left pending for a session that was replaced again is superseded',async()=>use(async f=>{
+  f.saveContact({email:'buyer@example.com'});f.endSession();f.failNextUpdate(lost());
+  await assert.rejects(()=>f.app.read('chk_fixture'),{message:/Fixture transport lost/});
+  const first=f.store.get<ActionRecord>("SELECT * FROM actions WHERE kind='contact_restore'")!;
+  f.endSession();
+  const read=await f.app.read('chk_fixture');
+  assert.equal(f.launches.length,2);assert.equal(f.store.get<ActionRecord>('SELECT * FROM actions WHERE action_id=?',first.action_id)?.status,'rejected');
+  assert.equal(f.store.all<ActionRecord>("SELECT * FROM actions WHERE kind='contact_restore' AND status IN ('pending','unknown')").length,0);
+  assert.deepEqual(sessionContact(read),{email:'buyer@example.com'});
 }));

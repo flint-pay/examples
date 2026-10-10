@@ -185,17 +185,25 @@ export class Driver {
       await form.locator('[name="postal_code"]').fill(process.env.E2E_PICKUP_POSTAL_CODE ?? '78701');
       await c.page.getByTestId('sf-pickup-search').click();
     } else {
-      await c.page.getByTestId('sf-delivery-mode-ship').check();
-      const address = this.fixtures.values.shippingAddress;
-      invariant(address, 'DELIVERY_FIXTURE_REQUIRED');
-      const form = c.page.locator(`form[action="/checkout/${c.ref}/delivery/quote"]`);
-      for (const [name, value] of Object.entries(address)) {
-        const input = form.locator(`[name="${name}"]`);
-        if (!await input.count()) continue;
-        if (await input.first().getAttribute('type') === 'hidden') await expect(input.first()).toHaveValue(String(value));
-        else await input.first().fill(String(value));
+      // Mode radios render only for multiple delivery modes; a ship-only checkout has none.
+      const shipMode = c.page.getByTestId('sf-delivery-mode-ship');
+      if (await shipMode.count() && await shipMode.isVisible()) await shipMode.check();
+      else await expect(c.page.getByTestId('sf-delivery')).toHaveAttribute('data-mode', 'ship');
+      // A ready quote (e.g. the automatic requote after session replacement) already shows its options; only request one when absent.
+      const ready = c.page.getByTestId('sf-delivery-options');
+      const hasReady = await ready.isVisible() && await ready.locator('[data-testid^="sf-delivery-option-"]').count() > 0;
+      if (!hasReady) {
+        const address = this.fixtures.values.shippingAddress;
+        invariant(address, 'DELIVERY_FIXTURE_REQUIRED');
+        const form = c.page.locator(`form[action="/checkout/${c.ref}/delivery/quote"]`);
+        for (const [name, value] of Object.entries(address)) {
+          const input = form.locator(`[name="${name}"]`);
+          if (!await input.count()) continue;
+          if (await input.first().getAttribute('type') === 'hidden') await expect(input.first()).toHaveValue(String(value));
+          else await input.first().fill(String(value));
+        }
+        await c.page.getByTestId('sf-delivery-quote').click();
       }
-      await c.page.getByTestId('sf-delivery-quote').click();
     }
     const option = c.page.locator(pickup ? '[data-testid^="sf-pickup-location-"]' : '[data-testid^="sf-delivery-option-"]').first();
     await expect(option).toBeVisible({ timeout: 30_000 });

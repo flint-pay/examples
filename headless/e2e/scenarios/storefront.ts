@@ -7,7 +7,7 @@ import { walletScenario } from './wallets.ts';
 
 export type Scenario = (d: Driver) => Promise<string[]>;
 /** Enters the billing address a no-delivery checkout asks for before automatic tax can be calculated, then reads the taxed order. */
-async function billing(d: Driver, c: Checkout): Promise<void> {
+export async function billing(d: Driver, c: Checkout): Promise<void> {
   const section = c.page.getByTestId('sf-billing');
   if (!await section.isVisible() || await section.getAttribute('data-state') !== 'needed') return;
   await c.page.getByTestId('sf-bill-line1').fill('11 Wall Street'); await c.page.getByTestId('sf-bill-city').fill('New York');
@@ -116,7 +116,7 @@ export const storefront: Record<string, Scenario> = {
     // One invalid guess only, including reruns. Durable marker is saved before input.
     if (!d.operator.ledger.state.actions['A:invalid-gift-marker']) await d.operator.ledger.action('invalid-gift-marker', 'A', 'local-marker', [], async () => true, async () => {});
     else invariant(false, 'INVALID_GIFT_ALREADY_ATTEMPTED');
-    await c.page.getByTestId('sf-gift-card-code').fill('INVALID-ONCE'); await c.page.getByTestId('sf-gift-card-apply').click(); await expect(c.page.getByRole('alert')).toContainText("isn't valid");
+    await c.page.getByTestId('sf-gift-card-code').fill('INVALID-ONCE'); await c.page.getByTestId('sf-gift-card-apply').click(); await expect(c.page.locator('[data-job-error="gift-card"]')).toContainText("isn't valid", { timeout: 30000 });
     await d.pay(c); const order = await d.settled(c); invariant(order.gift_card_settlements?.length === 1, 'GIFT_SETTLEMENT_MISSING'); return ['GIFT_REVISION_ALLOCATION_AND_ONE_CHARGE'];
   },
   'SF-06': async d => {
@@ -151,11 +151,21 @@ export const storefront: Record<string, Scenario> = {
     const reviewAt = new Date(Date.now() + 30 * 86400_000).toISOString();
     const before = (await d.operator.clients.clients.A.orders.get(c.orderId)).line_items.map(l => l.order_line_item_id);
     await d.operator.execute({ name: 'mutate-checkout', sandbox: 'A', operation: 'orders.addLineItems', args: [c.orderId, { line_items: [{ variant_id: variant.variantId, quantity: '1' }] }], creates: [{ type: 'order_line_item', path: 'line_items.0.order_line_item_id', cleanup: 'review', reviewAt }], purpose: 'refresh-checkout' });
-    await c.page.reload(); await d.state(c); invariant(c.state.notices.includes('checkout_refreshed') && c.state.order.line_items.some((l: any) => !before.includes(l.order_line_item_id)), 'CHECKOUT_NOT_REFRESHED');
+    await c.page.reload(); await expect(c.page.getByTestId('sf-notice-checkout_refreshed')).toBeVisible(); await d.state(c); invariant(c.state.order.line_items.some((l: any) => !before.includes(l.order_line_item_id)), 'CHECKOUT_NOT_REFRESHED');
     await d.delivery(c); const oldMoney = money(c.state.order.settlement_amounts.outstanding_money);
-    const tab = await c.page.context().newPage(); await tab.goto(c.page.url()); await d.job(tab, `/checkout/${c.ref}/discount`, { promotion_code: 'WELCOME10' }); await d.card(c.page); await c.page.getByTestId('sf-pay-button').click();
-    await expect(c.page.getByTestId('sf-payment')).toHaveAttribute('data-state', 'total_changed'); await d.auditKnownStates(c.page); await d.state(c); invariant(c.state.order.settlement_amounts.outstanding_money.amount !== oldMoney.amount, 'TOTAL_DID_NOT_CHANGE');
-    await d.delivery(c); await d.pay(c); await d.settled(c); await tab.close(); return ['SESSION_REPLACEMENT_AND_REAPPROVAL'];
+    // The page keeps no cross-tab sync, so the order is changed after the buyer's Pay press is captured and before it reaches the server: the request still carries the former approval.
+    let mutated = false;
+    await c.page.route(`**/checkout/${c.ref}/pay`, async route => {
+      if (!mutated) {
+        mutated = true; invariant(route.request().postDataJSON()?.approved_outstanding_money?.amount === oldMoney.amount, 'PAY_REQUEST_NOT_OLD_APPROVAL');
+        const discount = await d.job(c.page, `/checkout/${c.ref}/discount`, { promotion_code: 'WELCOME10' }); invariant(discount.status === 200, 'MUTATION_DISCOUNT_REJECTED');
+      }
+      await route.continue();
+    });
+    await d.card(c.page); await expect(c.page.getByTestId('sf-pay-button')).toBeEnabled(); await c.page.getByTestId('sf-pay-button').click();
+    await expect(c.page.getByTestId('sf-payment')).toHaveAttribute('data-state', 'total_changed', { timeout: 30000 }); invariant(mutated, 'PAY_REQUEST_NOT_INTERCEPTED'); await c.page.unroute(`**/checkout/${c.ref}/pay`);
+    await d.auditKnownStates(c.page); await d.state(c); invariant(c.state.order.settlement_amounts.outstanding_money.amount !== oldMoney.amount, 'TOTAL_DID_NOT_CHANGE');
+    await d.delivery(c); await d.pay(c); await d.settled(c); return ['SESSION_REPLACEMENT_AND_REAPPROVAL'];
   },
   'SF-12': async d => {
     const page = await d.page('b1'); await d.login(page, 'b1', d.sf()); const c = await d.checkout(page); await d.delivery(c);
@@ -191,7 +201,7 @@ export const storefront: Record<string, Scenario> = {
   'SF-20': async d => { const after = new Date(), { sub } = await subscription(d, true); const mail = await d.email('b1', after, 'subscription_lifecycle'); const page = await d.page('subscription-email'); await page.goto(d.emailLink(mail, 'flint_account_link_relay')); await d.form(page, '/sign-in', { email: d.fixtures.buyers.b1.email, password: d.fixtures.buyers.b1.password }); invariant(new URL(page.url()).pathname === `/subscriptions/${sub.subscription_id}`, 'SUBSCRIPTION_EMAIL_RESOURCE_DESTINATION'); await expect(page.getByTestId('ac-subscription')).toBeVisible(); return ['ZERO_TRIAL_SETUP_AND_LIFECYCLE_EMAIL']; },
   'SF-21': async d => {
     const ttl = d.fixtures.values.checkoutMinimumTtlSeconds; invariant(typeof ttl === 'number' && ttl > 0, 'CHECKOUT_MINIMUM_TTL_REQUIRED');
-    const c = await normal(d, 'expiry'); await c.page.waitForTimeout((ttl + 2) * 1000); await c.page.reload(); await d.state(c); invariant(c.state.notices.includes('checkout_refreshed'), 'EXPIRED_SESSION_NOT_REPLACED');
+    const c = await normal(d, 'expiry'); const sessionIds = async () => new Set<string>((await d.operator.clients.clients.A.orders.get(c.orderId)).checkout_session_ids ?? []), originalSessionIds = await sessionIds(); invariant(originalSessionIds.size > 0, 'ORIGINAL_SESSION_IDS_MISSING'); await c.page.waitForTimeout((ttl + 2) * 1000); await c.page.reload(); await expect(c.page.getByTestId('sf-notice-checkout_refreshed')).toBeVisible(); await d.state(c); invariant([...await sessionIds()].some(id => !originalSessionIds.has(id)), 'EXPIRED_SESSION_NOT_REPLACED');
     await d.delivery(c); await d.pay(c, '4000002500003155'); await c.page.waitForTimeout((ttl + 2) * 1000); await c.page.reload(); await expect(c.page.getByTestId('sf-payment')).toHaveAttribute('data-state', 'recovery'); await d.challenge(c.page, 'success'); await d.settled(c, 1); return ['EXPIRY_REPLACEMENT_AND_INFLIGHT_RECOVERY'];
   },
   'SF-22': async d => { const c = await normal(d, 'headless-wallet'); await expect(c.page.getByTestId('sf-wallets')).toBeHidden(); await d.card(c.page); await expect(c.page.getByTestId('sf-pay-button')).toBeEnabled(); invariant(d.guards.get(c.page.context())!.consoleErrors === 0, 'BROWSER_CONSOLE_ERROR'); return ['HEADLESS_WALLETS_HIDDEN_CARD_USABLE']; },

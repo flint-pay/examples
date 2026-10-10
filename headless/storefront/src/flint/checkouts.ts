@@ -26,6 +26,9 @@ export type ReadCheckout={record:CheckoutRecord;session:CheckoutSession;order:Or
 export type MutationContext={order_revision?:string;delivery_selection_id:string|null;delivery_quote_id?:string;customer_verification_id?:string};
 const displayNotices=new Set(['checkout_refreshed','delivery_released','total_changed','gift_card_changed','affirm_incomplete','trial_not_started','signed_in_mid_checkout','delivery_requoted']);
 
+const bodyHash=(body:unknown)=>createHash('sha256').update(JSON.stringify(body)).digest('hex');
+const endedSession=new Set(['INVALID_CHECKOUT_SESSION','CHECKOUT_SESSION_EXPIRED','CHECKOUT_SESSION_NOT_OPEN']);
+
 export function pickupLocations(preview?:PickupPreview){
   return preview?.locations.map((location,index)=>({delivery_option_id:location.location_id,delivery_method_id:location.delivery_method_ids[0]!,name:location.name,type:'pickup',amount_money:null,delivery_choice_group_id:'pickup_locations',availability_status:'ready',display_position:index,distance_meters:location.distance_meters,pickup:{location:{location_id:location.location_id,name:location.name,address:location.address}}}));
 }
@@ -52,7 +55,7 @@ export class Checkouts {
     });
   }
   async action<T>(record:CheckoutRecord,kind:string,body:unknown,call:(key:string)=>Promise<T>,fixedKey?:string,classifyError?:(error:unknown)=>'challenge'|undefined):Promise<T>{
-    const hash=createHash('sha256').update(JSON.stringify(body)).digest('hex');
+    const hash=bodyHash(body);
     const resource=`order:${record.order_id??record.checkout_ref}`;
     let row=fixedKey?this.store.get<ActionRecord>('SELECT * FROM actions WHERE idempotency_key=?',fixedKey):this.store.get<ActionRecord>("SELECT * FROM actions WHERE resource=? AND kind=? AND status IN ('pending','unknown')",resource,kind);
     if(row&&row.body_hash!==hash)throw new LocalError('ACTION_RECONCILIATION_REQUIRED',409);
@@ -67,8 +70,28 @@ export class Checkouts {
     const input=previous?.body?JSON.parse(previous.body) as typeof freshInput:freshInput;
     const launched=await this.action(record,'session_create',input,key=>this.client.checkoutSessions.create(input,this.auth.merchant(key)),`session-${record.checkout_ref}-${record.generation}`);
     if(input.page_origin&&launched.checkout_session.page_origin!==input.page_origin){logLaunchInvalid('page_origin_mismatch');throw new LocalError('CHECKOUT_LAUNCH_INVALID',503);}
-    this.store.run('UPDATE checkouts SET order_id=?,checkout_session_id=?,checkout_auth_token=?,needs_replacement=0,updated_at=? WHERE checkout_ref=?',launched.checkout_session.order_id??record.order_id,launched.checkout_session.checkout_session_id,launched.checkout_access.checkout_auth_token,Date.now(),record.checkout_ref);
+    // The new session starts without the buyer's saved contact, so journal its restoration in the same step that stops flagging replacement.
+    this.store.transaction(()=>{
+      this.store.run('UPDATE checkouts SET order_id=?,checkout_session_id=?,checkout_auth_token=?,needs_replacement=0,updated_at=? WHERE checkout_ref=?',launched.checkout_session.order_id??record.order_id,launched.checkout_session.checkout_session_id,launched.checkout_access.checkout_auth_token,Date.now(),record.checkout_ref);
+      const current=this.record(record.checkout_ref),saved=this.details(current).contact??{},resource=`order:${current.order_id??current.checkout_ref}`,key=`contact-restore-${current.checkout_ref}-${current.generation}`;
+      const buyer_contact:{email?:string|null;phone?:string|null}={};
+      if(saved.email!==undefined)buyer_contact.email=saved.email;if(saved.phone!==undefined)buyer_contact.phone=saved.phone;
+      this.store.run("UPDATE actions SET status='rejected' WHERE resource=? AND kind='contact_restore' AND status IN ('pending','unknown') AND idempotency_key<>?",resource,key);
+      if(Object.keys(buyer_contact).length)this.store.run('INSERT OR IGNORE INTO actions(action_id,resource,kind,idempotency_key,body,body_hash,created_at) VALUES(?,?,?,?,?,?,?)',key,resource,'contact_restore',key,JSON.stringify({buyer_contact}),bodyHash({buyer_contact}),Date.now());
+    });
     return this.record(record.checkout_ref);
+  }
+  /** Replays the journaled contact restoration for the current session under its original key until the outcome is known; true when it was applied. */
+  async restoreContact(record:CheckoutRecord):Promise<boolean>{
+    const row=this.store.get<ActionRecord>("SELECT * FROM actions WHERE idempotency_key=? AND status IN ('pending','unknown')",`contact-restore-${record.checkout_ref}-${record.generation}`);
+    if(!row?.body)return false;
+    const body=JSON.parse(row.body) as {buyer_contact:{email?:string|null;phone?:string|null}};
+    try{await this.action(record,'contact_restore',body,key=>this.client.checkoutSessions.update(record.checkout_session_id!,body,this.auth.checkout(record,key)),row.idempotency_key);return true;}
+    catch(error){
+      // An ended session is replaced by the read that follows, and that launch journals a fresh restoration.
+      if(error&&typeof error==='object'&&'code'in error&&endedSession.has(String(error.code)))return false;
+      throw error;
+    }
   }
   async start(cart:Cart,session:Session,user?:User):Promise<CheckoutRecord>{
     return this.store.locked(`cart:${cart.cart_id}`,async()=>{
@@ -107,10 +130,11 @@ export class Checkouts {
         credentialsStale=true;
         session=await this.client.checkoutSessions.get(record.checkout_session_id!,undefined,this.auth.merchant());
       }
+      if(session.status==='open'&&!credentialsStale&&!record.needs_replacement&&await this.restoreContact(record))session=await this.client.checkoutSessions.get(record.checkout_session_id!,undefined,this.auth.checkout(record));
       const managedRead=['paid','partially_paid'].includes(session.status)||['invalidated','expired','closed'].includes(session.status)&&!session.recovery_mode;
       let order=managedRead?await this.client.orders.get(record.order_id!,undefined,this.auth.merchant()):await this.payments.read(record);
       const unresolved=this.payments.unresolved(record);
-      const unresolvedMutation=this.store.get<ActionRecord>("SELECT * FROM actions WHERE resource=? AND kind NOT IN ('pay','resume','cancel','session_create') AND status IN ('pending','unknown')",`order:${record.order_id}`);
+      const unresolvedMutation=this.store.get<ActionRecord>("SELECT * FROM actions WHERE resource=? AND kind NOT IN ('pay','resume','cancel','session_create','contact_restore') AND status IN ('pending','unknown')",`order:${record.order_id}`);
       if(this.identity.isBound(user,this.sandboxId)&&order.customer_id!==user.flint_customer_id&&record.user_id===user.user_id){
         if(attemptOpen(order.active_payment_attempt)||unresolved||unresolvedMutation)this.notice(record,'signed_in_mid_checkout');
         else if(session.status==='open'&&record.kind==='order'){
@@ -126,6 +150,7 @@ export class Checkouts {
         record=await this.launch(record,this.identity.isBound(user,this.sandboxId)?user.flint_customer_id!:undefined,session.status==='open');
         const details=this.details(record);delete details.delivery_quote;delete details.delivery_selection;delete details.pickup_preview;delete details.quote_basis;delete details.verification;this.saveDetails(record,details);
         this.notice(record,'checkout_refreshed');
+        await this.restoreContact(record);
         session=await this.client.checkoutSessions.get(record.checkout_session_id!,undefined,this.auth.checkout(record));order=await this.client.orders.get(record.order_id!,undefined,this.auth.checkout(record));
         credentialsStale=false;
       }
