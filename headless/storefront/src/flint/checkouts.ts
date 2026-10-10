@@ -61,7 +61,12 @@ export class Checkouts {
     if(row&&row.body_hash!==hash)throw new LocalError('ACTION_RECONCILIATION_REQUIRED',409);
     if(!row){const key=fixedKey??`${kind}-${record.checkout_ref}-${randomReference('')}`;this.store.run('INSERT INTO actions(action_id,resource,kind,idempotency_key,body,body_hash,created_at) VALUES(?,?,?,?,?,?,?)',key,resource,kind,key,JSON.stringify(body),hash,Date.now());row=this.store.get<ActionRecord>('SELECT * FROM actions WHERE action_id=?',key)!;}
     try{const response=await call(row.idempotency_key);this.store.run("UPDATE actions SET status='succeeded' WHERE action_id=?",row.action_id);return response;}
-    catch(error){const uncertain=error instanceof SdkError?error.outcome!=='not_sent'&&(unknownOutcome(error)||error.outcome!=='response'||[401,403].includes(error.status??0)):!(error instanceof LocalError);this.store.run('UPDATE actions SET status=? WHERE action_id=?',classifyError?.(error)??(uncertain?'unknown':'rejected'),row.action_id);throw error;}
+    catch(error){
+      // Flint returns this before confirming the code, and keeps the verification open for another try.
+      const verificationRejected=kind==='checkout_verification_confirm'&&error instanceof SdkError&&error.kind==='server'&&error.outcome==='response'&&error.status===503&&error.code==='CUSTOMER_VERIFICATION_UNAVAILABLE';
+      const uncertain=!verificationRejected&&(error instanceof SdkError?error.outcome!=='not_sent'&&(unknownOutcome(error)||error.outcome!=='response'||[401,403].includes(error.status??0)):!(error instanceof LocalError));
+      this.store.run('UPDATE actions SET status=? WHERE action_id=?',classifyError?.(error)??(uncertain?'unknown':'rejected'),row.action_id);throw error;
+    }
   }
   async launch(record:CheckoutRecord,customerId?:string,replaceCurrent=true):Promise<CheckoutRecord>{
     const common={surface:'embedded' as const,page_origin:this.config.appOrigin,customer_collection:{require_email:true,...(customerId?{customer_id:customerId}:{})},expiration:{expires_in_seconds:String(this.config.checkoutTtl)},redirects:{success_redirect_url:`${this.config.appOrigin}/checkout/${record.checkout_ref}/return`},external_reference_id:record.checkout_ref};
