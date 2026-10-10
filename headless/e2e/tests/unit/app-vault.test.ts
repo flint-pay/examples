@@ -142,6 +142,50 @@ test('the five exact SQL projections read synthetic IdentityStore rows without m
     assert.deepEqual(await readFile(path),before); assert.equal((await stat(path)).mtimeMs,info.mtimeMs);
   } finally {identity.close();}
 }));
+function buyerVault(dir: string, remote: { customer_id: string; email: string }) {
+  const c = config(dir), rawEmail = alias(c, 'b1'); let reads = 0;
+  const fixture = { email: rawEmail, customerId: customer, verified: true };
+  const resource = { resource: customer, type: 'customer', sandbox: 'A', sandboxId: c.pins.A.sandboxId, owned: true, createdBy: run, purpose: 'app-creation' };
+  const d = { config: c, fixtures: { buyers: { b1: fixture } }, operator: { ledger: { state: { resources: [resource] } }, clients: { clients: { A: { customers: { get: async (id: string) => { assert.equal(id, customer); reads++; return remote; } } } } } } } as unknown as Driver;
+  return { vault: new AppVault(d, 'AC-16'), fixture, rawEmail, reads: () => reads };
+}
+test('vault buyer keeps the raw run alias gate and uses canonical app email for SQL', async () => temp(async dir => {
+  const rawEmail = alias(config(dir), 'b1'), canonicalEmail = rawEmail.trim().toLowerCase();
+  assert.notEqual(rawEmail, canonicalEmail);
+  const f = buyerVault(dir, { customer_id: customer, email: canonicalEmail }), before = { ...f.fixture };
+  const identity = new IdentityStore(join(dir, 'identity-a.sqlite'));
+  try {
+    const user = await identity.createUser('Unit', rawEmail, 'synthetic-password');
+    identity.bind(user.user_id, 'test_PLACEHOLDER', customer, user.email);
+    identity.saveVault({ user_id: user.user_id, sandbox_id: 'test_PLACEHOLDER', customer_session_id: family, secret: 'flint_cses_PLACEHOLDER', refresh_token: 'flint_cref_PLACEHOLDER', expires_at: 1, refresh_expires_at: 2 });
+    const buyer = await f.vault.buyer();
+    assert.deepEqual(buyer, { email: canonicalEmail, customerId: customer, sandboxId: 'test_PLACEHOLDER' });
+    assert.deepEqual(f.fixture, before); assert.equal(f.reads(), 1);
+    const rows = identity.db.prepare(VAULT_QUERIES.metadata).all(buyer.email, buyer.customerId, buyer.sandboxId, buyer.sandboxId);
+    assert.equal(rows.length, 1); assert.equal(rows[0].customer_session_id, family);
+    assert.equal(identity.db.prepare(VAULT_QUERIES.metadata).all(rawEmail, customer, buyer.sandboxId, buyer.sandboxId).length, 0);
+  } finally { identity.close(); }
+}));
+test('vault buyer rejects wrong or noncanonical remote email and a mismatched customer ID', async () => {
+  const rawEmail = alias(config('/tmp/synthetic'), 'b1'), canonicalEmail = rawEmail.trim().toLowerCase();
+  for (const remote of [
+    { customer_id: customer, email: 'other@example.invalid' },
+    { customer_id: customer, email: rawEmail },
+    { customer_id: customer, email: ` ${canonicalEmail} ` },
+    { customer_id: 'cus_OTHER_PLACEHOLDER', email: canonicalEmail },
+  ]) {
+    const f = buyerVault('/tmp/synthetic', remote), before = { ...f.fixture };
+    await assert.rejects(() => f.vault.buyer(), { status: 'BLOCKED', code: 'RUN_OWNED_APP_MINTED_BUYER_SESSION_REQUIRED' });
+    assert.deepEqual(f.fixture, before); assert.equal(f.reads(), 1);
+  }
+});
+test('vault buyer still rejects a canonicalized fixture instead of the exact raw run alias', async () => {
+  const canonicalEmail = alias(config('/tmp/synthetic'), 'b1').trim().toLowerCase();
+  const f = buyerVault('/tmp/synthetic', { customer_id: customer, email: canonicalEmail });
+  f.fixture.email = canonicalEmail;
+  await assert.rejects(() => f.vault.buyer(), { status: 'BLOCKED', code: 'RUN_OWNED_APP_MINTED_BUYER_SESSION_REQUIRED' });
+  assert.equal(f.reads(), 0);
+});
 test('family provenance cannot use a public fixture or a non-app audit event', () => {
   const c=config('/tmp/synthetic'),resource={resource:family,type:'customer_session',sandbox:'A',sandboxId:c.pins.A.sandboxId,owned:true,createdBy:run,purpose:'app-creation'};
   const d={config:c,operator:{ledger:{state:{resources:[resource]}}},fixtures:{buyers:{b1:{customerId:customer}}},appResources:[{app:'accountA',id:family,type:'customer_session',created:true,customerId:customer,timestamp:100}]} as unknown as Driver;

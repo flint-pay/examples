@@ -146,9 +146,10 @@ export class AppVault {
     const email = alias(this.d.config, 'b1'), customerId = this.d.fixtures.buyers.b1.customerId, sandboxId = this.d.config.pins.A.sandboxId;
     const resource = this.d.operator.ledger.state.resources.find(r => r.resource === customerId && r.type === 'customer' && r.sandbox === 'A');
     gate(customerId && this.d.fixtures.buyers.b1.email === email && resource?.owned && resource.createdBy === this.d.config.run && resource.sandboxId === sandboxId && resource.purpose !== 'supplied-fixture' && resource.purpose !== 'app-reference', 'RUN_OWNED_APP_MINTED_BUYER_SESSION_REQUIRED', 'BLOCKED');
+    const canonicalEmail = email.trim().toLowerCase();
     const customer = await this.d.operator.clients.clients.A.customers.get(customerId);
-    gate(customer.customer_id === customerId && customer.email === email, 'RUN_OWNED_APP_MINTED_BUYER_SESSION_REQUIRED', 'BLOCKED');
-    return { email, customerId, sandboxId };
+    gate(customer.customer_id === customerId && customer.email === canonicalEmail, 'RUN_OWNED_APP_MINTED_BUYER_SESSION_REQUIRED', 'BLOCKED');
+    return { email: canonicalEmail, customerId, sandboxId };
   }
   async #query<T>(kind: keyof typeof VAULT_QUERIES, args: string[], consume: (rows: Record<string, any>[]) => T): Promise<T> {
     const { directory, manifest, proc } = await verifyVaultAuthority(this.d, this.row);
