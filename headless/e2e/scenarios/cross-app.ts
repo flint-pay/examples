@@ -3,6 +3,7 @@ import { Client } from '@flintpay/node';
 import { createHmac } from 'node:crypto';
 import type { Driver } from '../support/driver.ts';
 import type { Scenario } from './storefront.ts';
+import { billing } from './storefront.ts';
 import { invariant } from '../support/safe.ts';
 import { pinnedFetch } from '../support/sdk.ts';
 import { runChild } from '../support/child.ts';
@@ -81,7 +82,7 @@ export const crossApp: Record<string, Scenario> = {
   },
   'SF-26X': async d => {
     invariant(d.fixtures.values.realWebhookForwarding?.owned && d.fixtures.values.realWebhookForwarding?.ready, 'PUBLIC_WEBHOOK_FORWARDER_AUTHORITY_REQUIRED');
-    const page = await d.page('real-webhook'), c = await d.checkout(page, 'brewing-class'); await d.pay(c); await d.settled(c);
+    const page = await d.page('real-webhook'), c = await d.checkout(page, 'brewing-class'); await billing(d, c); await d.pay(c); await d.settled(c);
     await expect(page.getByText('Payment confirmed by Flint', { exact: true })).toBeVisible({ timeout: 60_000 });
     const events = await d.operator.clients.clients.A.webhookEvents.list({ event_type: 'order.paid' }); invariant(events.data.some((e: any) => e.data?.order?.order_id === c.orderId || e.data?.order_id === c.orderId), 'REAL_WEBHOOK_EVENT_NOT_OBSERVED'); return ['REAL_FLINT_WEBHOOK_DELIVERY'];
   },

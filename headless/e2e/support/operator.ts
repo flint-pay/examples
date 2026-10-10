@@ -1,4 +1,4 @@
-import type {UpdateSettingsRequestInput} from '@flintpay/node';
+import type {CreateInvoiceRequestInput,CreateOrderRequestInput,UpdateSettingsRequestInput} from '@flintpay/node';
 import type { PublicClient } from './sdk.ts';
 import { VerifiedClients } from './sdk.ts';
 import { Ledger } from './ledger.ts';
@@ -56,7 +56,11 @@ export class Operator {
   validate(step: PlanStep): void {
     invariant(step.operation in operations && /^[a-zA-Z0-9_-]{1,100}$/.test(step.name) && ['A', 'B'].includes(step.sandbox), 'OPERATOR_PLAN_INVALID');
     invariant(Array.isArray(step.args) && Array.isArray(step.creates), 'OPERATOR_PLAN_INVALID');
-    invariant(operations[step.operation as Operation].creates.every(type => step.creates.some(c => c.type === type)), 'ALL_CREATED_RESOURCES_MUST_BE_TRACKED');
+    const invoiceOrderId = step.operation === 'invoices.create' ? step.args[0]?.order_id : undefined;
+    // An invoice drafted from a run-owned order creates only the invoice; quick-pay also creates its order.
+    const createdTypes = invoiceOrderId === undefined ? operations[step.operation as Operation].creates : ['invoice'];
+    invariant(createdTypes.every(type => step.creates.some(c => c.type === type)), 'ALL_CREATED_RESOURCES_MUST_BE_TRACKED');
+    if (invoiceOrderId !== undefined) this.owned(step.sandbox, invoiceOrderId);
     invariant(step.creates.every(c => c.cleanup && Number.isFinite(Date.parse(c.reviewAt))), 'RESOURCE_DISPOSITION_REQUIRED');
     const exact = (value: any, path: (string | number)[]) => {
       if (!value || typeof value !== 'object') return;
@@ -108,11 +112,18 @@ export class Operator {
   async issueInvoice(name: string, customerId: string, email: string): Promise<any> {
     const date = this.runDate();
     const reviewAt = new Date(date + 30 * 86400_000).toISOString();
-    const response = await this.execute({ name, sandbox: 'A', operation: 'invoices.create', args: [{
-      quick_pay: { customer_id: customerId, line_items: [{ name: 'Acceptance service', quantity: '1', unit_price_money: { amount: '12000', currency: 'USD' }, fulfillment: { requirement: 'none' }, tax: { taxable: true } }] },
+    const orderInput: CreateOrderRequestInput = {
+      customer_id: customerId, line_items: [{ name: 'Acceptance service', quantity: '1', unit_price_money: { amount: '12000', currency: 'USD' }, fulfillment: { requirement: 'none' }, tax: { taxable: true } }],
+      tax: { enabled: true, location: { address_source: 'provided', address_type: 'billing_address', address: { line1: '11 Wall Street', city: 'New York', state: 'NY', postal_code: '10005', country: 'US' } } },
+      metadata: { e2e_run: this.ledger.run },
+    };
+    const order = await this.execute({ name: `${name}-order`, sandbox: 'A', operation: 'orders.create', args: [orderInput], creates: [{ path: 'order_id', type: 'order', cleanup: 'review', reviewAt }], purpose: name });
+    const invoiceInput: CreateInvoiceRequestInput = {
+      order_id: order.data.order_id,
       collection: { mode: 'buyer_initiated', payment_policy: { enabled_payment_options: ['card', 'ach_debit', 'affirm'] } },
       payment_due: { type: 'absolute', due_at: new Date(date + 14 * 86400_000).toISOString() }, recipient_email: email, metadata: { e2e_run: this.ledger.run },
-    }], creates: [{ path: 'invoice_id', type: 'invoice', cleanup: 'invoice', reviewAt }, { path: 'order_id', type: 'order', cleanup: 'review', reviewAt }], purpose: name });
+    };
+    const response = await this.execute({ name, sandbox: 'A', operation: 'invoices.create', args: [invoiceInput], creates: [{ path: 'invoice_id', type: 'invoice', cleanup: 'invoice', reviewAt }], purpose: name });
     await this.execute({ name: `${name}-issue`, sandbox: 'A', operation: 'invoices.issue', args: [response.data.invoice_id, { delivery_mode: 'email' }], creates: [], purpose: name });
     return response.data;
   }
