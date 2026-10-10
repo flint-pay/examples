@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Client,SdkError } from '@flintpay/node';
-import type { CreateCheckoutSessionRequestInput, CreateSubscriptionPlanRequestInput, UpdateSubscriptionRequestInput } from '@flintpay/node';
+import type { CreateCheckoutSessionRequestInput, CreateInvoiceRequestInput, CreateOrderRequestInput, CreateSubscriptionPlanRequestInput, Invoice, IssueInvoiceResult, Order, UpdateSubscriptionRequestInput } from '@flintpay/node';
 import { Ledger } from '../../support/ledger.ts';
 import { Operator, operations } from '../../support/operator.ts';
 import type { VerifiedClients } from '../../support/sdk.ts';
@@ -18,31 +18,91 @@ test('every operator method exists in the exact published SDK', () => {
   for (const operation of Object.keys(operations)) { const [resource, method] = operation.split('.'); assert.equal(typeof (client as any)[resource]?.[`${method}WithResponse`], 'function', operation); }
 });
 
-test('invoice fixture declares taxable service input and resumes without duplicate create or issue', async () => setup(async (ledger, dir) => {
-  const calls: string[] = [];
-  const invoice = { invoice_id: 'inv_UNIT_FAKE', order_id: 'ord_UNIT_FAKE' };
-  const fake = { invoices: {
-    createWithResponse: async (body: any) => {
-      assert.equal(body.quick_pay.customer_id, 'cus_UNIT_FAKE');
-      assert.equal(body.quick_pay.line_items[0].tax.taxable, true);
-      assert.deepEqual(body.quick_pay.line_items[0].unit_price_money, { amount: '12000', currency: 'USD' });
-      assert.equal(body.quick_pay.line_items[0].fulfillment.requirement, 'none');
-      assert.equal(body.quick_pay.tax?.enabled === false, false);
-      calls.push('create'); return { body: { data: invoice }, meta: { requestId: 'req_UNIT_FAKE' } };
-    },
-    issueWithResponse: async (id: string, body: unknown) => {
-      assert.equal(id, invoice.invoice_id); assert.deepEqual(body, { delivery_mode: 'email' });
-      assert.equal(ledger.state.resources.filter(r => r.owned).length, 2);
-      calls.push('issue'); return { body: { data: invoice }, meta: {} };
-    },
-  } };
-  const clients = { config, writable: async () => fake } as unknown as VerifiedClients;
-  assert.deepEqual(await new Operator(clients, ledger, {} as Fixtures).issueInvoice('acceptance-invoice', 'cus_UNIT_FAKE', 'buyer@example.invalid'), invoice);
+test('invoice fixture creates a taxed order before drafting and replays interrupted issue through the published SDK', async () => setup(async (ledger, dir) => {
+  const zero = { amount: '0', currency: 'USD' }, subtotal = { amount: '12000', currency: 'USD' }, tax = { amount: '1065', currency: 'USD' }, total = { amount: '13065', currency: 'USD' };
+  const order: Order = {
+    order_id: 'ord_UNIT_FAKE', buyer_actions: [], status: 'open', payment_status: 'unpaid', refund_status: 'none',
+    line_items: [{ order_line_item_id: 'oli_UNIT_FAKE', name: 'Acceptance service', quantity: '1', version: '1', refunded_quantity: '0', unit_price_money: subtotal, base_subtotal_money: subtotal, subtotal_money: subtotal, tax_money: tax, total_money: total, discount_money: zero, modifier_total_money: zero, refunded_money: zero }],
+    pricing_amounts: { charge_money: zero, discount_money: zero, requested_tip_money: zero, subtotal_money: subtotal, tax_money: tax, total_money: total },
+    settlement_amounts: { balance_money: total, outstanding_money: total, paid_money: zero, credit_money: zero, net_collected_money: zero, refunded_money: zero, settled_tip_money: zero },
+    tax: { enabled: true, mode: 'automatic', status: 'calculated', taxability_reason: 'standard_rated' },
+  };
+  const invoice: Invoice = { invoice_id: 'inv_UNIT_FAKE', order_id: order.order_id, merchant_id: config.pins.A.merchantId, status: 'draft', version: '1', collection_block_status: 'none', credit_money: zero, currently_due_money: zero, outstanding_money: total, paid_money: zero, refunded_money: zero, refund_status: 'none', is_overdue: false, late_fees: [], reminders_paused: false };
+  const orderInput: CreateOrderRequestInput = {
+    customer_id: 'cus_UNIT_FAKE', line_items: [{ name: 'Acceptance service', quantity: '1', unit_price_money: subtotal, fulfillment: { requirement: 'none' }, tax: { taxable: true } }],
+    tax: { enabled: true, location: { address_source: 'provided', address_type: 'billing_address', address: { line1: '11 Wall Street', city: 'New York', state: 'NY', postal_code: '10005', country: 'US' } } }, metadata: { e2e_run: run },
+  };
+  const invoiceInput: CreateInvoiceRequestInput = {
+    order_id: order.order_id, collection: { mode: 'buyer_initiated', payment_policy: { enabled_payment_options: ['card', 'ach_debit', 'affirm'] } },
+    payment_due: { type: 'absolute', due_at: '2000-01-15T00:00:00.000Z' }, recipient_email: 'buyer@example.invalid', metadata: { e2e_run: run },
+  };
+  const calls: { method: string; path: string; key: string | null; body: unknown }[] = [];
+  let orderCreated = false, invoiceCreated = false, issueResponseLost = false;
+  const client = new Client({ baseUrl: 'https://api.staging.withflintpay.com', apiKey: 'flint_test_PLACEHOLDER', maxAttempts: 1, transport: async (input, init) => {
+    const path = new URL(String(input)).pathname, method = init!.method!, body = JSON.parse(String(init!.body)), key = new Headers(init!.headers).get('Idempotency-Key');
+    calls.push({ method, path, key, body });
+    const response = (data: Order | Invoice | IssueInvoiceResult) => Response.json({ data }, { headers: { 'X-Request-Id': 'req_UNIT_FAKE' } });
+    if (method === 'POST' && path === '/v1/orders') {
+      assert.deepEqual(body, { ...orderInput, line_items: [{ ...orderInput.line_items[0], quantity: 1, unit_price_money: { amount: 12000, currency: 'USD' } }] });
+      assert.equal(orderCreated, false); orderCreated = true;
+      return response(order);
+    }
+    if (method === 'POST' && path === '/v1/invoices') {
+      assert.deepEqual(body, invoiceInput); assert.equal(orderCreated, true); assert.equal(invoiceCreated, false); invoiceCreated = true;
+      assert.ok(ledger.state.resources.some(r => r.resource === order.order_id && r.type === 'order' && r.sandbox === 'A' && r.owned));
+      return response(invoice);
+    }
+    if (method === 'PATCH' && path === `/v1/orders/${order.order_id}`) {
+      assert.equal(invoiceCreated, true);
+      return Response.json({ error: { type: 'conflict', code: 'INVOICE_LOCKED_ORDER_FINANCIALS', message: 'Financial fields cannot be changed while an active invoice owns collection. Void the invoice first.' } }, { status: 409 });
+    }
+    assert.equal(method, 'POST'); assert.equal(path, `/v1/invoices/${invoice.invoice_id}/issue`); assert.deepEqual(body, { delivery_mode: 'email' });
+    assert.equal(invoiceCreated, true);
+    if (!issueResponseLost) { issueResponseLost = true; throw new TypeError('Unit fixture lost the issue response'); }
+    return response({ invoice: { ...invoice, status: 'open', version: '2' } });
+  } });
+  const clients = { config, writable: async () => client } as unknown as VerifiedClients;
+  await assert.rejects(() => new Operator(clients, ledger, {} as Fixtures).issueInvoice('acceptance-invoice', 'cus_UNIT_FAKE', 'buyer@example.invalid'), error => {
+    assert.ok(error instanceof SdkError); assert.equal(issueResponseLost, true, JSON.stringify(calls)); return true;
+  });
+  assert.equal(ledger.state.actions['A:acceptance-invoice-issue'].phase, 'unknown');
   const loaded = new Ledger(join(dir, 'ledger.json'), run); await loaded.load();
-  assert.deepEqual(await new Operator(clients, loaded, {} as Fixtures).issueInvoice('acceptance-invoice', 'cus_UNIT_FAKE', 'buyer@example.invalid'), invoice);
-  assert.deepEqual(calls, ['create', 'issue']);
-  assert.deepEqual(loaded.state.resources.map(r => [r.type, r.resource, r.cleanup]), [['invoice', invoice.invoice_id, 'invoice'], ['order', invoice.order_id, 'review']]);
+  const resumed = new Operator(clients, loaded, {} as Fixtures);
+  assert.deepEqual(await resumed.issueInvoice('acceptance-invoice', 'cus_UNIT_FAKE', 'buyer@example.invalid'), invoice);
+  assert.deepEqual(await resumed.issueInvoice('acceptance-invoice', 'cus_UNIT_FAKE', 'buyer@example.invalid'), invoice);
+  assert.deepEqual(calls.map(c => c.path), ['/v1/orders', '/v1/invoices', `/v1/invoices/${invoice.invoice_id}/issue`, `/v1/invoices/${invoice.invoice_id}/issue`]);
+  assert.ok(calls.every(c => c.key)); assert.equal(new Set(calls.map(c => c.key)).size, 3); assert.deepEqual(calls[2], calls[3]);
+  assert.deepEqual(Object.values(loaded.state.actions).map(a => [a.operation, a.phase]), [['orders.create', 'known'], ['invoices.create', 'known'], ['invoices.issue', 'known']]);
+  assert.deepEqual(loaded.state.resources.map(r => [r.type, r.resource, r.cleanup]), [['order', order.order_id, 'review'], ['order_line_item', 'oli_UNIT_FAKE', 'review'], ['invoice', invoice.invoice_id, 'invoice']]);
+  assert.equal(loaded.state.resources.filter(r => r.type === 'order').length, 1);
+  await assert.rejects(() => resumed.issueInvoice('acceptance-invoice', 'cus_CHANGED', 'buyer@example.invalid'), { code: 'IDEMPOTENCY_REQUEST_CHANGED' });
+  assert.equal(calls.length, 4);
+  // A draft already owns collection. The retired create-then-update sequence must be rejected.
+  await assert.rejects(() => client.orders.updateWithResponse(order.order_id, { tax: orderInput.tax }), { code: 'INVOICE_LOCKED_ORDER_FINANCIALS' });
+  assert.equal('orders.update' in operations, false);
 }));
+
+test('invoice draft refuses absent, unowned or foreign-sandbox source orders before SDK calls', async () => setup(async ledger => {
+  let calls = 0;
+  const clients = { config, writable: async () => ({ invoices: { createWithResponse: async () => { calls++; } } }) } as unknown as VerifiedClients;
+  const operator = new Operator(clients, ledger, {} as Fixtures);
+  const input: CreateInvoiceRequestInput = { order_id: 'ord_UNIT_FAKE' };
+  const step: PlanStep = { name: 'invoice-draft', sandbox: 'A', operation: 'invoices.create', args: [input], creates: [{ path: 'invoice_id', type: 'invoice', cleanup: 'invoice', reviewAt: '2000-02-01T00:00:00Z' }], purpose: 'unit-invoice' };
+  await assert.rejects(() => operator.execute(step), { code: 'RUN_RESOURCE_AUTHORITY_REQUIRED' });
+  for (const ownership of [{ sandbox: 'A' as const, owned: false }, { sandbox: 'B' as const, owned: true }]) {
+    await ledger.record({ resource: 'ord_UNIT_FAKE', type: 'order', mode: 'test', merchant: 'mer_PLACEHOLDER', sandboxId: config.pins[ownership.sandbox].sandboxId, createdBy: run, purpose: 'unit-invoice', cleanup: 'review', owner: 'unit', reviewAt: '2000-02-01T00:00:00Z', ...ownership });
+    await assert.rejects(() => operator.execute(step), { code: 'RUN_RESOURCE_AUTHORITY_REQUIRED' });
+  }
+  assert.equal(calls, 0); assert.deepEqual(ledger.state.actions, {});
+}));
+
+test('quick-pay invoice drafts still require tracking their newly created orders', () => {
+  const operator = new Operator({ config } as unknown as VerifiedClients, new Ledger('/unused', run), {} as Fixtures);
+  const input: CreateInvoiceRequestInput = { quick_pay: { line_items: [{ name: 'Service', quantity: '1', unit_price_money: { amount: '12000', currency: 'USD' }, fulfillment: { requirement: 'none' }, tax: { taxable: true } }] } };
+  const step: PlanStep = { name: 'quick-invoice', sandbox: 'A', operation: 'invoices.create', args: [input], creates: [{ path: 'invoice_id', type: 'invoice', cleanup: 'invoice', reviewAt: '2000-02-01T00:00:00Z' }], purpose: 'unit-invoice' };
+  assert.throws(() => operator.validate(step), { code: 'ALL_CREATED_RESOURCES_MUST_BE_TRACKED' });
+  operator.validate({ ...step, creates: [...step.creates, { path: 'order_id', type: 'order', cleanup: 'review', reviewAt: '2000-02-01T00:00:00Z' }] });
+});
 
 function subscriptionPlanStep(quantity: unknown = 1): PlanStep {
   return { name: 'numeric-plan', sandbox: 'A', operation: 'subscriptionPlans.create', args: [{
