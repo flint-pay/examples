@@ -181,7 +181,7 @@ export class Driver {
     if (pickup) {
       await c.page.getByTestId('sf-delivery-mode-pickup').check();
       const form = c.page.locator(`form[action="/checkout/${c.ref}/pickup-locations"]`);
-      await form.locator('[name="postal_code"]').fill('78701');
+      await form.locator('[name="postal_code"]').fill(process.env.E2E_PICKUP_POSTAL_CODE ?? '78701');
       await c.page.getByTestId('sf-pickup-search').click();
     } else {
       await c.page.getByTestId('sf-delivery-mode-ship').check();

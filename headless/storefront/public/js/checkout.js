@@ -469,12 +469,16 @@ const bodies = {
     const shipping = !(mode instanceof HTMLInputElement) || mode.value !== 'pickup';
     const c = contact();
     const name = shipping ? value('ship-name') || c.name : c.name;
+    const recipient = { name, ...(c.email ? { email: c.email } : {}), ...(c.phone ? { phone: c.phone } : {}) };
+    const pickup = form.hasAttribute('data-pickup-select') ? $('input[type="radio"]:checked', form) : null;
+    // A pickup location is discovered by search, so the server quotes it before it selects.
+    if (pickup instanceof HTMLInputElement) return { pickup_location_id: pickup.value, recipient };
     return {
       choices: $$('input[type="radio"]:checked', form).map((input) => ({
         delivery_choice_group_id: input.getAttribute('data-group-id') ?? '',
         delivery_option_id: /** @type {HTMLInputElement} */ (input).value,
       })),
-      recipient: { name, ...(c.email ? { email: c.email } : {}), ...(c.phone ? { phone: c.phone } : {}) },
+      recipient,
     };
   },
   'gift-card': (form) => ({ gift_card_code: field(form, 'gift_card_code') }),

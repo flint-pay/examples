@@ -425,6 +425,7 @@ export const copy = {
     showDeliveryOptions: 'Show delivery options',
     findPickup: 'Find pickup locations',
     pickupSelect: 'Pick up here',
+    pickupDistance: '{distance} mi away',
     pickupPostal: 'Postal code near you',
     optionsLegend: 'Delivery options',
     pickupLegend: 'Pickup locations',

@@ -32,7 +32,7 @@ test('browser environment preserves OS settings without mutating parent authorit
   assert.deepEqual(browserEnvironment({ HOME: undefined, E2E_OPERATOR_A_API_KEY: credentials.E2E_OPERATOR_A_API_KEY }), {});
 });
 
-test('acceptance entrypoint launches Chromium with only OS env while harness retains its credentials', () => {
+for (const guardCodes of [[], ['FLINT_COMMERCE_REQUEST', 'RELAY_VALIDATION_FAILED', 'GUARD_INSPECTION_FAILED', 'FLINT_COMMERCE_REQUEST']]) test(`acceptance entrypoint preserves browser environment and safe guard evidence (${guardCodes.length ? 'guard failure' : 'clean launch'})`, () => {
   const entrypoint = new URL('../../scripts/e2e.ts', import.meta.url).href;
   const configEnvironment = {
     E2E_FLINT_API_BASE_URL: 'https://api.staging.withflintpay.com', E2E_SANDBOX_A_ID: 'test_UNIT_A', E2E_SANDBOX_B_ID: 'test_UNIT_B',
@@ -56,11 +56,23 @@ test('acceptance entrypoint launches Chromium with only OS env while harness ret
         assert.equal(config.operatorPins.A.key, ${JSON.stringify(credentials.E2E_OPERATOR_A_API_KEY)});
         assert.equal(config.pins.A.key, ${JSON.stringify(credentials.E2E_SANDBOX_A_API_KEY)});
         assert.equal(config.pins.B.key, ${JSON.stringify(credentials.E2E_SANDBOX_B_API_KEY)});
-      } async verify() {} }`,
-    '../support/results.ts': 'export class Results { roots = new Map(); rows = new Map(); async save() {} }',
+      } requestIds = new Set(); async verify() {} }`,
+    '../support/results.ts': `export class Results {
+      roots = new Map(); rows = new Map();
+      finish(id, status, evidence) { this.rows.set(id, { id, status, evidence }); }
+      updateRoot(root) { this.roots.set(root.id, root); }
+      stopped(id, prerequisite) { this.rows.set(id, { id, status: 'NOT RUN', prerequisite }); }
+      async save() { globalThis.guardReport = { scenarios: [...this.rows.values()], prerequisites: [...this.roots.values()] }; }
+    }`,
     '../support/ledger.ts': 'export class Ledger { async load() {} }',
     '../support/operator.ts': 'export class Operator { async cleanup() {} }',
-    '../support/driver.ts': 'export class Driver { async guardCheck() {} async close() {} }',
+    '../support/driver.ts': `import { HarnessError } from ${JSON.stringify(new URL('../../support/safe.ts', import.meta.url).href)};
+      export class Driver {
+        scanner = { violations: new Set() };
+        guards = new Map([[{}, { violations: new Set(${JSON.stringify(guardCodes)}), requestIds: new Set() }]]);
+        async guardCheck() { if (${guardCodes.length > 0}) throw new HarnessError('BROWSER_BOUNDARY_VIOLATION'); }
+        async close() {}
+      }`,
     '../support/inbox.ts': 'export const createInbox = () => undefined;',
     '../support/readiness.ts': 'export const inventoryReadiness = () => {}; export const prerequisites = () => [];',
     '../support/build.ts': 'export const verifyBuilds = async () => {};',
@@ -68,7 +80,8 @@ test('acceptance entrypoint launches Chromium with only OS env while harness ret
     '../support/lock.ts': 'export const acquirePairLock = async () => async () => {};',
     '../support/app-vault.ts': 'export const verifyVaultAuthority = async () => {}; export class VaultGateError extends Error {}',
     '../support/audit-feed.ts': 'export const syncAppAudit = async () => {};',
-    '../scenarios/registry.ts': 'export const rows = [], executionOrder = []; export const handlers = {}, dependencies = {}; export const validateRegistry = () => {};',
+    '../scenarios/registry.ts': `export const rows = ${guardCodes.length ? "[{ id: 'U-01' }, { id: 'U-02' }]" : '[]'}, executionOrder = rows.map(row => row.id);
+      export const handlers = { 'U-01': async () => [] }, dependencies = {}; export const validateRegistry = () => {};`,
   };
   // Import the real runner and environment helper; replace service dependencies only.
   const source = `
@@ -94,6 +107,11 @@ test('acceptance entrypoint launches Chromium with only OS env while harness ret
       assert.equal(globalThis.browserBoundaryLaunched, true);
       assert.equal(globalThis.browserBoundaryClosed, true);
       assert.deepEqual({ ...process.env }, parent);
+      if (${guardCodes.length > 0}) {
+        assert.deepEqual(globalThis.guardReport.scenarios[0], { id: 'U-01', status: 'FAIL', evidence: ${JSON.stringify(['BROWSER_BOUNDARY_VIOLATION', ...new Set(guardCodes)])} });
+        assert.deepEqual(globalThis.guardReport.scenarios[1], { id: 'U-02', status: 'NOT RUN', prerequisite: 'PRQ-GUARDS' });
+        assert.equal(globalThis.guardReport.prerequisites.find(root => root.id === 'PRQ-GUARDS').status, 'FAIL');
+      }
     });
     await import(entrypoint);
   `;
@@ -101,8 +119,9 @@ test('acceptance entrypoint launches Chromium with only OS env while harness ret
     env: {}, encoding: 'utf8', timeout: 10_000,
   });
   assert.equal(result.error, undefined);
-  assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stdout, /"event":"ACCEPTANCE_COMPLETE"/);
+  assert.equal(result.status, guardCodes.length ? 1 : 0, result.stdout + result.stderr);
+  assert.match(result.stdout, guardCodes.length ? /"event":"ACCEPTANCE_INCOMPLETE"/ : /"event":"ACCEPTANCE_COMPLETE"/);
+  assert.equal(result.stderr, '');
 });
 
 for (const [path, modes] of [

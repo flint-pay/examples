@@ -1,4 +1,4 @@
-export const SDK_VERSION='3.0.0-beta.20261008013000';
+export const SDK_VERSION='3.0.0-beta.20261009223830';
 import {readBuild} from './build.ts';
 import type {Build} from './build.ts';
 import {isIP} from 'node:net';

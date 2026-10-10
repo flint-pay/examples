@@ -20,6 +20,40 @@ test('pickup search with no results shows none_nearby copy and keeps the search 
   await expect(page.getByTestId('sf-pickup-search')).toBeVisible();
 });
 
+test('a pickup search after a shipping quote shows its locations and its empty result in pickup mode', async ({ page }) => {
+  await openCheckout(page, 'pickup');
+  await waitForPayment(page, 'ready');
+  await fillContact(page);
+  await chooseShipping(page);
+  await expect(page.getByTestId('sf-delivery')).toHaveAttribute('data-mode', 'ship');
+  await expect(page.getByTestId('sf-delivery-option-0')).toBeVisible();
+  await page.getByTestId('sf-delivery-mode-pickup').check();
+  await page.getByTestId('sf-pickup-postal').fill('78701');
+  await page.getByTestId('sf-pickup-search').click();
+  await expect(page.getByTestId('sf-delivery')).toHaveAttribute('data-mode', 'pickup');
+  await expect(page.getByTestId('sf-delivery')).toHaveAttribute('data-state', 'options');
+  await expect(page.getByTestId('sf-pickup-location-0')).toBeVisible();
+  await expect(page.getByTestId('sf-pickup-options')).toContainText('Cedar & Stone Roastery');
+  await page.getByTestId('sf-pickup-postal').fill('99999');
+  await page.getByTestId('sf-pickup-search').click();
+  await expect(page.getByTestId('sf-delivery')).toHaveAttribute('data-mode', 'pickup');
+  await expect(page.getByTestId('sf-delivery')).toHaveAttribute('data-state', 'none_nearby');
+  await expect(page.getByTestId('sf-pickup-none')).toBeVisible();
+});
+
+test('an empty pickup search after a shipping quote shows the empty result in pickup mode', async ({ page }) => {
+  await openCheckout(page, 'pickup');
+  await waitForPayment(page, 'ready');
+  await fillContact(page);
+  await chooseShipping(page);
+  await page.getByTestId('sf-delivery-mode-pickup').check();
+  await page.getByTestId('sf-pickup-postal').fill('99999');
+  await page.getByTestId('sf-pickup-search').click();
+  await expect(page.getByTestId('sf-delivery')).toHaveAttribute('data-mode', 'pickup');
+  await expect(page.getByTestId('sf-delivery')).toHaveAttribute('data-state', 'none_nearby');
+  await expect(page.getByTestId('sf-pickup-none')).toBeVisible();
+});
+
 test('pickup options need the Pick up here button, and arrow keys never submit', async ({ page, request }) => {
   await openCheckout(page, 'pickup');
   await waitForPayment(page, 'ready');

@@ -36,6 +36,7 @@ import type {
   GiftChallengeBoot,
   Money,
   PageContext,
+  PickupLocation,
   SavedMethod,
 } from '../types.ts';
 
@@ -138,10 +139,12 @@ function optionLabel(option: DeliveryOption): { title: string; detail: Html | st
   if (option.type === 'pickup') {
     const location = option.pickup?.location;
     const address = addressLine(location?.address);
+    const meters = (option as PickupLocation).distance_meters;
+    const distance = typeof meters === 'number' ? meters / 1609.344 : null;
     return {
       title: location?.name ?? option.name,
-      detail: html`${address}${location?.instructions ? html`<span class="option-note">${location.instructions}</span>` : ''}`,
-      price: money(option.amount_money, price),
+      detail: html`${address}${distance !== null ? html`<span class="option-note">${fill(copy.checkout.pickupDistance, { distance: distance.toFixed(1) })}</span>` : ''}${location?.instructions ? html`<span class="option-note">${location.instructions}</span>` : ''}`,
+      price: option.amount_money ? money(option.amount_money, price) : html``,
     };
   }
   const estimate = option.arrival_estimate;
@@ -228,7 +231,7 @@ function deliverySection(ctx: Ctx): Html {
   const quote = state.delivery_quote;
   const prefill: Address = state.delivery_selection?.destination_address ?? quote?.destination_address ?? state.session.customer_prefill?.shipping_address ?? {};
   const recipient = state.delivery_selection?.recipient?.name ?? contactValues(state, ctx.user).name;
-  const postal = quote?.buyer_location?.address?.postal_code ?? '';
+  const postal = state.pickup_search?.postal_code ?? '';
   const ship = optionsList(state, 'ship');
   const pickup = optionsList(state, 'pickup');
   if (stateName === 'options' && ((mode === 'ship' && ship.count === 0) || (mode === 'pickup' && pickup.count === 0))) stateName = 'unavailable';
@@ -280,7 +283,7 @@ function deliverySection(ctx: Ctx): Html {
         </form>
         <div class="options-area" data-options-area="pickup" aria-live="polite">
           ${pickup.count
-            ? html`<form method="post" action="${path(state, '/delivery/select')}" data-job-form="delivery-select" novalidate class="stack" data-no-autosubmit data-testid="sf-pickup-options">${pickup.html}<div class="actions"><button class="button button-primary" type="submit" data-testid="sf-pickup-select">${copy.checkout.pickupSelect}</button></div></form>`
+            ? html`<form method="post" action="${path(state, '/delivery/select')}" data-job-form="delivery-select" novalidate class="stack" data-no-autosubmit data-pickup-select data-testid="sf-pickup-options">${pickup.html}<div class="actions"><button class="button button-primary" type="submit" data-testid="sf-pickup-select">${copy.checkout.pickupSelect}</button></div></form>`
             : ''}
         </div>
       </div>`

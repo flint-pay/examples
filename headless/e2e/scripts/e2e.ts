@@ -69,7 +69,9 @@ async function main() {
         const evidence = await handlers[id](driver); await syncAppAudit(driver); await driver.guardCheck(); results.finish(id, 'PASS', evidence, undefined, [...clients.requestIds, ...[...driver.guards.values()].flatMap(g => [...g.requestIds])]);
       }
       catch (e) {
-        const code = safeFailure(e); results.finish(id, e instanceof VaultGateError && e.status === 'BLOCKED' ? 'BLOCKED' : 'FAIL', [code]);
+        const code = safeFailure(e);
+        const guardCodes = [...driver.guards.values()].flatMap(guard => [...guard.violations]);
+        results.finish(id, e instanceof VaultGateError && e.status === 'BLOCKED' ? 'BLOCKED' : 'FAIL', [...new Set([code, ...guardCodes])]);
         if (e instanceof VaultGateError && e.status === 'FAIL') results.updateRoot({ id: 'PRQ-APP-VAULT-AUTHORITY', status: 'FAIL', code });
         if (/^INBOX_/.test(code)) results.updateRoot({ id: 'PRQ-INBOX', status: 'FAIL', code });
         if (driver.scanner.violations.size || [...driver.guards.values()].some(g => g.violations.size)) results.updateRoot({ id: 'PRQ-GUARDS', status: 'FAIL', code: 'BROWSER_OR_CREDENTIAL_GUARD_FAILED' });
