@@ -32,6 +32,53 @@ test('unsafe requests reject missing Origin and CSRF before any provider call',a
     assert.equal(writes,0);
   }finally{h.close();}
 });
+test('concurrent retry requests with the same nonce or no nonce return one journaled retry',async()=>{
+  for(const nonce of [undefined,'retry-primary']){
+    let reads=0,writes=0,releaseReads!:()=>void;const bothRead=new Promise<void>(resolve=>{releaseReads=resolve;});
+    const retry={subscription_payment_retry_id:'retry_example',subscription_id:'sub_example',status:'pending'};
+    const h=await harness({me:{
+      getSubscription:async()=>{if(++reads===2)releaseReads();return {subscription_id:'sub_example',buyer_actions:[{kind:'retry_payment',is_available:true}]};},
+      createSubscriptionPaymentRetry:async(id:string,body:unknown,options:RequestOptions)=>{assert.equal(id,'sub_example');assert.deepEqual(body,{});assert.equal(options.customerToken,'example customer authority');assert.equal(options.apiKey,undefined);assert.ok(options.idempotencyKey);writes++;await bothRead;return retry;},
+    }});try{
+      const headers={...h.headers,...(nonce?{'X-Action-ID':nonce}:{})};
+      const responses=await Promise.all([1,2].map(()=>h.app.request('/subscriptions/sub_example/retry-payment',{method:'POST',headers,body:'{}'})));
+      assert.deepEqual(responses.map(r=>r.status),[200,200]);
+      const bodies=await Promise.all(responses.map(r=>r.json()));assert.deepEqual(bodies,[{retry},{retry}]);assert.equal(writes,1);
+      const journal=h.store.all<{status:string;result:string}>("SELECT status,result FROM actions WHERE kind='retry'");
+      assert.equal(journal.length,1);assert.equal(journal[0].status,'succeeded');assert.deepEqual(JSON.parse(journal[0].result),retry);
+    }finally{h.close();}
+  }
+});
+test('concurrent distinct retry nonces reach the API with independent keys and preserve its in-progress conflict',async()=>{
+  let reads=0,releaseReads!:()=>void;const bothRead=new Promise<void>(resolve=>{releaseReads=resolve;}),keys:string[]=[];
+  const retry={subscription_payment_retry_id:'retry_example',subscription_id:'sub_example',status:'pending'};
+  const h=await harness({me:{
+    getSubscription:async()=>{if(++reads===2)releaseReads();return {subscription_id:'sub_example',buyer_actions:[{kind:'retry_payment',is_available:true}]};},
+    createSubscriptionPaymentRetry:async(id:string,body:unknown,options:RequestOptions)=>{
+      assert.equal(id,'sub_example');assert.deepEqual(body,{});assert.equal(options.customerToken,'example customer authority');assert.equal(options.apiKey,undefined);keys.push(options.idempotencyKey!);
+      if(keys.length===1){await bothRead;return retry;}
+      throw new SdkError('api','Synthetic retry in progress','response',false,{status:409,headers:{},attempts:1,durationMs:1},'SUBSCRIPTION_PAYMENT_RETRY_IN_PROGRESS');
+    },
+  }});try{
+    const responses=await Promise.all(['retry-primary','retry-competing'].map(action=>h.app.request('/subscriptions/sub_example/retry-payment',{method:'POST',headers:{...h.headers,'X-Action-ID':action},body:'{}'})));
+    assert.deepEqual(responses.map(r=>r.status).sort(),[200,409]);assert.deepEqual(await responses.find(r=>r.status===200)!.json(),{retry});assert.equal((await responses.find(r=>r.status===409)!.json()).error.code,'SUBSCRIPTION_PAYMENT_RETRY_IN_PROGRESS');
+    assert.equal(keys.length,2);assert.notEqual(keys[0],keys[1]);
+    assert.deepEqual(h.store.all<{status:string}>("SELECT status FROM actions WHERE kind='retry' ORDER BY status").map(row=>row.status),['rejected','succeeded']);
+  }finally{h.close();}
+});
+test('a completed retry removes the competing capability before another write and the form redirects to its exact retry',async()=>{
+  let writes=0;const retry={subscription_payment_retry_id:'retry_example',subscription_id:'sub_example',status:'pending'};
+  const h=await harness({me:{
+    getSubscription:async()=>({subscription_id:'sub_example',buyer_actions:[{kind:'retry_payment',is_available:writes===0}]}),
+    createSubscriptionPaymentRetry:async()=>{writes++;return retry;},
+  }});try{
+    const first=await h.app.request('/subscriptions/sub_example/retry-payment',{method:'POST',headers:{...h.headers,'Content-Type':'application/x-www-form-urlencoded','X-Action-ID':'retry-primary'},body:new URLSearchParams({_csrf:h.session.session.csrf_token}).toString()});
+    assert.equal(first.status,303);assert.equal(first.headers.get('Location'),'/subscriptions/sub_example?retry=retry_example');
+    const competing=await h.app.request('/subscriptions/sub_example/retry-payment',{method:'POST',headers:{...h.headers,'X-Action-ID':'retry-competing'},body:'{}'});
+    assert.equal(competing.status,409);assert.equal((await competing.json()).error.code,'ACTION_NOT_AVAILABLE');assert.equal(writes,1);
+    assert.equal(h.store.all("SELECT * FROM actions WHERE kind='retry'").length,1);
+  }finally{h.close();}
+});
 test('foreign resource mutations and payment launches stop at the buyer ownership read',async()=>{
   let writes=0;const h=await harness({me:{getOrder:async()=>{throw new LocalError('NOT_FOUND',404);},getInvoice:async()=>{throw new LocalError('NOT_FOUND',404);},sendOrderReceipt:async()=>{writes++;},createInvoiceCheckoutSession:async()=>{writes++;}}});try{
     const receipt=await h.app.request('/orders/ord_foreign/receipt',{method:'POST',headers:h.headers,body:'{}'});assert.equal(receipt.status,404);
