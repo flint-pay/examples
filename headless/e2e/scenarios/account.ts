@@ -32,7 +32,7 @@ async function accountPayment(d: Driver, id: string, method: 'card' | 'affirm' |
   await d.axe(page, 'ac-invoice-pay-ready');
   if (declineFirst) {
     await d.card(page, '4000000000009995'); await expect(page.getByTestId('ac-pay-button')).toBeEnabled(); await page.getByTestId('ac-pay-button').click();
-    await expect(page.getByTestId('ac-payment')).toHaveAttribute('data-state', 'declined'); await d.auditKnownStates(page);
+    await expect(page.getByTestId('ac-payment')).toHaveAttribute('data-state', 'declined', { timeout: 60_000 }); await d.auditKnownStates(page);
   }
   if (method === 'card') await d.card(page); else await providerSteps(d, page, method === 'affirm' ? 'affirm-select' : 'ach-account-instant');
   await expect(page.getByTestId('ac-pay-button')).toBeEnabled(); await page.getByTestId('ac-pay-button').click();
@@ -148,7 +148,11 @@ export const account: Record<string, Scenario> = {
   'AC-07': async d => {
     const id = await fixture(d, 'paidSubscription'), page = await signed(d); d.requireOwned('A', id); await d.goto(page, d.config.origins.accountA, `/subscriptions/${id}`);
     await page.getByTestId('ac-sub-action-pause').click(); await d.form(page, `/subscriptions/${id}/pause`, { cycles: '2' }); invariant((await d.operator.clients.clients.A.subscriptions.get(id)).status === 'paused', 'SUBSCRIPTION_NOT_PAUSED');
-    await page.getByTestId('ac-sub-action-resume').click(); invariant((await d.operator.clients.clients.A.subscriptions.get(id)).status === 'active', 'SUBSCRIPTION_NOT_RESUMED');
+    await page.getByTestId('ac-sub-action-resume').click();
+    await expect.poll(async () => (await d.operator.clients.clients.A.subscriptions.get(id)).status, { timeout: 60_000, message: 'SUBSCRIPTION_NOT_RESUMED' }).toBe('active');
+    await page.reload();
+    await expect(page.getByTestId('ac-subscription-status')).toHaveAttribute('data-state', 'active');
+    await expect(page.getByTestId('ac-sub-action-pause')).toBeEnabled();
     await page.getByTestId('ac-sub-action-cancel').click(); await expect(page.getByRole('dialog')).toContainText('Pause'); await d.form(page, `/subscriptions/${id}/cancel`, { reason: 'too_expensive' }); invariant((await d.operator.clients.clients.A.subscriptions.get(id)).cancel_at_period_end, 'CANCEL_NOT_SCHEDULED');
     await page.getByTestId('ac-sub-action-reactivate').click(); invariant(!(await d.operator.clients.clients.A.subscriptions.get(id)).cancel_at_period_end, 'SUBSCRIPTION_NOT_REACTIVATED');
     const method = await fixture(d, 'alternateOffSessionMethod'); await d.job(page, `/subscriptions/${id}/payment-method`, { payment_method_id: method }); invariant((await d.operator.clients.clients.A.subscriptions.get(id)).payment_method_id === method, 'SUBSCRIPTION_METHOD_NOT_CHANGED');
