@@ -105,7 +105,10 @@ export const account: Record<string, Scenario> = {
     const mail = await d.email('b1', after, 'invoices'); const invoiceLink = d.emailLink(mail, 'flint_account_link_relay');
     const page = await signed(d); await page.goto(invoiceLink); invariant(new URL(page.url()).pathname === `/invoices/${invoice.invoice_id}`, 'INVOICE_EMAIL_RESOURCE_DESTINATION'); await d.goto(page, d.config.origins.accountA, `/invoices/${invoice.invoice_id}/pay`);
     const first = await d.job(page, `/invoices/${invoice.invoice_id}/pay/attempt`); await page.reload(); const second = await d.job(page, `/invoices/${invoice.invoice_id}/pay/attempt`);
-    invariant(first.body?.state?.order?.order_id === second.body?.state?.order?.order_id, 'INVOICE_RELAUNCH_CHANGED_ORDER');
+    invariant(first.status === 200 && second.status === 200, 'INVOICE_RELAUNCH_READ_FAILED');
+    const firstOrderId = first.body?.state?.order?.order_id, secondOrderId = second.body?.state?.order?.order_id;
+    invariant(typeof firstOrderId === 'string' && firstOrderId.length > 0 && typeof secondOrderId === 'string' && secondOrderId.length > 0, 'INVOICE_RELAUNCH_ORDER_MISSING');
+    invariant(firstOrderId === secondOrderId, 'INVOICE_RELAUNCH_CHANGED_ORDER');
     const buyer = await createBuyerClient(d, 'invoice-buyer-authority', d.fixtures.buyers.b1.customerId!);
     const reused = await buyerInvoiceLaunch(d, buyer, 'invoice-reuse', invoice.invoice_id); invariant(reused.reused_existing === true, 'INVOICE_SESSION_NOT_REUSED');
     const idle = await d.operator.issueInvoice('idle-invoice', d.fixtures.buyers.b1.customerId!, d.fixtures.buyers.b1.email);
