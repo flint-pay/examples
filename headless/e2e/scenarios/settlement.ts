@@ -1,5 +1,6 @@
 import { expect } from '@playwright/test';
 import type { Scenario } from './storefront.ts';
+import { billing } from './storefront.ts';
 import { invariant } from '../support/safe.ts';
 import { assertOneCharge, money, giftAllocation, equalMoney } from '../support/money.ts';
 import { syncAppAudit } from '../support/audit-feed.ts';
@@ -12,14 +13,16 @@ import { providerSteps } from './provider.ts';
 export const settlement: Record<string, Scenario> = {
   'SF-05Z2': async d => {
     const c = await d.checkout(await d.page('zero-balance'), 'brewing-class');
-    await c.page.getByTestId('sf-discount-code').fill(d.fixtures.values.zeroBalancePromotion); const discountResponse = c.page.waitForResponse(r => new URL(r.url()).pathname === `/checkout/${c.ref}/discount` && r.request().method() === 'POST', { timeout: 30000 });
-    await c.page.getByTestId('sf-discount-apply').click(); invariant((await discountResponse).status() === 200, 'ZERO_BALANCE_DISCOUNT_REJECTED');
+    await c.page.getByTestId('sf-discount-code').fill(d.fixtures.values.zeroBalancePromotion);
+    const [discountResponse] = await Promise.all([c.page.waitForResponse(r => new URL(r.url()).pathname === `/checkout/${c.ref}/discount` && r.request().method() === 'POST', { timeout: 30000 }), c.page.getByTestId('sf-discount-apply').click()]);
+    invariant(discountResponse.status() === 200, 'ZERO_BALANCE_DISCOUNT_REJECTED');
     await expect(c.page.getByTestId('sf-discount-applied-0')).toBeVisible({ timeout: 30000 }); await d.state(c);
+    await billing(d, c);
     invariant(money(c.state.order.settlement_amounts.outstanding_money).amount === '0', 'ZERO_BALANCE_FIXTURE_INVALID');
-    const response = c.page.waitForRequest(r => new URL(r.url()).pathname === `/checkout/${c.ref}/pay` && r.method() === 'POST');
     await expect(c.page.getByTestId('sf-payment')).toHaveAttribute('data-collection', 'settlement'); await expect(c.page.getByTestId('sf-settlement-explanation')).toBeVisible();
-    await expect(c.page.getByTestId('sf-pay-button')).toBeEnabled(); await c.page.getByTestId('sf-pay-button').click();
-    const request = (await response).postDataJSON(); invariant(!request.credential && request.approved_outstanding_money?.amount === '0', 'ZERO_BALANCE_PROCESSOR_SOURCE');
+    await expect(c.page.getByTestId('sf-pay-button')).toBeEnabled();
+    const [response] = await Promise.all([c.page.waitForRequest(r => new URL(r.url()).pathname === `/checkout/${c.ref}/pay` && r.method() === 'POST'), c.page.getByTestId('sf-pay-button').click()]);
+    const request = response.postDataJSON(); invariant(!request.credential && request.approved_outstanding_money?.amount === '0', 'ZERO_BALANCE_PROCESSOR_SOURCE');
     await expect(c.page.getByTestId('sf-complete')).toHaveAttribute('data-state', 'paid');
     assertOneCharge(await d.trackOrder('A', c.orderId), (await d.operator.clients.clients.A.orders.listPaymentAttempts(c.orderId)).data, 0);
     return ['ZERO_BALANCE_PUBLIC_PAY_WITHOUT_PROCESSOR'];
@@ -30,9 +33,10 @@ export const settlement: Record<string, Scenario> = {
     invariant(issued.code, 'PUBLIC_GIFT_CODE_REQUIRED'); d.scanner.addGift(issued.code);
     await d.applyGift(c,issued.code);
     const accepted = giftAllocation(c.state.order); invariant(money(accepted.processor_money).amount === '0', 'GIFT_FULL_ALLOCATION_INVALID');
-    const response = c.page.waitForRequest(r => new URL(r.url()).pathname === `/checkout/${c.ref}/pay` && r.method() === 'POST');
     await expect(c.page.getByTestId('sf-payment')).toHaveAttribute('data-collection', 'settlement'); await expect(c.page.getByTestId('sf-settlement-explanation')).toBeVisible();
-    await expect(c.page.getByTestId('sf-pay-button')).toBeEnabled(); await c.page.getByTestId('sf-pay-button').click(); const request = (await response).postDataJSON();
+    await expect(c.page.getByTestId('sf-pay-button')).toBeEnabled();
+    const [response] = await Promise.all([c.page.waitForRequest(r => new URL(r.url()).pathname === `/checkout/${c.ref}/pay` && r.method() === 'POST'), c.page.getByTestId('sf-pay-button').click()]);
+    const request = response.postDataJSON();
     invariant(!request.credential, 'GIFT_FULL_PROCESSOR_SOURCE'); equalMoney(request.approved_outstanding_money, outstanding);
     await expect(c.page.getByTestId('sf-complete')).toHaveAttribute('data-state', 'paid'); const order = await d.trackOrder('A', c.orderId);
     assertOneCharge(order, (await d.operator.clients.clients.A.orders.listPaymentAttempts(c.orderId)).data, 0);

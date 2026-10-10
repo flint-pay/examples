@@ -7,7 +7,7 @@ import { walletScenario } from './wallets.ts';
 
 export type Scenario = (d: Driver) => Promise<string[]>;
 /** Enters the billing address a no-delivery checkout asks for before automatic tax can be calculated, then reads the taxed order. */
-async function billing(d: Driver, c: Checkout): Promise<void> {
+export async function billing(d: Driver, c: Checkout): Promise<void> {
   const section = c.page.getByTestId('sf-billing');
   if (!await section.isVisible() || await section.getAttribute('data-state') !== 'needed') return;
   await c.page.getByTestId('sf-bill-line1').fill('11 Wall Street'); await c.page.getByTestId('sf-bill-city').fill('New York');
