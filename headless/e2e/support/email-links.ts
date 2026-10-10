@@ -4,6 +4,7 @@ import type { Mail } from './inbox.ts';
 
 export const CHECKOUT_ORIGIN = 'https://checkout.staging.withflintpay.com';
 export const accountRelayPath = /^\/account\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+export const invoiceCapabilityFragment = /^#invoice_token=ivt_[a-f0-9]{64}$/;
 export const preferenceRelayPath = /^\/email-preferences\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 export const recipientPath = /^\/gift-cards\/gcg_[0-9A-HJKMNP-TV-Z]{26}$/;
 export const accountFamilies = new Set(['order_receipts', 'fulfillment_updates', 'subscription_lifecycle', 'dunning', 'returns', 'invoices']);
@@ -22,7 +23,8 @@ export function classify(mail: Pick<Mail, 'links'>, family: string, config: Link
     if (u.origin === 'https://withflintpay.com' && u.pathname === '/' && !u.search && !u.hash) return { role: 'flint_brand_credit', verdict: 'record' };
     if (u.origin === config.apiOrigin && accountRelayPath.test(u.pathname)) {
       const entries = [...u.searchParams.entries()];
-      return accountFamilies.has(family) && !u.hash && (!u.search || entries.length === 1 && entries[0][0] === 'action' && ['skip', 'update-delivery', 'pause'].includes(entries[0][1])) ? { role: 'flint_account_link_relay', verdict: 'pass' } : fail('flint_account_link_relay', 'EMAIL_ACCOUNT_RELAY_INVALID');
+      const validFragment = !u.hash || family === 'invoices' && !u.search && invoiceCapabilityFragment.test(u.hash);
+      return accountFamilies.has(family) && validFragment && (!u.search || entries.length === 1 && entries[0][0] === 'action' && ['skip', 'update-delivery', 'pause'].includes(entries[0][1])) ? { role: 'flint_account_link_relay', verdict: 'pass' } : fail('flint_account_link_relay', 'EMAIL_ACCOUNT_RELAY_INVALID');
     }
     if (u.origin === config.apiOrigin && preferenceRelayPath.test(u.pathname)) return accountFamilies.has(family) && !u.search && !u.hash ? { role: 'flint_email_preferences_relay', verdict: 'pass' } : fail('flint_email_preferences_relay', 'EMAIL_PREFERENCE_RELAY_INVALID');
     if (family === 'gift_card_notification' && recipientPath.test(u.pathname)) {

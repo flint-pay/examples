@@ -26,6 +26,7 @@ export function validateRelayResponse(raw: string, status: number, location: str
   const destination = new URL(location, raw);
   invariant(!destination.username && !destination.password && appOrigins.includes(destination.origin), 'RELAY_DESTINATION_FORBIDDEN');
   if (role !== 'relay') invariant(destination.origin === accountOrigin, 'EMAIL_RELAY_ACCOUNT_ORIGIN_REQUIRED');
+  if (role === 'flint_account_link_relay') invariant(!destination.hash && destination.href.endsWith('#'), 'ACCOUNT_RELAY_CLEAR_FRAGMENT_REQUIRED');
   if (role === 'flint_email_preferences_relay') invariant(destination.pathname === '/email-preferences' && !destination.search && /^#token=.+/.test(destination.hash), 'PREFERENCE_FRAGMENT_DESTINATION_REQUIRED');
   return destination.href;
 }
