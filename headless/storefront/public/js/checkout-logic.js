@@ -385,6 +385,15 @@ export function serverBlockers(state) {
   return blockers;
 }
 
+/**
+ * The country of the billing address the buyer saved. The tax location and the delivery address never stand in for it.
+ * @param {CheckoutState} state
+ * @returns {string}
+ */
+export function buyerBillingCountry(state) {
+  return state.billing_address?.country ?? '';
+}
+
 /** @param {unknown} value @returns {boolean} */
 export function looksLikeEmail(value) {
   return typeof value === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());

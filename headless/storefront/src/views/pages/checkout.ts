@@ -591,6 +591,17 @@ function paymentSection(ctx: Ctx): Html {
           <div id="payment-element" role="group" aria-label="${copy.checkout.paymentElementLabel}"></div>
         </div>
         <div id="affirm-messaging" class="messaging" data-testid="sf-affirm-messaging"${messaging ? raw('') : raw(' hidden')}></div>
+        ${messaging
+          ? html`<div class="field" data-affirm-country hidden>
+          <label for="affirm-country">${copy.checkout.billingCountry}</label>
+          <p class="hint" id="affirm-country-hint">${copy.checkout.affirmCountryHint}</p>
+          <select id="affirm-country" name="billing_country" required disabled aria-describedby="affirm-country-hint" data-testid="sf-affirm-country">
+            <option value="" selected>${copy.checkout.billingCountryChoose}</option>
+            <option value="US">${copy.checkout.countryUs}</option>
+            <option value="other">${copy.checkout.countryOther}</option>
+          </select>
+        </div>`
+          : ''}
         ${saveOffered
           ? html`<div class="save-block" data-save-block>
           <label class="check"><input type="checkbox" id="save-card" name="save_payment_method" data-testid="sf-save-card"><span>${fill(copy.checkout.saveCard, { store: ctx.storeName })}</span></label>

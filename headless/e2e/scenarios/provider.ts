@@ -49,6 +49,12 @@ export async function bank(d: Driver, c: Checkout, caseName: 'success' | 'proces
 }
 export async function affirm(d: Driver, c: Checkout, outcome: 'approve' | 'decline' | 'cancel'): Promise<void> {
   await providerSteps(d, c.page, 'affirm-select');
+  const country = c.page.getByTestId('sf-affirm-country');
+  // The field is enabled once the app sees Affirm selected, including when a saved billing address hides it.
+  if (await country.count()) {
+    await expect(country).toBeEnabled();
+    if (await country.isVisible()) await country.selectOption('US');
+  }
   await expect(c.page.getByTestId('sf-pay-button')).toBeEnabled(); await c.page.getByTestId('sf-pay-button').click();
   await providerSteps(d, c.page, `affirm-${outcome}`);
 }

@@ -178,6 +178,26 @@ function value(id) {
   return input instanceof HTMLInputElement ? input.value.trim() : '';
 }
 
+function affirmCountrySelect() {
+  const select = document.getElementById('affirm-country');
+  return select instanceof HTMLSelectElement ? select : null;
+}
+
+/** The buyer is paying with Affirm in the Payment Element, so a billing country is needed. */
+function affirmActive() {
+  return needsProcessor() && !savedChoice() && app.selectedType === 'affirm';
+}
+
+/**
+ * The billing country Affirm gets: the saved billing address first, then the buyer's choice. The tax location and the
+ * delivery address are never used.
+ */
+function affirmCountry() {
+  const saved = logic.buyerBillingCountry(app.state);
+  if (saved) return saved;
+  return affirmCountrySelect()?.value === 'US' ? 'US' : '';
+}
+
 function contact() {
   return { name: value('contact-name'), email: value('contact-email'), phone: value('contact-phone') };
 }
@@ -277,7 +297,12 @@ function currentBlockers() {
   }
   if (OPEN_STATES.has(app.paymentState) && !blockers.includes('attempt_open')) blockers.push('attempt_open');
   if (needsProcessor() && !savedChoice() && !app.elementsComplete && !blockers.includes('delivery_selection_missing')) blockers.push('elements_incomplete');
-  const priority = ['session_not_open', 'attempt_open', 'contact_email_missing', 'billing_address_missing', 'delivery_selection_missing', 'delivery_input_required', 'elements_incomplete'];
+  if (affirmActive()) {
+    const saved = logic.buyerBillingCountry(app.state);
+    if (saved && saved !== 'US') blockers.push('billing_country_unsupported');
+    else if (!affirmCountry()) blockers.push(affirmCountrySelect()?.value === 'other' ? 'billing_country_unsupported' : 'billing_country_missing');
+  }
+  const priority = ['session_not_open', 'attempt_open', 'contact_email_missing', 'billing_address_missing', 'billing_country_missing', 'billing_country_unsupported', 'delivery_selection_missing', 'delivery_input_required', 'elements_incomplete'];
   return [...new Set(blockers)].sort((a, b) => priority.indexOf(a) - priority.indexOf(b));
 }
 
@@ -311,6 +336,11 @@ function refreshPayControls() {
   }
   const fields = $('[data-payment-fields]');
   if (fields) fields.toggleAttribute('hidden', !needsProcessor() || savedChoice() !== null);
+  const countryField = $('[data-affirm-country]');
+  if (countryField) countryField.toggleAttribute('hidden', !(affirmActive() && !logic.buyerBillingCountry(app.state)));
+  const country = affirmCountrySelect();
+  // Disabled while the field is not asked for, so it never takes part in form validation or submission.
+  if (country) country.disabled = !affirmActive() || OPEN_STATES.has(app.paymentState);
   const settlement = logic.isSettlementOnly(app.state);
   const settlementNote = $('[data-settlement-note]');
   if (settlementNote) {
@@ -1400,7 +1430,7 @@ async function mountOnce(options) {
         if (app.paymentState === 'loading') setPaymentState(initialRestingState());
       },
       onWalletClick: () => {
-        const blockers = currentBlockers().filter((code) => code !== 'elements_incomplete');
+        const blockers = currentBlockers().filter((code) => !['elements_incomplete', 'billing_country_missing', 'billing_country_unsupported'].includes(code));
         if (blockers.length) {
           showMessage(msg(blockers[0]), true);
           return false;
@@ -1422,7 +1452,7 @@ async function mountOnce(options) {
           app.collecting = false;
         }
       },
-      getBilling: () => ({ name: value('contact-name'), email: value('contact-email') }),
+      getBilling: () => ({ name: value('contact-name'), email: value('contact-email'), country: affirmCountry() }),
       getShipping: shippingForAffirm,
     });
     app.flowKey = key;
@@ -1847,6 +1877,7 @@ async function cancelAttemptAndPayAnotherWay() {
 function wireStatic() {
   const form = payForm();
   form?.addEventListener('submit', onPay);
+  affirmCountrySelect()?.addEventListener('change', refreshPayControls);
   document.addEventListener('submit', onJobSubmit);
   wireGiftChallenge();
   const card = $('#save-card');

@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium, expect } from '@playwright/test';
 import type { Browser, Page } from '@playwright/test';
-import type { Driver } from '../../support/driver.ts';
+import type { Checkout, Driver } from '../../support/driver.ts';
 import { browserEnvironment } from '../../support/child.ts';
-import { providerSteps } from '../../scenarios/provider.ts';
+import { affirm, providerSteps } from '../../scenarios/provider.ts';
 import type { ProviderStep } from '../../scenarios/provider.ts';
 
 const merchant = 'https://merchant.example.test';
@@ -121,5 +121,56 @@ test('provider steps select a unique visible control across frames on the exact 
       await providerSteps(driver([mainStep]), page, 'local-provider-test');
       await expect(page.locator('input')).toHaveValue('local-test-value');
     }, `${stripe}/checkout`);
+  });
+});
+
+test('affirm() waits for the app to see Affirm selected before it chooses a billing country', async t => {
+  const browser = await chromium.launch({ headless: true, env: browserEnvironment() });
+  t.after(() => browser.close());
+  const recipes = {
+    'affirm-select': [{ frameOrigin: stripe, selector: '[name="affirm-select"]', action: 'click' }],
+    'affirm-approve': [{ frameOrigin: stripe, selector: '[name="affirm-approve"]', action: 'click' }],
+  };
+  const d = { fixtures: { values: { providerSteps: recipes } }, config: { origins: { storefrontA: merchant } } } as unknown as Driver;
+  // The Stripe frame reports the selection to the merchant page after a delay, like the Payment Element's change event.
+  // Pay is enabled from the start, so a helper that does not wait would press it before the country is chosen.
+  const checkout = (saved: boolean) => `<select id="affirm-country" data-testid="sf-affirm-country" disabled hidden><option value="">Choose a country</option><option value="US">United States</option></select>
+<button data-testid="sf-pay-button" type="button">Pay</button>
+<iframe src="${stripe}/affirm"></iframe>
+<script>
+  const country = document.getElementById('affirm-country');
+  window.__log = [];
+  window.__approved = false;
+  window.addEventListener('message', event => {
+    if (event.origin !== '${stripe}') return;
+    if (event.data === 'affirm-approved') window.__approved = true;
+    if (event.data !== 'affirm-selected') return;
+    window.__log.push('selected:before disabled=' + country.disabled + ' hidden=' + country.hidden);
+    country.disabled = false;
+    country.hidden = ${saved};
+  });
+  document.querySelector('[data-testid="sf-pay-button"]').addEventListener('click', () => window.__log.push('pay:' + country.value));
+</script>`;
+  const frame = `<button name="affirm-select" onclick="setTimeout(() => parent.postMessage('affirm-selected', '*'), 400)">Affirm</button><button name="affirm-approve" onclick="parent.postMessage('affirm-approved', '*')">Approve</button>`;
+
+  await t.test('without a saved billing address the country appears, US is chosen, and only then does Pay run', async () => {
+    await documents(browser, { [`${merchant}/checkout`]: checkout(false), [`${stripe}/affirm`]: frame }, async page => {
+      await affirm(d, { page } as unknown as Checkout, 'approve');
+      expect(await page.evaluate(() => (window as any).__log)).toEqual(['selected:before disabled=true hidden=true', 'pay:US']);
+      await expect(page.getByTestId('sf-affirm-country')).toBeVisible();
+      await expect(page.getByTestId('sf-affirm-country')).toHaveValue('US');
+      assert.equal(await page.evaluate(() => (window as any).__approved), true);
+    });
+  });
+
+  await t.test('with a saved billing address the country stays hidden and Pay runs without choosing one', async () => {
+    await documents(browser, { [`${merchant}/checkout`]: checkout(true), [`${stripe}/affirm`]: frame }, async page => {
+      await affirm(d, { page } as unknown as Checkout, 'approve');
+      expect(await page.evaluate(() => (window as any).__log)).toEqual(['selected:before disabled=true hidden=true', 'pay:']);
+      await expect(page.getByTestId('sf-affirm-country')).toBeHidden();
+      await expect(page.getByTestId('sf-affirm-country')).toBeEnabled();
+      await expect(page.getByTestId('sf-affirm-country')).toHaveValue('');
+      assert.equal(await page.evaluate(() => (window as any).__approved), true);
+    });
   });
 });
