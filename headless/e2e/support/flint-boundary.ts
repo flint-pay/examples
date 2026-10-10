@@ -49,7 +49,7 @@ export class BrowserGuard {
   consoleErrors = 0;
   readonly requestIds = new Set<string>();
   readonly challengeUrls=new Set<string>();
-  private readonly capturedVerificationRequests = new WeakSet<Request>();
+  private readonly capturedResponseRequests = new WeakSet<Request>();
   private proofGate?:Promise<void>;
   private releaseProof?:()=>void;
   readonly scanner: CredentialScanner; readonly appOrigins: string[]; readonly accountOrigin: string; readonly auditedRelays: Map<string, LinkRole>; readonly preferenceBindings: Map<string, PreferenceRelayBinding>;
@@ -99,8 +99,10 @@ export class BrowserGuard {
         return;
       }
       const url = new URL(request.url());
-      if (this.appOrigins.includes(url.origin) && request.method() === 'POST' && /^\/checkout\/[^/]+\/verification(?:\/confirm)?$/.test(url.pathname)) {
-        // These replies can immediately reload the page. Capture and inspect them
+      const verificationReply = request.method() === 'POST' && /^\/checkout\/[^/]+\/verification(?:\/confirm)?$/.test(url.pathname);
+      const completionPoll = request.method() === 'GET' && !request.isNavigationRequest() && request.resourceType() === 'fetch' && /^\/checkout\/[^/]+\/complete$/.test(url.pathname);
+      if (this.appOrigins.includes(url.origin) && (verificationReply || completionPoll)) {
+        // Verification replies and completion polls can immediately reload the page. Capture and inspect them
         // before delivery, while the original body is still available.
         const capture = (async () => {
           try {
@@ -111,7 +113,7 @@ export class BrowserGuard {
               this.scanner.scan(body.toString('utf8'), 'body');
               this.scanner.assertClean();
             }
-            this.capturedVerificationRequests.add(request);
+            this.capturedResponseRequests.add(request);
             await route.fulfill({ response, body });
           } catch {
             this.violations.add('GUARD_INSPECTION_FAILED');
@@ -132,7 +134,7 @@ export class BrowserGuard {
       if (response.status() < 200 || response.status() >= 300 || response.status() === 204) return;
       const contentType = response.headers()['content-type'] ?? '';
       if (!/json|text|javascript|html/.test(contentType)) return;
-      if (this.capturedVerificationRequests.has(response.request())) return;
+      if (this.capturedResponseRequests.has(response.request())) return;
       const text = await response.text();
       let providerJob = false;
       if (/json/.test(contentType) && (/\/(?:pay|resume|attempt)$/.test(u.pathname) || /\/payment-methods\/new\/(?:setup|confirm|state)$/.test(u.pathname))) {

@@ -77,7 +77,8 @@ test('a proof is admitted exactly once in its scoped challenge request and remem
 
 const verificationOrigin = 'https://store.example.invalid';
 async function verificationGuard(options: {
-  url?: string; method?: string; body?: string; status?: number;
+  url?: string; method?: string; body?: string; status?: number; contentType?: string;
+  navigation?: boolean; resourceType?: string;
   fail?: 'fetch' | 'body' | 'fulfill'; readBody?: () => Promise<Buffer>; onDeliver?: () => void;
 } = {}) {
   const scanner = new CredentialScanner(), guard = new BrowserGuard(scanner, [verificationOrigin]);
@@ -90,11 +91,12 @@ async function verificationGuard(options: {
   } as unknown as BrowserContext;
   const request = {
     url: () => options.url ?? `${verificationOrigin}/checkout/unit-ref/verification`,
-    method: () => options.method ?? 'POST', isNavigationRequest: () => false,
+    method: () => options.method ?? 'POST', isNavigationRequest: () => options.navigation ?? false,
+    resourceType: () => options.resourceType ?? 'fetch',
     postData: () => '{}', headers: () => ({}), frame: () => { throw new Error('no frame'); },
   } as unknown as Request;
   const body = Buffer.from(options.body ?? '{"state":{"verification":{"status":"code_sent"}}}');
-  const headers = { 'content-type': 'application/json', 'x-unit-header': 'preserved' };
+  const headers = { 'content-type': options.contentType ?? 'application/json', 'x-unit-header': 'preserved' };
   const response = {
     status: () => options.status ?? 200, headers: () => headers,
     body: async () => {
@@ -154,6 +156,47 @@ test('verification capture scans before delivery and survives an immediate reloa
   assert.deepEqual(f.counts(), { fetches: 1, continues: 0, aborts: 0, deliveries: 1, duplicateReads: 0 });
   assert.equal(f.delivered().response, f.response); assert.deepEqual(f.delivered().body, f.body);
   assert.deepEqual(f.delivered().response.headers(), f.headers);
+});
+
+const completionPoll = { url: `${verificationOrigin}/checkout/unit-ref/complete`, method: 'GET', contentType: 'text/html' };
+test('completion polling scans the original HTML before delivery and survives its immediate reload', async () => {
+  let completeBody!: (body: Buffer) => void;
+  const bodyReady = new Promise<Buffer>(resolve => { completeBody = resolve; });
+  let bodyScans = 0;
+  const f = await verificationGuard({ ...completionPoll, body: '<h1 data-status="paid">Payment confirmed</h1>', readBody: () => bodyReady, onDeliver: () => assert.equal(bodyScans, 1) });
+  const scan = f.scanner.scan.bind(f.scanner);
+  f.scanner.scan = (value, surface, context) => { if (surface === 'body') bodyScans++; scan(value, surface, context); };
+  const handling = f.run();
+  await Promise.resolve();
+  assert.equal(f.guard.pending.size, 1);
+  assert.equal(f.counts().deliveries, 0); assert.equal(bodyScans, 0);
+  completeBody(f.body); await handling; await f.inspect();
+  assert.equal(bodyScans, 1);
+  assert.deepEqual(f.counts(), { fetches: 1, continues: 0, aborts: 0, deliveries: 1, duplicateReads: 0 });
+  assert.equal(f.delivered().response, f.response); assert.deepEqual(f.delivered().body, f.body);
+  assert.deepEqual(f.delivered().response.headers(), f.headers);
+});
+
+test('completion polling capture rejects leaked authority before delivery', async () => {
+  const f = await verificationGuard({ ...completionPoll, body: '<p>flint_test_PLACEHOLDER</p>' }); await f.run();
+  assert.equal(f.counts().deliveries, 0); assert.equal(f.counts().aborts, 1);
+  await assert.rejects(f.inspect, { code: 'CREDENTIAL_LEAK' });
+});
+
+for (const fail of ['fetch', 'body', 'fulfill'] as const) test(`completion polling ${fail} failure aborts without falling back`, async () => {
+  const f = await verificationGuard({ ...completionPoll, fail }); await f.run();
+  assert.deepEqual(f.counts(), { fetches: 1, continues: 0, aborts: 1, deliveries: 0, duplicateReads: 0 });
+  await assert.rejects(f.inspect, { code: 'BROWSER_BOUNDARY_VIOLATION' });
+});
+
+for (const options of [
+  { url: 'https://other.example.invalid/checkout/unit-ref/complete' },
+  { method: 'POST' }, { navigation: true, resourceType: 'document' }, { resourceType: 'xhr' },
+  { url: `${verificationOrigin}/checkout/unit-ref/complete/extra` },
+  { url: `${verificationOrigin}/checkout/unit-ref/complete/` },
+]) test('completion capture leaves other origins, methods, resource types and paths on their existing route', async () => {
+  const f = await verificationGuard({ ...completionPoll, ...options }); await f.run(); await f.inspect();
+  assert.deepEqual(f.counts(), { fetches: 0, continues: 1, aborts: 0, deliveries: 0, duplicateReads: 0 });
 });
 
 for (const body of ['{"credential":"flint_test_PLACEHOLDER"}', '{"client_setup":"seti_PLACEHOLDER_secret_PLACEHOLDER"']) {
