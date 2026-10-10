@@ -308,20 +308,27 @@ test('sign-out must revoke this exact family and must not leave a pending queue 
 
 // Synthetic ports exercise the same transition logic without starting apps or calling staging.
 class Locator {
-  async _expect(): Promise<any> { return {matches:true,received:'synthetic',log:[]}; }
+  text: (() => string | null) | undefined;
+  constructor(text?: () => string | null) { this.text = text; }
+  async _expect(expression: string, options: {expectedText?: {string: string; matchSubstring?: boolean}[]}): Promise<any> {
+    const received = this.text ? this.text() : 'synthetic';
+    const expected = options.expectedText?.[0];
+    return {matches: expression === 'to.have.text' && this.text ? !!expected && (expected.matchSubstring ? received?.includes(expected.string) === true : received === expected.string) : true, received, log: []};
+  }
 }
-async function flowFixture(dir: string, options: {early?: boolean; changedFamily?: boolean; staySignedIn?: boolean; csrfStatus?: number; queued?: boolean; oldAccepted?: boolean} = {}) {
-  const c=config(dir), ledger=new Ledger(join(dir,'ledger.json'),run), epoch=Date.now(); let clock=epoch, rotated=false, revoked=false, url=c.origins.accountA+'/';
+async function flowFixture(dir: string, options: {early?: boolean; changedFamily?: boolean; staySignedIn?: boolean; csrfStatus?: number; queued?: boolean; oldAccepted?: boolean; signoutPath?: string; signoutNotice?: string | null} = {}) {
+  const c=config(dir), ledger=new Ledger(join(dir,'ledger.json'),run), epoch=Date.now(); let clock=epoch, rotated=false, revoked=false, url=c.origins.accountA+'/';let notice:string|null=null;
   for(const [id,type] of [[customer,'customer'],[family,'customer_session']]) await ledger.record({resource:id,type,mode:'test',sandbox:'A',merchant:c.pins.A.merchantId,sandboxId:c.pins.A.sandboxId,createdBy:run,purpose:'app-creation',cleanup:'review',owner:'unit',reviewAt:'2100-01-01T00:00:00Z',owned:true});
   const d=new Driver(c,{buyers:{b1:{customerId:customer}}} as any,{} as any,{ledger,clients:{requestIds:new Set(),writable:async()=>({})}} as any);
-  const page={url:()=>url,goto:async(next:string)=>{url=next;},getByTestId:()=>new Locator(),request:{post:async()=>({status:()=>options.csrfStatus??403,text:async()=>''})}};
+  const page={url:()=>url,goto:async(next:string)=>{url=next;},getByTestId:(id:string)=>new Locator(id==='ac-notice'?()=>notice:undefined),request:{post:async()=>({status:()=>options.csrfStatus??403,text:async()=>''})}};
   d.page=async()=>page as any;d.login=async()=>{url=c.origins.accountA+'/';};d.csrf=async()=>'synthetic-csrf';d.guardCheck=async()=>{};
   d.goto=async(_page,_origin,path)=>{
     if(clock>=epoch+360000&&!rotated&&!revoked&&path==='/orders') {rotated=true;d.appMutations.push({app:'accountA',operation:'CUSTOMER_SESSION_REFRESH',fingerprint:'synthetic',timestamp:clock,status:200,resolvedAt:clock+1});d.appResources.push({app:'accountA',type:'customer_session',id:options.changedFamily?'other':family,created:true,customerId:customer,timestamp:clock});}
     url=revoked&&!options.staySignedIn?c.origins.accountA+'/sign-in?notice=session_ended&next=%2Forders':c.origins.accountA+path;
+    notice=revoked&&!options.staySignedIn?'Your session ended. Sign in again to continue.':null;
   };
   d.job=async()=>({status:options.csrfStatus??403,body:null});
-  d.form=async()=>{revoked=true;d.revocations.push({app:'accountA',sessionId:family});url=c.origins.accountA+'/sign-in?notice=signed_out';};
+  d.form=async()=>{revoked=true;d.revocations.push({app:'accountA',sessionId:family});url=c.origins.accountA+(options.signoutPath??'/sign-in');notice=options.signoutNotice===undefined?"You're signed out.":options.signoutNotice;};
   const reader={
     metadata:async()=>({familyId:family,mintedAt:epoch,expiresAt:epoch+300000,refreshExpiresAt:epoch+86400000}),
     readVault:async()=>({familyId:rotated&&options.changedFamily?'other':family,mintedAt:epoch,expiresAt:rotated?clock+300000:epoch+300000,refreshExpiresAt:epoch+86400000,secret:new SealedCredential(rotated?'flint_cses_ROTATED_PLACEHOLDER':'flint_cses_PLACEHOLDER',[d.scanner]),refreshToken:new SealedCredential(rotated?'flint_cref_ROTATED_PLACEHOLDER':'flint_cref_PLACEHOLDER',[d.scanner])}),
@@ -335,7 +342,7 @@ async function flowFixture(dir: string, options: {early?: boolean; changedFamily
   });
   let boundaryCalls=0,verifyCalls=0,scanCalls=0;
   const ports={reader,anonymous,now:()=>clock,wait:async(ms:number)=>{clock+=ms;if(options.early&&!d.appMutations.length)d.appMutations.push({app:'accountA',operation:'CUSTOMER_SESSION_REFRESH',fingerprint:'early',timestamp:clock});},sync:async()=>{},verify:async()=>{verifyCalls++;},scan:async()=>{scanCalls++;for(const name of ['ledger.json','ledger.md'])assert.equal(/flint_(?:cses|cref)_/.test(await readFile(join(dir,name),'utf8')),false);d.scanner.assertClean();},boundary:async()=>{boundaryCalls++;}};
-  return {d,ports,counts:()=>({boundaryCalls,verifyCalls,scanCalls}),reset:()=>{rotated=false;revoked=false;clock=epoch;url=c.origins.accountA+'/';d.appMutations=[];d.revocations=[];d.appResources=[];}};
+  return {d,ports,counts:()=>({boundaryCalls,verifyCalls,scanCalls}),reset:()=>{rotated=false;revoked=false;clock=epoch;url=c.origins.accountA+'/';notice=null;d.appMutations=[];d.revocations=[];d.appResources=[];}};
 }
 test('full injected app replay and sign-out transitions produce only nonsecret evidence and stdout',async()=>temp(async dir=>{
   const flow=await flowFixture(dir),captured:string[]=[],original=process.stdout.write;
@@ -353,8 +360,14 @@ test('injected replay row fails on early refresh, changed family, usable authori
     [{early:true},'EARLY_REFRESH_DURING_WAIT'],[{changedFamily:true},'APP_REFRESH_FAMILY_CHANGED'],[{oldAccepted:true},'REUSE_DID_NOT_REVOKE_APP_FAMILY'],[{staySignedIn:true},'APP_DID_NOT_END_SESSION_AFTER_FAMILY_REVOCATION'],
   ] as const)await temp(async dir=>{const f=await flowFixture(dir,options);const original=process.stdout.write;process.stdout.write=(()=>true) as typeof process.stdout.write;try{await assert.rejects(()=>runAppRefreshTransition(f.d,f.ports),{code:expected});}finally{process.stdout.write=original;}});
 });
-test('injected sign-out row fails on an accepted CSRF negative, queued revocation or usable old app secret',async()=>{
-  for(const [options,expected] of [[{csrfStatus:200},'ACCOUNT_CSRF_NOT_REJECTED'],[{queued:true},'APP_SIGNOUT_DID_NOT_REVOKE_EXACT_SESSION'],[{oldAccepted:true},'OLD_APP_SECRET_STILL_VALID']] as const)await temp(async dir=>{const f=await flowFixture(dir,options);await assert.rejects(()=>runAppSignoutTransition(f.d,f.ports),{code:expected});});
+test('injected sign-out row fails on an accepted CSRF negative, queued revocation, wrong destination or usable old app secret',async()=>{
+  for(const [options,expected] of [[{csrfStatus:200},'ACCOUNT_CSRF_NOT_REJECTED'],[{queued:true},'APP_SIGNOUT_DID_NOT_REVOKE_EXACT_SESSION'],[{signoutPath:'/'},'APP_SIGNOUT_NOTICE_REQUIRED'],[{oldAccepted:true},'OLD_APP_SECRET_STILL_VALID']] as const)await temp(async dir=>{const f=await flowFixture(dir,options);await assert.rejects(()=>runAppSignoutTransition(f.d,f.ports),{code:expected});});
+});
+test('injected sign-out row requires the rendered signed-out notice even when the URL claims signed-out',async()=>{
+  for(const options of [{signoutNotice:null},{signoutNotice:'Your session ended. Sign in again to continue.'},{signoutPath:'/sign-in?notice=signed_out',signoutNotice:null}])await temp(async dir=>{
+    const f=await flowFixture(dir,options);await assert.rejects(()=>runAppSignoutTransition(f.d,f.ports),/toHaveText/);
+    assert.equal(f.counts().boundaryCalls,0);assert.equal(f.counts().scanCalls,0);
+  });
 });
 
 test('procfs filesystem root is injectable and descriptors prove the socket and database inode',async()=>temp(async dir=>{
