@@ -26,6 +26,24 @@ async function submitCalls(request: Parameters<typeof harnessLog>[0], suffix = '
   return (await harnessLog(request)).filter((entry) => entry.method === 'POST' && entry.path.endsWith(suffix));
 }
 
+/** Pays after one decline, so the page ends on a paid state whose final outstanding is zero. */
+async function declineThenPay(page: Page, request: Parameters<typeof harnessLog>[0], surface: 'invoice' | 'return', complete: string) {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await resetHarness(request, { scenario: 'decline_then_success' });
+  await open(page, surface);
+  await ready(page);
+  await enterCard(page);
+  await page.getByTestId('ac-pay-button').click();
+  await expect(page.getByTestId('ac-payment')).toHaveAttribute('data-state', 'declined');
+  await enterCard(page);
+  await page.getByTestId('ac-pay-button').click();
+  // The local Stripe double rejects a nonpositive Elements amount like Stripe.js, so a zero update would stop this.
+  await expect(page).toHaveURL(new RegExp(`${complete}$`));
+  await expect(page.getByTestId('harness-complete')).toBeVisible();
+  expect(errors).toEqual([]);
+}
+
 test.describe('invoice payment', () => {
   test.beforeEach(async ({ page, request }) => {
     await installStripeStub(page);
@@ -107,6 +125,11 @@ test.describe('invoice payment', () => {
     expect(posts[0]?.actionId).not.toBe(posts[1]?.actionId);
   });
 
+  test('a paid invoice with nothing outstanding completes without sending Elements a zero amount', async ({ page, request }) => {
+    await declineThenPay(page, request, 'invoice', COMPLETE_INVOICE);
+    expect(await submitCalls(request)).toHaveLength(2);
+  });
+
   test('3-D Secure: runs the action the server named, then resumes whatever Stripe returns', async ({ page, request }) => {
     await resetHarness(request, { scenario: 'requires_action' });
     await open(page, 'invoice');
@@ -162,6 +185,7 @@ test.describe('invoice payment', () => {
     await expect(page.getByTestId('ac-pay-button')).toHaveText('Pay $130.00');
     const calls = await stubCalls(page);
     expect(calls.elementsUpdate.at(-1)).toMatchObject({ amount: 13000 });
+    expect(calls.elementsUpdate.every((update) => Number(update.amount) > 0)).toBe(true);
     // No automatic second charge.
     await page.waitForTimeout(400);
     expect(await submitCalls(request)).toHaveLength(1);
@@ -451,6 +475,11 @@ test.describe('return balance payment', () => {
     await enterCard(page);
     await page.getByTestId('ac-pay-button').click();
     await expect(page.getByTestId('ac-payment')).toHaveAttribute('data-state', 'declined');
+  });
+
+  test('a paid return balance with nothing outstanding completes without sending Elements a zero amount', async ({ page, request }) => {
+    await declineThenPay(page, request, 'return', COMPLETE_RETURN);
+    expect(await submitCalls(request, '/returns/ret_example_001/pay/submit')).toHaveLength(2);
   });
 
   test('surface conflict names the return', async ({ page }) => {

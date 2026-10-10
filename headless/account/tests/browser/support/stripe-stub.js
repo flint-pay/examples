@@ -8,6 +8,13 @@
   };
   window.__stripeStub = stub;
 
+  // Stripe.js rejects an Elements amount that is not a positive integer, so the double does too.
+  function requirePositiveAmount(options, where) {
+    if (options && 'amount' in options && !(Number.isInteger(options.amount) && options.amount > 0)) {
+      throw new Error(`IntegrationError: ${where}: amount must be a positive integer (got ${options.amount})`);
+    }
+  }
+
   function makeElement(type, options, owner) {
     const handlers = {};
     const element = {
@@ -56,6 +63,7 @@
     stub.calls.stripe.push({ key, opts });
     return {
       elements(options) {
+        requirePositiveAmount(options, 'stripe.elements()');
         stub.calls.elements.push(options);
         const owner = { elements: [] };
         return {
@@ -64,6 +72,7 @@
             return makeElement(type, opts2, owner);
           },
           update(update) {
+            requirePositiveAmount(update, 'elements.update()');
             stub.calls.elementsUpdate.push(update);
           },
           async submit() {
