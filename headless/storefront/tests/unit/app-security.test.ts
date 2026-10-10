@@ -4,13 +4,18 @@ import {createApp} from '../../src/app.ts';
 import {createHmac,randomBytes} from 'node:crypto';
 import type {Config} from '../../src/config.ts';
 import {readConfig} from '../../src/config.ts';
-import type {Client} from '@flintpay/node';
+import type {Client,Webhook_order_paid_merchant,Webhook_checkout_session_invalidated_merchant} from '@flintpay/node';
 import {IdentityStore,digest,verifyPassword} from '../../src/identity/index.ts';
 import {Store} from '../../src/store/db.ts';
 
 function runtime(webhookSecret?:string){
   const config:Config={apiKey:'local-test-fixture',apiBaseUrl:'https://api.staging.withflintpay.com',giftChallengeOrigin:'https://checkout.staging.withflintpay.com',appOrigin:'http://localhost:4100',port:4100,identityDatabasePath:':memory:',appDatabasePath:':memory:',cookieName:'test_session',checkoutTtl:3600,storeName:'Example store',webhookSecret};
   return createApp({config,preflight:{sandboxId:'local-sandbox',cards:'enabled'},store:new Store(':memory:'),identity:new IdentityStore(':memory:')});
+}
+function deliverWebhook(app:ReturnType<typeof runtime>,key:Buffer,event:Webhook_order_paid_merchant|Webhook_checkout_session_invalidated_merchant,valid=true){
+  const body=JSON.stringify(event),timestamp=String(Math.floor(Date.now()/1000));
+  const signature=createHmac('sha256',key).update(`${event.webhook_event_id}.${timestamp}.${body}`).digest('base64');
+  return app.app.request('http://localhost:4100/webhooks/flint',{method:'POST',headers:{'webhook-id':event.webhook_event_id,'webhook-timestamp':timestamp,'webhook-signature':'v1,'+(valid?signature:'invalid'),'Content-Type':'application/json'},body});
 }
 test('health reports configured build identity and process start while an ordinary copy omits it',async()=>{
   const env={FLINT_API_KEY:'flint_test_PLACEHOLDER',FLINT_API_BASE_URL:'https://api.staging.withflintpay.com',APP_ORIGIN:'http://localhost:4100',PORT:'4100'},sha='a'.repeat(40);
@@ -32,15 +37,30 @@ test('webhook route stays unavailable without a signing secret',async()=>{
   const app=runtime();try{assert.equal((await app.app.request('http://localhost:4100/webhooks/flint',{method:'POST',body:'{}'})).status,404);}finally{app.store.close();app.identity.close();}
 });
 test('signed test webhooks deduplicate and cannot turn an unverified browser order into paid',async()=>{
-  const key=randomBytes(32);const app=runtime('whsec_'+key.toString('base64'));const eventId='local-event';const timestamp=String(Math.floor(Date.now()/1000));
-  async function deliver(mode:string,valid=true){
-    const body=JSON.stringify({webhook_event_id:eventId,event_type:'order.paid',payload_version:1,mode,merchant_id:'mer_'+''.padStart(26,'0'),created_at:new Date().toISOString(),request:null,data:{order:{order_id:'local-order'}}});
-    const signature=createHmac('sha256',key).update(`${eventId}.${timestamp}.${body}`).digest('base64');
-    return app.app.request('http://localhost:4100/webhooks/flint',{method:'POST',headers:{'webhook-id':eventId,'webhook-timestamp':timestamp,'webhook-signature':'v1,'+(valid?signature:'invalid'),'Content-Type':'application/json'},body});
-  }
+  const key=randomBytes(32);const app=runtime('whsec_'+key.toString('base64'));
+  const event={api_version:'2026-07-22',webhook_event_id:'local-event',event_type:'order.paid',payload_version:1,mode:'test',merchant_id:'merchant-unit',created_at:new Date().toISOString(),request:null,data:{order_id:'local-order',line_items:[],order_payment_intent_ids:[],outstanding_money:{amount:0,currency:'USD'},paid_money:{amount:100,currency:'USD'},total_money:{amount:100,currency:'USD'},payment_status:'paid',status:'open'}} satisfies Webhook_order_paid_merchant;
   try{
-    assert.equal((await deliver('test',false)).status,400);assert.equal((await deliver('live')).status,400);assert.equal((await deliver('test')).status,200);assert.equal((await deliver('test')).status,200);
+    assert.equal((await deliverWebhook(app,key,event,false)).status,400);assert.equal((await deliverWebhook(app,key,{...event,mode:'live'})).status,400);assert.equal(app.store.all('SELECT * FROM webhook_events').length,0);
+    assert.equal((await deliverWebhook(app,key,event)).status,200);assert.equal((await deliverWebhook(app,key,event)).status,200);
     assert.equal(app.store.all('SELECT * FROM webhook_events').length,1);assert.ok(app.store.get('SELECT * FROM order_signals WHERE order_id=?','local-order'));assert.equal(app.store.all('SELECT * FROM checkouts').length,0);
+    assert.equal(app.store.get<{object_id:string}>('SELECT object_id FROM webhook_events')?.object_id,'local-order');
+  }finally{app.store.close();app.identity.close();}
+});
+test('published checkout invalidation data targets its session and deduplicates delivery',async()=>{
+  const key=randomBytes(32);const app=runtime('whsec_'+key.toString('base64')),now=Date.now();
+  const event={api_version:'2026-07-22',webhook_event_id:'local-invalidation',event_type:'checkout_session.invalidated',payload_version:1,mode:'test',merchant_id:'merchant-unit',created_at:new Date().toISOString(),request:null,data:{checkout_session_id:'local-checkout-session',order_id:'local-order',reason:'order_mutated',resource_updated_at:new Date().toISOString(),status:'invalidated'}} satisfies Webhook_checkout_session_invalidated_merchant;
+  try{
+    for(const [ref,session] of [['owned-checkout','local-checkout-session'],['other-checkout','other-checkout-session']])app.store.run('INSERT INTO checkouts(checkout_ref,session_hash,kind,checkout_session_id,order_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?)',ref!,'unit-session','order',session!,'local-order',now,now);
+    assert.equal((await deliverWebhook(app,key,event,false)).status,400);assert.equal((await deliverWebhook(app,key,{...event,mode:'live'})).status,400);
+    assert.equal(app.store.all<{needs_replacement:number}>('SELECT needs_replacement FROM checkouts').every(row=>row.needs_replacement===0),true);
+    assert.equal((await deliverWebhook(app,key,event)).status,200);
+    assert.equal(app.store.get<{needs_replacement:number}>('SELECT needs_replacement FROM checkouts WHERE checkout_ref=?','owned-checkout')?.needs_replacement,1);
+    assert.equal(app.store.get<{needs_replacement:number}>('SELECT needs_replacement FROM checkouts WHERE checkout_ref=?','other-checkout')?.needs_replacement,0);
+    assert.equal(app.store.get<{object_id:string}>('SELECT object_id FROM webhook_events')?.object_id,'local-checkout-session');
+    app.store.run('UPDATE checkouts SET needs_replacement=0 WHERE checkout_ref=?','owned-checkout');
+    assert.equal((await deliverWebhook(app,key,event)).status,200);
+    assert.equal(app.store.get<{needs_replacement:number}>('SELECT needs_replacement FROM checkouts WHERE checkout_ref=?','owned-checkout')?.needs_replacement,0);
+    assert.equal(app.store.all('SELECT * FROM webhook_events').length,1);assert.equal(app.store.all('SELECT * FROM order_signals').length,0);
   }finally{app.store.close();app.identity.close();}
 });
 test('another identity session cannot read a locally owned checkout',async()=>{

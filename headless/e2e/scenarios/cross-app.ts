@@ -68,23 +68,34 @@ export const crossApp: Record<string, Scenario> = {
   },
   'SF-26': async d => {
     const secret = process.env.E2E_WEBHOOK_SECRET; invariant(secret && secret.startsWith('whsec_'), 'RUN_WEBHOOK_SECRET_REQUIRED');
-    const envelope = d.fixtures.values.signedWebhookEnvelope; invariant(envelope?.event_type === 'order.paid' && envelope.data, 'PUBLISHED_WEBHOOK_ENVELOPE_REQUIRED');
+    const envelope = d.fixtures.values.signedWebhookEnvelope; invariant(envelope?.event_type === 'order.paid' && typeof envelope.data?.order_id === 'string', 'PUBLISHED_WEBHOOK_ENVELOPE_REQUIRED');
+    const checkoutRef = d.fixtures.values.webhookCheckoutRef; invariant(checkoutRef, 'WEBHOOK_OWNED_CHECKOUT_REQUIRED');
     const body = JSON.stringify(envelope), id = `msg_${d.config.run}`, timestamp = Math.floor(Date.now() / 1000).toString();
     const key = Buffer.from(secret.slice(6), 'base64'); const signature = createHmac('sha256', key).update(`${id}.${timestamp}.${body}`).digest('base64');
     const headers = { 'content-type': 'application/json', 'webhook-id': id, 'webhook-timestamp': timestamp, 'webhook-signature': `v1,${signature}` };
     const page = await d.page('webhooks'); await d.goto(page, d.sf(), '/');
+    const owned = await d.job(page, `/checkout/${checkoutRef}/state`);
+    invariant(owned.status === 200 && owned.body?.state?.order?.order_id === envelope.data.order_id, 'WEBHOOK_OWNED_CHECKOUT_REQUIRED');
     const send = async (h: Record<string, string>) => page.request.post(`${d.sf()}/webhooks/flint`, { data: body, headers: h });
     invariant((await send({ ...headers, 'webhook-signature': 'v1,invalid' })).status() === 400, 'WEBHOOK_BAD_SIGNATURE_ACCEPTED');
     invariant((await send(headers)).status() === 200 && (await send(headers)).status() === 200, 'WEBHOOK_VALID_OR_DEDUP_FAILED');
     // Duplicate delivery must not duplicate its buyer-visible signal.
-    const checkoutRef = d.fixtures.values.webhookCheckoutRef; invariant(checkoutRef, 'WEBHOOK_OWNED_CHECKOUT_REQUIRED'); await d.goto(page, d.sf(), `/checkout/${checkoutRef}/complete`); await expect(page.getByText('Payment confirmed by Flint', { exact: true })).toHaveCount(1);
+    await d.goto(page, d.sf(), `/checkout/${checkoutRef}/complete`); await expect(page.getByText('Payment confirmed by Flint', { exact: true })).toHaveCount(1);
     return ['LOCAL_SIGNED_WEBHOOK_BAD_SIGNATURE_AND_DEDUP'];
   },
   'SF-26X': async d => {
     invariant(d.fixtures.values.realWebhookForwarding?.owned && d.fixtures.values.realWebhookForwarding?.ready, 'PUBLIC_WEBHOOK_FORWARDER_AUTHORITY_REQUIRED');
     const page = await d.page('real-webhook'), c = await d.checkout(page, 'brewing-class'); await billing(d, c); await d.pay(c); await d.settled(c);
-    await expect(page.getByText('Payment confirmed by Flint', { exact: true })).toBeVisible({ timeout: 60_000 });
-    const events = await d.operator.clients.clients.A.webhookEvents.list({ event_type: 'order.paid' }); invariant(events.data.some((e: any) => e.data?.order?.order_id === c.orderId || e.data?.order_id === c.orderId), 'REAL_WEBHOOK_EVENT_NOT_OBSERVED'); return ['REAL_FLINT_WEBHOOK_DELIVERY'];
+    await expect.poll(async () => {
+      const events = await d.operator.clients.clients.A.webhookEvents.list({ event_type: 'order.paid', resource_type: 'order', resource_id: c.orderId });
+      return events.data.some(e => e.event_type === 'order.paid' && e.resource_type === 'order' && e.resource_id === c.orderId && e.event_origin === 'business_event' && !e.test);
+    }, { timeout: 60_000 }).toBe(true);
+    // The confirmation badge reads the stored delivery signal when the completion document renders.
+    await expect.poll(async () => {
+      await d.goto(page, c.origin, `/checkout/${c.ref}/complete`);
+      return page.getByText('Payment confirmed by Flint', { exact: true }).isVisible();
+    }, { timeout: 60_000 }).toBe(true);
+    return ['REAL_FLINT_WEBHOOK_DELIVERY'];
   },
   'U-01': async d => {
     const commands = [['npm', ['--prefix', 'headless/storefront', 'test']], ['npm', ['--prefix', 'headless/account', 'test']], ['node', ['scripts/validate-manifests.mjs']], ['node', ['scripts/generate-index.mjs', '--check']], ['node', ['scripts/check-identity-copies.mjs']], ['node', ['scripts/check-punctuation.mjs']]] as const;
