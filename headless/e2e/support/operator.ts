@@ -1,4 +1,4 @@
-import type {CreateInvoiceRequestInput,CreateOrderRequestInput,UpdateSettingsRequestInput} from '@flintpay/node';
+import type {CreateInvoiceRequestInput,CreateOrderRequestInput,InvoicePaymentPolicyInput,UpdateSettingsRequestInput} from '@flintpay/node';
 import type { PublicClient } from './sdk.ts';
 import { VerifiedClients } from './sdk.ts';
 import { Ledger } from './ledger.ts';
@@ -109,7 +109,7 @@ export class Operator {
   async applyPlan(steps: PlanStep[]): Promise<void> {
     for (const step of steps) await this.execute(step);
   }
-  async issueInvoice(name: string, customerId: string, email: string): Promise<any> {
+  async issueInvoice(name: string, customerId: string, email: string, enabledPaymentOptions: InvoicePaymentPolicyInput['enabled_payment_options'] = ['card']): Promise<any> {
     const date = this.runDate();
     const reviewAt = new Date(date + 30 * 86400_000).toISOString();
     const orderInput: CreateOrderRequestInput = {
@@ -120,7 +120,7 @@ export class Operator {
     const order = await this.execute({ name: `${name}-order`, sandbox: 'A', operation: 'orders.create', args: [orderInput], creates: [{ path: 'order_id', type: 'order', cleanup: 'review', reviewAt }], purpose: name });
     const invoiceInput: CreateInvoiceRequestInput = {
       order_id: order.data.order_id,
-      collection: { mode: 'buyer_initiated', payment_policy: { enabled_payment_options: ['card', 'ach_debit', 'affirm'] } },
+      collection: { mode: 'buyer_initiated', payment_policy: { enabled_payment_options: enabledPaymentOptions } },
       payment_due: { type: 'absolute', due_at: new Date(date + 14 * 86400_000).toISOString() }, recipient_email: email, metadata: { e2e_run: this.ledger.run },
     };
     const response = await this.execute({ name, sandbox: 'A', operation: 'invoices.create', args: [invoiceInput], creates: [{ path: 'invoice_id', type: 'invoice', cleanup: 'invoice', reviewAt }], purpose: name });
