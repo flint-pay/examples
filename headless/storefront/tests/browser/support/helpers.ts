@@ -12,7 +12,7 @@ export async function fixtureLog(request: APIRequestContext, ref: string): Promi
   return response.json();
 }
 
-export async function openCheckout(page: Page, scenario: string, options: { wallets?: boolean } = {}) {
+export async function openCheckout(page: Page, scenario: string, options: { wallets?: boolean; delayMs?: number } = {}) {
   await installStripeStub(page, options);
   await page.goto(`${BASE}/checkout/chk_${scenario}`);
 }

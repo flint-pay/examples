@@ -364,7 +364,10 @@ export class FakeCheckout {
   project(): CheckoutState {
     const kind = this.collectionKind();
     const money = (this.order.settlement_amounts as Json).outstanding_money;
-    const guide = kind === 'setup' ? undefined : kind === 'settlement' || kind === 'unavailable' ? undefined : guidance('payment', usd(big(this.order.gift_card_estimate?.processor_money ?? money)), this.scenario === 'wallet' ? { digital_wallets: ['apple_pay', 'google_pay'] } : {}, this.relayGeneration);
+    // Like the service, a gift card that covers part of the order leaves the processor a card-only remainder.
+    const partialGift = Boolean(this.order.gift_cards?.length && this.order.gift_card_estimate?.can_pay && big(this.order.gift_card_estimate.processor_money) > 0n);
+    const extra = { ...(this.scenario === 'wallet' ? { digital_wallets: ['apple_pay', 'google_pay'] } : {}), ...(partialGift ? { payment_method_types: ['card', 'us_bank_account'] } : {}) };
+    const guide = kind === 'setup' ? undefined : kind === 'settlement' || kind === 'unavailable' ? undefined : guidance('payment', usd(big(this.order.gift_card_estimate?.processor_money ?? money)), extra, this.relayGeneration);
     const setupGuide = kind === 'setup' ? guidance('setup', usd(0)) : undefined;
     return {
       checkout_ref: this.ref,

@@ -64,14 +64,16 @@ const SCRIPT = `
         const updates = [];
         const listeners = {};
         const elements = {
+          options: Object.assign({}, options),
           create(type, o) { record.calls.push({ name: 'create', type, options: o }); return makeElement(type, o, elements); },
           async submit() { record.calls.push({ name: 'submit' }); return {}; },
-          async update(o) { record.calls.push({ name: 'elements.update', options: o }); setTimeout(() => (listeners['update-end'] || []).forEach((cb) => cb()), 5); },
+          async update(o) { record.calls.push({ name: 'elements.update', options: o }); Object.assign(elements.options, o); setTimeout(() => (listeners['update-end'] || []).forEach((cb) => cb()), 5); },
           on(name, cb) { (listeners[name] = listeners[name] || []).push(cb); },
         };
         return elements;
       },
-      async createConfirmationToken(args) { record.calls.push({ name: 'createConfirmationToken', params: args.params }); const id = 'ctoken_fake_' + behavior(); record.tokens.push(id); return { confirmationToken: { id } }; },
+      // The Elements a token is bound to: Stripe rejects a confirmation whose payment method types differ from them.
+      async createConfirmationToken(args) { record.calls.push({ name: 'createConfirmationToken', params: args.params, elements: args.elements.options }); sessionStorage.setItem('__tokenElements', JSON.stringify([...JSON.parse(sessionStorage.getItem('__tokenElements') || '[]'), args.elements.options])); const id = 'ctoken_fake_' + behavior(); record.tokens.push(id); return { confirmationToken: { id } }; },
       async createPaymentMethod(args) { record.calls.push({ name: 'createPaymentMethod', params: args.params }); const id = 'pm_fake_' + behavior(); record.tokens.push(id); return { paymentMethod: { id } }; },
       async handleNextAction(args) { record.calls.push({ name: 'handleNextAction', hasSecret: Boolean(args && args.clientSecret) }); return record.nextAction === 'error' ? { error: { message: 'Authentication failed' } } : {}; },
     };
@@ -79,9 +81,17 @@ const SCRIPT = `
 })();
 `;
 
-export async function installStripeStub(page: Page, options: { wallets?: boolean } = {}): Promise<void> {
-  await page.route('https://js.stripe.com/**', (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: SCRIPT }));
+export async function installStripeStub(page: Page, options: { wallets?: boolean; delayMs?: number } = {}): Promise<void> {
+  await page.route('https://js.stripe.com/**', async (route) => {
+    if (options.delayMs) await new Promise((resolve) => setTimeout(resolve, options.delayMs));
+    await route.fulfill({ status: 200, contentType: 'text/javascript', body: SCRIPT });
+  });
   if (options.wallets === false) await page.addInitScript(() => ((window as any).__walletsAvailable = false));
+}
+
+/** The Elements options behind each confirmation token, kept across the navigation that follows a payment. */
+export async function tokenElements(page: Page): Promise<any[]> {
+  return page.evaluate(() => JSON.parse(sessionStorage.getItem('__tokenElements') ?? '[]'));
 }
 
 export async function stripeCalls(page: Page): Promise<any[]> {
