@@ -316,7 +316,7 @@ export function createApp(deps:Dependencies){
             catch(error){if(!['INVALID_CHECKOUT_SESSION','CHECKOUT_SESSION_NOT_OPEN','CHECKOUT_SESSION_EXPIRED'].includes(appError(error).code))throw error;if(engine.unresolved(previous))throw new LocalError('UNKNOWN_PAYMENT_OUTCOME',409);}
           }
           if(!resource.buyer_actions.some(item=>item.kind===action&&item.is_available))return previous!;
-          const resolutionId=type==='return'?('completion_blockers'in resource?resource.completion_blockers.find(blocker=>blocker.code==='resolution_requires_action'&&blocker.return_resolution_id)?.return_resolution_id:undefined):undefined;
+          const resolutionId=type==='return'?('completion_blockers'in resource?resource.completion_blockers.find(blocker=>(blocker.code==='resolution_requires_action'||blocker.code==='resolution_pending')&&blocker.return_resolution_id)?.return_resolution_id:undefined):undefined;
           if(type==='return'&&!resolutionId)throw new LocalError('RETURN_PAYMENT_NOT_AVAILABLE',409);
           const generation=(previous?.generation??0)+1,returnUrl=`${config.appOrigin}/${root}/${resourceId}/pay/return`,freshBody={surface:'embedded' as const,page_origin:config.appOrigin,redirects:{success_redirect_url:returnUrl}};
           const launchResource=`${preflight.sandboxId}:${current.user_id}:launch:${type}:${resourceId}`,launchNonce=`generation:${generation}`,actionId=createHash('sha256').update(`${launchResource}:launch:${launchNonce}`).digest('hex');

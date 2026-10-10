@@ -170,6 +170,17 @@ test('I1 pre-upgrade return launch keeps its stored resolution, body, generation
  assert.equal((await h.get('/returns/ret_fixture/pay')).status,200);assert.equal(calledResolution,body.resolutionId);assert.deepEqual(sent,{surface:body.surface,redirects:body.redirects});assert.equal(options?.idempotencyKey,key);const persisted=h.app.record(h.record.checkout_ref);assert.equal(persisted.resolution_id,body.resolutionId);assert.equal(persisted.generation,body.generation);assert.equal(h.store.all("SELECT * FROM actions WHERE kind='launch'").length,1);
 }));
 
+for(const [name,available,blockers,expected,status] of [
+ ['resolution_pending projection',true,[{code:'resolution_pending',return_resolution_id:'res_payable'}],'res_payable',200],
+ ['resolution_requires_action projection',true,[{code:'resolution_requires_action',return_resolution_id:'res_payable'}],'res_payable',200],
+ ['pending blocker without an available pay_balance',false,[{code:'resolution_pending',return_resolution_id:'res_payable'}],undefined,303],
+ ['pending blocker without a target resolution',true,[{code:'resolution_pending'}],undefined,409],
+ ['several payable blockers (first match is kept)',true,[{code:'resolution_pending'},{code:'resolution_pending',return_resolution_id:'res_a'},{code:'resolution_requires_action',return_resolution_id:'res_b'}],'res_a',200],
+] as const)test(`I1 return launch targets the payable resolution for ${name}`,async()=>routeUse(async h=>{
+ let calledResolution:string|undefined,launches=0;Object.assign(h.client.me,{getReturn:async()=>({return_id:'ret_fixture',buyer_actions:[{kind:'pay_balance',is_available:available}],completion_blockers:blockers}),createReturnResolutionCheckoutSession:async(resolution:string)=>{launches++;calledResolution=resolution;return {checkout_session:{...h.session,order_id:h.order.order_id,surface:'embedded',page_origin:h.config.appOrigin},checkout_access:{checkout_auth_token:'fixture checkout authority'},reused_existing:false};}});Object.assign(h.client,{paymentMethods:{list:async()=>({data:[]})}});
+ assert.equal((await h.get('/returns/ret_fixture/pay')).status,status);assert.equal(calledResolution,expected);assert.equal(launches,expected?1:0);assert.equal(h.store.get<{resolution_id:string|null}>("SELECT resolution_id FROM payment_checkouts WHERE resource_type='return' AND resource_id='ret_fixture'")?.resolution_id??undefined,expected);
+}));
+
 async function unknownGift(f:ReturnType<typeof fixture>){f.send(async()=>{throw refusal('UNKNOWN_FAILURE','',503);});await assert.rejects(()=>f.apply(),{code:'UNKNOWN_FAILURE'});return row(f);}
 async function unknownHttpGift(h:Parameters<Parameters<typeof routeUse>[0]>[0]){h.send(async()=>{throw refusal('UNKNOWN_FAILURE','',503);});const response=await h.post(h.root+'/gift-card',{gift_card_code:code});assert.equal(response.status,503);return row(h);}
 function installInvoiceLaunch(h:Parameters<Parameters<typeof routeUse>[0]>[0],send?:()=>void){
