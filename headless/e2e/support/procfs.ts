@@ -59,14 +59,4 @@ export class Procfs {
     }
     return false;
   }
-  async holders(dev: number, ino: number, uid: number): Promise<number[]> {
-    const result: number[] = [];
-    for (const pid of (await readdir(this.root)).filter(p => /^\d+$/.test(p))) {
-      try {
-        const identity = parseStatus(await readFile(join(this.root, pid, 'status'), 'utf8'));
-        if ((identity.uid === uid || identity.effectiveUid === uid) && await this.holds(Number(pid), dev, ino)) result.push(Number(pid));
-      } catch (error: any) { if (error?.code !== 'ENOENT' && error?.code !== 'ESRCH') throw error; }
-    }
-    return result;
-  }
 }

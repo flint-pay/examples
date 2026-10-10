@@ -80,7 +80,7 @@ export async function verifyOwnedProcess(config: Config, manifest: OwnedApps, pr
     gate(child.uid === uid && child.effectiveUid === uid && child.parent === manifest.launcher_pid && launcher.uid === uid && launcher.effectiveUid === uid, 'APP_PROCESS_OWNERSHIP_UNPROVEN');
     gate(launcher.command.length === 3 && launcher.executable === await realpath(process.execPath) && (launcher.command[0] === 'node' || launcher.command[0] === process.execPath) && resolve(launcher.cwd, launcher.command[1]) === join(checkoutRoot, 'headless/e2e/scripts/apps.ts') && launcher.command[2] === '--apply', 'APP_PROCESS_OWNERSHIP_UNPROVEN');
     const expected = [process.execPath, '--import', join(checkoutRoot, 'headless/e2e/support/app-audit.ts'), join(checkoutRoot,'headless',appName==='accountA'?'account':'storefront','src/server.ts')];
-    gate(JSON.stringify(child.command) === JSON.stringify(expected) && child.cwd === await realpath(checkoutRoot) && await proc.listens(account.pid, account.port), 'APP_PROCESS_OWNERSHIP_UNPROVEN');
+    gate(child.executable === await realpath(process.execPath) && JSON.stringify(child.command) === JSON.stringify(expected) && child.cwd === await realpath(checkoutRoot) && await proc.listens(account.pid, account.port), 'APP_PROCESS_OWNERSHIP_UNPROVEN');
     const response = await health(new URL('/healthz', account.origin), { redirect: 'manual', signal: AbortSignal.timeout(10_000) });
     gate(response.ok, 'APP_PROCESS_OWNERSHIP_UNPROVEN');
     const body = await response.json() as any;
@@ -104,10 +104,8 @@ export async function checkVaultFiles(directory: string): Promise<FileIdentity> 
 export function assertSameFile(before: FileIdentity, after: FileIdentity): void { gate(before.dev === after.dev && before.ino === after.ino && after.size >= before.size && Object.entries(before.files ?? {}).every(([path, info]) => after.files?.[path]?.dev === info.dev && after.files?.[path]?.ino === info.ino), 'APP_VAULT_FILE_IDENTITY_MISMATCH'); }
 export async function verifyVaultHolders(info: FileIdentity, manifest: OwnedApps, proc: Procfs): Promise<void> {
   try {
-    const account = manifest.children.find(c => c.name === 'accountA')!, storefront = manifest.children.find(c => c.name === 'storefrontA')!;
+    const account = manifest.children.find(c => c.name === 'accountA')!;
     gate(await proc.holds(account.pid, info.dev, info.ino), 'APP_VAULT_FILE_IDENTITY_MISMATCH');
-    const allowed = new Set([account.pid, storefront.pid, process.pid]);
-    gate((await proc.holders(info.dev, info.ino, process.getuid!())).every(pid => allowed.has(pid)), 'APP_VAULT_FILE_IDENTITY_MISMATCH');
   } catch { throw new VaultGateError('APP_VAULT_FILE_IDENTITY_MISMATCH'); }
 }
 export async function verifyVaultAuthority(d: Driver, row: VaultRow): Promise<{ directory: string; manifest: OwnedApps; proc: Procfs }> {
@@ -207,11 +205,11 @@ export async function assertGiftChallengeSqlite(directory:string,manifest:OwnedA
   gate(child&&account&&storefront&&child.app_database_file===`${app}.sqlite`&&account.identity_file==='identity-a.sqlite'&&storefront.identity_file==='identity-a.sqlite','OWNED_APP_MANIFEST_MISMATCH');
   const identities=new Map<string,{before:FileIdentity;owners:number[]}>();
   const holders=async(info:FileIdentity,owners:number[])=>{
-    gate((await Promise.all(owners.map(pid=>proc.holds(pid,info.dev,info.ino)))).some(Boolean)&&(await proc.holders(info.dev,info.ino,process.getuid!())).every(pid=>owners.includes(pid)||pid===process.pid),'APP_VAULT_FILE_IDENTITY_MISMATCH');
+    gate((await Promise.all(owners.map(pid=>proc.holds(pid,info.dev,info.ino)))).every(Boolean),'APP_VAULT_FILE_IDENTITY_MISMATCH');
   };
   try{
     const vaultBefore=await checkVaultFiles(directory);await verifyVaultHolders(vaultBefore,manifest,proc);
-    for(const [file,owners] of [[child.app_database_file,[child.pid]],['identity-a.sqlite',[account.pid,storefront.pid]]] as const){
+    for(const [file,owners] of [[child.app_database_file,[child.pid]],['identity-a.sqlite',[account.pid]]] as const){
       for(const suffix of ['', '-wal','-shm']){
         const path=join(directory,file+suffix),info=await lstat(path);assertVaultPath(path,info,await realpath(path),false);
         const before={dev:info.dev,ino:info.ino,size:info.size};await holders(before,[...owners]);identities.set(path,{before,owners:[...owners]});

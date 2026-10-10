@@ -46,7 +46,9 @@ test('sealed authority cannot serialize or coerce and registers exact values for
 test('manifest mismatches and extra fields are refused', () => {
   const c = config('/tmp/synthetic'), valid = manifest(c); validateOwnedManifest(valid,c,c.privateDir);
   for (const patch of [{run:'other'}, {target_commit:'b'.repeat(40)}, {private_dir_realpath:'/tmp/other'}, {unexpected:'value'}]) assert.throws(() => validateOwnedManifest({...valid,...patch},c,c.privateDir), {code:'OWNED_APP_MANIFEST_MISMATCH'});
-  const wrong = structuredClone(valid); wrong.children[0].identity_file = 'accountA.sqlite'; assert.throws(() => validateOwnedManifest(wrong,c,c.privateDir));
+  for (const [index, identity] of [[0, 'accountA.sqlite'], [2, 'identity-a.sqlite']] as const) {
+    const wrong = structuredClone(valid); wrong.children[index].identity_file = identity; assert.throws(() => validateOwnedManifest(wrong,c,c.privateDir), {code:'OWNED_APP_MANIFEST_MISMATCH'});
+  }
 });
 test('procfs parsers handle command names with spaces and exact listening socket inodes', () => {
   assert.deepEqual(parseStatus('PPid:\t100\nUid:\t10 10 10 10\n'), {parent:100,uid:10,effectiveUid:10});
@@ -61,7 +63,7 @@ test('ownership proof refuses each process, command, socket and health mismatch'
   const health=(skew=0)=>async()=>Response.json({build:{sha:c.targetCommit,artifactId:c.builds.accountA,startedAt:new Date(started+skew).toISOString()},sandbox_id:c.pins.A.sandboxId,mode:'test'});
   const proc=(patch={},listens=true)=>({process:async(pid:number)=>pid===100?launcher:{...child,...patch},listens:async()=>listens}) as unknown as Procfs;
   await verifyOwnedProcess(c,m,proc(),health());
-  for(const patch of [{uid:child.uid+1},{effectiveUid:child.uid+1},{parent:999},{command:[...child.command,'extra']},{cwd:'/tmp/elsewhere'}]) await assert.rejects(()=>verifyOwnedProcess(c,m,proc(patch),health()),{code:'APP_PROCESS_OWNERSHIP_UNPROVEN'});
+  for(const patch of [{uid:child.uid+1},{effectiveUid:child.uid+1},{parent:999},{command:[...child.command,'extra']},{executable:'/tmp/other-node'},{cwd:'/tmp/elsewhere'}]) await assert.rejects(()=>verifyOwnedProcess(c,m,proc(patch),health()),{code:'APP_PROCESS_OWNERSHIP_UNPROVEN'});
   await assert.rejects(()=>verifyOwnedProcess(c,m,proc({},false),health()),{code:'APP_PROCESS_OWNERSHIP_UNPROVEN'});
   await assert.rejects(()=>verifyOwnedProcess(c,m,proc(),health(3001)),{code:'APP_PROCESS_OWNERSHIP_UNPROVEN'});
 });
@@ -82,17 +84,34 @@ test('real private vault refuses symlinks, hardlinks, permissions and replaced i
     const linked=dir+'-link'; await symlink(dir,linked); try { await assert.rejects(()=>checkVaultFiles(linked)); } finally { await rm(linked); }
   } finally {identity.close();}
 }));
-test('a foreign same-uid holder or missing account descriptor refuses file authority', async () => {
+test('the exact account descriptor is required even when another storefront holds the inode', async () => {
   const c=config('/tmp/synthetic'),m=manifest(c),info={dev:1,ino:2,size:3};
-  for(const [holds,holders] of [[false,[101]],[true,[101,102,999]]] as [boolean,number[]][]) await assert.rejects(()=>verifyVaultHolders(info,m,{holds:async()=>holds,holders:async()=>holders} as unknown as Procfs),{code:'APP_VAULT_FILE_IDENTITY_MISMATCH'});
-  await verifyVaultHolders(info,m,{holds:async()=>true,holders:async()=>[101,102,process.pid]} as unknown as Procfs);
+  for(const holder of [102,103]) await assert.rejects(()=>verifyVaultHolders(info,m,{holds:async(pid:number)=>pid===holder} as unknown as Procfs),{code:'APP_VAULT_FILE_IDENTITY_MISMATCH'});
+  await verifyVaultHolders(info,m,{holds:async(pid:number)=>pid===101} as unknown as Procfs);
 });
+test('unrelated inaccessible host descriptors are not scanned, but owned descriptor denial fails', async () => temp(async dir => {
+  const root=join(dir,'proc'),uid=process.getuid!(),db=join(dir,'identity-a.sqlite');
+  await writeFile(db,'synthetic database bytes',{mode:0o600});
+  for(const pid of [101,999]){
+    await mkdir(join(root,String(pid),'fd'),{recursive:true});
+    await writeFile(join(root,String(pid),'status'),`PPid:\t100\nUid:\t${uid} ${uid} ${uid} ${uid}\n`);
+    await symlink(db,join(root,String(pid),'fd/0'));
+  }
+  const owned=join(root,'101/fd'),unrelated=join(root,'999/fd'),proc=new Procfs(root),info=await stat(db),m=manifest(config(dir));
+  try {
+    await chmod(unrelated,0);
+    await assert.rejects(()=>proc.holds(999,info.dev,info.ino),{code:'EACCES'});
+    await verifyVaultHolders(info,m,proc);
+    await chmod(owned,0);
+    await assert.rejects(()=>verifyVaultHolders(info,m,proc),{code:'APP_VAULT_FILE_IDENTITY_MISMATCH'});
+  } finally { await chmod(owned,0o700); await chmod(unrelated,0o700); }
+}));
 async function challengeSqliteFixture(dir:string,row:'AC-GIFTCHALLENGE'|'SF-GIFTCHALLENGE'){
   const c=config(dir),m=manifest(c),app=row==='AC-GIFTCHALLENGE'?'accountA':'storefrontA',child=m.children.find(v=>v.name===app)!,files=new Map<number,{path:string;owners:number[]}>();
   for(const file of ['identity-a.sqlite',`${app}.sqlite`])for(const suffix of ['', '-wal','-shm']){
     const path=join(dir,file+suffix);await writeFile(path,'synthetic database bytes',{mode:0o600});const info=await stat(path);files.set(info.ino,{path,owners:file==='identity-a.sqlite'?[101,102]:[child.pid]});
   }
-  const proc={holds:async(pid:number,_dev:number,ino:number)=>files.get(ino)?.owners.includes(pid)??false,holders:async(_dev:number,ino:number)=>[...(files.get(ino)?.owners??[]),process.pid]} as unknown as Procfs;
+  const proc={holds:async(pid:number,_dev:number,ino:number)=>files.get(ino)?.owners.includes(pid)??false} as unknown as Procfs;
   return {m,proc,files,app,scan:(codes:readonly string[]=[])=>assertGiftChallengeSqlite(dir,m,proc,row,codes)};
 }
 for(const row of ['AC-GIFTCHALLENGE','SF-GIFTCHALLENGE'] as const){
@@ -113,17 +132,30 @@ for(const suffix of ['', '-wal','-shm'])test(`challenge scan refuses a shared id
   const f=await challengeSqliteFixture(dir,'SF-GIFTCHALLENGE'),path=join(dir,'identity-a.sqlite'+suffix);await rename(path,path+'.real');await symlink(path+'.real',path);await assert.rejects(()=>f.scan(),{code:'APP_VAULT_FILE_IDENTITY_MISMATCH'});
 }));
 test('challenge scan refuses a replaced shared WAL inode between path proof and read',async()=>temp(async dir=>{
-  const f=await challengeSqliteFixture(dir,'AC-GIFTCHALLENGE'),path=join(dir,'identity-a.sqlite-wal'),info=await stat(path),original=f.proc.holders.bind(f.proc);let replaced=false;
-  f.proc.holders=async(dev,ino,uid)=>{if(ino===info.ino&&!replaced){replaced=true;await rename(path,path+'.old');await writeFile(path,'replacement database bytes',{mode:0o600});}return original(dev,ino,uid);};
+  const f=await challengeSqliteFixture(dir,'AC-GIFTCHALLENGE'),path=join(dir,'identity-a.sqlite-wal'),info=await stat(path),original=f.proc.holds.bind(f.proc);let replaced=false;
+  f.proc.holds=async(pid,dev,ino)=>{if(ino===info.ino&&!replaced){replaced=true;await rename(path,path+'.old');await writeFile(path,'replacement database bytes',{mode:0o600});}return original(pid,dev,ino);};
   await assert.rejects(()=>f.scan(),{code:'APP_VAULT_FILE_IDENTITY_MISMATCH'});
 }));
 test('challenge scan refuses an app database path outside the exact owned manifest',async()=>temp(async dir=>{
   const f=await challengeSqliteFixture(dir,'AC-GIFTCHALLENGE');f.m.children.find(child=>child.name==='accountA')!.app_database_file='../foreign.sqlite';await assert.rejects(()=>f.scan(),{code:'OWNED_APP_MANIFEST_MISMATCH'});
 }));
-for(const file of ['identity-a.sqlite-wal','accountA.sqlite'])test(`challenge scan refuses a foreign holder of ${file}`,async()=>temp(async dir=>{
-  const f=await challengeSqliteFixture(dir,'AC-GIFTCHALLENGE'),info=await stat(join(dir,file)),original=f.proc.holders.bind(f.proc);f.proc.holders=async(dev,ino,uid)=>ino===info.ino?[999]:original(dev,ino,uid);
-  await assert.rejects(()=>f.scan(),{code:'APP_VAULT_FILE_IDENTITY_MISMATCH'});
-}));
+for(const row of ['AC-GIFTCHALLENGE','SF-GIFTCHALLENGE'] as const){
+  for(const file of ['identity-a.sqlite','identity-a.sqlite-wal','identity-a.sqlite-shm','app.sqlite','app.sqlite-wal','app.sqlite-shm']){
+    test(`${row} challenge scan requires the relevant owned descriptor for ${file}`,async()=>temp(async dir=>{
+      const f=await challengeSqliteFixture(dir,row),path=join(dir,file.replace('app.',f.app+'.')),info=await stat(path);
+      // A descriptor in sandbox B cannot establish sandbox A's file authority.
+      f.files.get(info.ino)!.owners=[103];
+      await assert.rejects(()=>f.scan(),{code:'APP_VAULT_FILE_IDENTITY_MISMATCH'});
+      f.files.get(info.ino)!.owners=[];
+      await assert.rejects(()=>f.scan(),{code:'APP_VAULT_FILE_IDENTITY_MISMATCH'});
+    }));
+  }
+  test(`${row} challenge scan rejects access denial for its owned app descriptor`,async()=>temp(async dir=>{
+    const f=await challengeSqliteFixture(dir,row),info=await stat(join(dir,f.app+'.sqlite')),original=f.proc.holds.bind(f.proc);
+    f.proc.holds=async(pid,dev,ino)=>{if(ino===info.ino)throw Object.assign(new Error('synthetic descriptor denial'),{code:'EACCES'});return original(pid,dev,ino);};
+    await assert.rejects(()=>f.scan(),{code:'APP_VAULT_FILE_IDENTITY_MISMATCH'});
+  }));
+}
 test('the five exact SQL projections read synthetic IdentityStore rows without mutating the main database', async () => temp(async dir => {
   const path=join(dir,'identity-a.sqlite'), identity=new IdentityStore(path);
   try {
@@ -332,7 +364,7 @@ test('procfs filesystem root is injectable and descriptors prove the socket and 
   await writeFile(join(root,'101/cmdline'),Buffer.from(`${process.execPath}\0synthetic.ts\0`));await writeFile(join(root,'101/stat'),`101 (synthetic) S ${[...Array(18).fill('0'),'1234'].join(' ')}`);
   await symlink(checkoutRoot,join(root,'101/cwd'));await symlink(process.execPath,join(root,'101/exe'));await symlink(db,join(root,'101/fd/0'));await symlink('socket:[123]',join(root,'101/fd/1'));
   await writeFile(join(root,'net/tcp'),'header\n0: 0100007F:1068 00000000:0000 0A 0 0 0 10 0 123\n');await writeFile(join(root,'net/tcp6'),'header\n');
-  const proc=new Procfs(root),info=await stat(db);assert.equal(await proc.available(),true);assert.equal((await proc.process(101)).startedAt,1012340);assert.equal(await proc.listens(101,4200),true);assert.equal(await proc.listens(101,4201),false);assert.equal(await proc.holds(101,info.dev,info.ino),true);assert.deepEqual(await proc.holders(info.dev,info.ino,uid),[101]);
+  const proc=new Procfs(root),info=await stat(db);assert.equal(await proc.available(),true);assert.equal((await proc.process(101)).startedAt,1012340);assert.equal(await proc.listens(101,4200),true);assert.equal(await proc.listens(101,4201),false);assert.equal(await proc.holds(101,info.dev,info.ino),true);
 }));
 
 test('static vault boundaries reject secret sinks, forbidden tables, another SQLite importer and configurable clocks',()=>{
