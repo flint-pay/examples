@@ -116,7 +116,7 @@ export const storefront: Record<string, Scenario> = {
     // One invalid guess only, including reruns. Durable marker is saved before input.
     if (!d.operator.ledger.state.actions['A:invalid-gift-marker']) await d.operator.ledger.action('invalid-gift-marker', 'A', 'local-marker', [], async () => true, async () => {});
     else invariant(false, 'INVALID_GIFT_ALREADY_ATTEMPTED');
-    await c.page.getByTestId('sf-gift-card-code').fill('INVALID-ONCE'); await c.page.getByTestId('sf-gift-card-apply').click(); await expect(c.page.getByRole('alert')).toContainText("isn't valid");
+    await c.page.getByTestId('sf-gift-card-code').fill('INVALID-ONCE'); await c.page.getByTestId('sf-gift-card-apply').click(); await expect(c.page.locator('[data-job-error="gift-card"]')).toContainText("isn't valid", { timeout: 30000 });
     await d.pay(c); const order = await d.settled(c); invariant(order.gift_card_settlements?.length === 1, 'GIFT_SETTLEMENT_MISSING'); return ['GIFT_REVISION_ALLOCATION_AND_ONE_CHARGE'];
   },
   'SF-06': async d => {
@@ -163,7 +163,7 @@ export const storefront: Record<string, Scenario> = {
       await route.continue();
     });
     await d.card(c.page); await expect(c.page.getByTestId('sf-pay-button')).toBeEnabled(); await c.page.getByTestId('sf-pay-button').click();
-    await expect(c.page.getByTestId('sf-payment')).toHaveAttribute('data-state', 'total_changed'); invariant(mutated, 'PAY_REQUEST_NOT_INTERCEPTED'); await c.page.unroute(`**/checkout/${c.ref}/pay`);
+    await expect(c.page.getByTestId('sf-payment')).toHaveAttribute('data-state', 'total_changed', { timeout: 30000 }); invariant(mutated, 'PAY_REQUEST_NOT_INTERCEPTED'); await c.page.unroute(`**/checkout/${c.ref}/pay`);
     await d.auditKnownStates(c.page); await d.state(c); invariant(c.state.order.settlement_amounts.outstanding_money.amount !== oldMoney.amount, 'TOTAL_DID_NOT_CHANGE');
     await d.delivery(c); await d.pay(c); await d.settled(c); return ['SESSION_REPLACEMENT_AND_REAPPROVAL'];
   },

@@ -12,7 +12,9 @@ import { providerSteps } from './provider.ts';
 export const settlement: Record<string, Scenario> = {
   'SF-05Z2': async d => {
     const c = await d.checkout(await d.page('zero-balance'), 'brewing-class');
-    await c.page.getByTestId('sf-discount-code').fill(d.fixtures.values.zeroBalancePromotion); await c.page.getByTestId('sf-discount-apply').click(); await d.state(c);
+    await c.page.getByTestId('sf-discount-code').fill(d.fixtures.values.zeroBalancePromotion); const discountResponse = c.page.waitForResponse(r => new URL(r.url()).pathname === `/checkout/${c.ref}/discount` && r.request().method() === 'POST', { timeout: 30000 });
+    await c.page.getByTestId('sf-discount-apply').click(); invariant((await discountResponse).status() === 200, 'ZERO_BALANCE_DISCOUNT_REJECTED');
+    await expect(c.page.getByTestId('sf-discount-applied-0')).toBeVisible({ timeout: 30000 }); await d.state(c);
     invariant(money(c.state.order.settlement_amounts.outstanding_money).amount === '0', 'ZERO_BALANCE_FIXTURE_INVALID');
     const response = c.page.waitForRequest(r => new URL(r.url()).pathname === `/checkout/${c.ref}/pay` && r.method() === 'POST');
     await expect(c.page.getByTestId('sf-payment')).toHaveAttribute('data-collection', 'settlement'); await expect(c.page.getByTestId('sf-settlement-explanation')).toBeVisible();
