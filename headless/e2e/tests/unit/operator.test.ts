@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Client,SdkError } from '@flintpay/node';
-import type { CreateCheckoutSessionRequestInput, CreateInvoiceRequestInput, CreateOrderRequestInput, CreateSubscriptionPlanRequestInput, Invoice, InvoicePaymentPolicyInput, IssueInvoiceResult, Order, UpdateSubscriptionRequestInput } from '@flintpay/node';
+import type { CheckoutSession, CreateCheckoutSessionRequestInput, CreateInvoiceRequestInput, CreateOrderRequestInput, CreateSubscriptionPlanRequestInput, Invoice, InvoicePaymentPolicyInput, IssueInvoiceResult, Order, UpdateSubscriptionRequestInput } from '@flintpay/node';
 import { Ledger } from '../../support/ledger.ts';
 import { Operator, operations } from '../../support/operator.ts';
 import type { VerifiedClients } from '../../support/sdk.ts';
@@ -353,6 +353,50 @@ test('unsupported settings absence and null remain blocked before any write',asy
  for(const value of [undefined,null]){let writes=0;const clients={config,writable:async()=>({settings:{get:async()=>({version:'1',checkout:value}),update:async()=>{writes++;}}})} as unknown as VerifiedClients;
  const op=new Operator(clients,ledger,{settingsAuthority:{A:{runOwned:true,owner:'unit',reviewAt:'2000-02-01T00:00:00Z'}}} as Fixtures);
  await assert.rejects(()=>op.settings('A',{checkout:{}}),{message:'SETTINGS_PATCH_NOT_RESTORABLE'});assert.equal(writes,0);}
+}));
+
+test('challenge probe declares a non-taxable line through the published SDK before probing without payment', async () => setup(async ledger => {
+  const orderId = 'ord_UNIT_FAKE', sessionId = 'cs_UNIT_FAKE', paths: string[] = [];
+  const zero = { amount: '0', currency: 'USD' }, total = { amount: '200', currency: 'USD' };
+  const order: Order = {
+    order_id: orderId, order_revision: '5', buyer_actions: [], status: 'open', payment_status: 'unpaid', refund_status: 'none',
+    line_items: [{ order_line_item_id: 'oli_UNIT_FAKE', name: 'Gift card verification probe', quantity: '1', version: '1', refunded_quantity: '0', unit_price_money: total, base_subtotal_money: total, subtotal_money: total, tax_money: zero, total_money: total, discount_money: zero, modifier_total_money: zero, refunded_money: zero, tax: { taxable: false } }],
+    pricing_amounts: { charge_money: zero, discount_money: zero, requested_tip_money: zero, subtotal_money: total, tax_money: zero, total_money: total },
+    settlement_amounts: { balance_money: total, outstanding_money: total, paid_money: zero, credit_money: zero, net_collected_money: zero, refunded_money: zero, settled_tip_money: zero },
+    tax: { enabled: true, mode: 'automatic', status: 'calculated', taxability_reason: 'not_taxable' },
+  };
+  const session: CheckoutSession = { checkout_session_id: sessionId, order_id: orderId, status: 'open', surface: 'embedded', delivery_method_ids: [], delivery_selection_required: false, problems: [], recovery_mode: false };
+  const client = new Client({ baseUrl: 'https://api.staging.withflintpay.com', apiKey: 'flint_test_PLACEHOLDER', maxAttempts: 1, transport: async (input, init) => {
+    const path = new URL(String(input)).pathname, method = init!.method!, headers = new Headers(init!.headers);
+    const body = init!.body ? JSON.parse(String(init!.body)) : undefined;
+    paths.push(`${method} ${path}`);
+    if (method === 'POST') assert.ok(headers.get('Idempotency-Key'));
+    if (method === 'POST' && path === '/v1/orders') {
+      // An enabled merchant tax default requires explicit ad hoc line taxability.
+      if (typeof body.line_items[0]?.tax?.taxable !== 'boolean') return Response.json({ error: { type: 'validation', code: 'ORDER_LINE_ITEM_TAX_INPUT_REQUIRED', message: 'Explicit line-item taxability is required.' } }, { status: 400 });
+      assert.equal(body.line_items[0].tax.taxable, false);
+      assert.equal(body.tax, undefined);
+      return Response.json({ data: order });
+    }
+    if (method === 'POST' && path === '/v1/checkout-sessions') {
+      assert.equal(body.order_id, orderId);
+      return Response.json({ data: { checkout_session: session, checkout_access: { checkout_auth_token: 'fixture authority' }, reused_existing: false } });
+    }
+    if (method === 'GET' && path === `/v1/orders/${orderId}`) return Response.json({ data: order });
+    if (method === 'POST' && path === `/v1/orders/${orderId}/gift-cards`) {
+      assert.equal(headers.get('Authorization'), null);
+      assert.equal(headers.get('X-Checkout-Session-ID'), sessionId);
+      assert.equal(headers.get('X-Checkout-Session-Secret'), 'fixture authority');
+      return Response.json({ error: { type: 'validation', code: 'GIFT_CARD_CHALLENGE_REQUIRED', message: 'Complete the verification challenge.' } }, { status: 400 });
+    }
+    assert.equal(method, 'POST'); assert.equal(path, `/v1/checkout-sessions/${sessionId}/close`);
+    return Response.json({ data: { ...session, status: 'closed' } });
+  } });
+  const clients = { config: { ...config, origins: { storefrontA: 'http://localhost:4100' } }, writable: async () => client } as unknown as VerifiedClients;
+  await new Operator(clients, ledger, {} as Fixtures).tripGiftChallenge();
+  assert.deepEqual(paths, ['POST /v1/orders', 'POST /v1/checkout-sessions', `GET /v1/orders/${orderId}`, `POST /v1/orders/${orderId}/gift-cards`, `POST /v1/checkout-sessions/${sessionId}/close`]);
+  assert.ok(ledger.state.giftChallengeTrippedAt);
+  assert.ok(ledger.state.resources.some(resource => resource.type === 'checkout_session' && resource.status === 'CLEANED UP'));
 }));
 
 for(const trips of [true,false])test(`challenge trip ${trips?'proves a shared dimension':'fails at the bounded lookup limit'} without merchant apply or persisted codes`,async()=>setup(async(ledger,dir)=>{
