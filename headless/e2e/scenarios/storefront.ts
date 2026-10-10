@@ -245,11 +245,12 @@ export const storefront: Record<string, Scenario> = {
     const confirmed = await d.job(page, `/checkout/${c.ref}/verification/confirm`, { code: mail.codes[0] }); invariant(confirmed.status === 200, 'SAVE_CARD_VERIFICATION_CONFIRM_FAILED');
     const verified = await d.state(c);
     invariant(verified.session.save_payment_method_offered === true && verified.session.save_payment_method_requires_verification === false, 'SAVE_CARD_AUTHORIZATION_REQUIRED');
-    await page.reload(); await page.getByTestId('sf-save-card').check(); await d.pay(c); await d.settled(c);
+    await page.reload(); await page.getByTestId('sf-save-card').check(); await d.pay(c, undefined, { activation: 'keyboard' }); await d.settled(c);
     const next = await d.checkout(page, 'brewing-class', 'B', 'b1b'); const returning = await d.email('b1b', new Date(Date.now() - 5000), 'checkout_verification');
-    await page.getByTestId('sf-returning-code').fill(returning.codes[0]); await d.form(page, `/checkout/${next.ref}/verification/confirm`); await billing(d, next); const saved = page.locator('[data-testid^="sf-saved-method-"]').first(); await expect(saved).toBeVisible(); await saved.check(); await page.getByTestId('sf-pay-button').click(); await d.settled(next);
+    await page.getByTestId('sf-returning-code').fill(returning.codes[0]); await d.form(page, `/checkout/${next.ref}/verification/confirm`); await billing(d, next); const saved = page.locator('[data-testid^="sf-saved-method-"]').first(); await expect(saved).toBeVisible(); await saved.check();
+    const savedPay = page.getByTestId('sf-pay-button'); await expect(savedPay).toBeEnabled(); await savedPay.focus(); await expect(savedPay).toBeFocused(); await page.keyboard.press('Enter'); await d.settled(next);
     const phone = d.fixtures.values.sandboxSmsPhone; invariant(phone, 'SMS_FIXTURE_REQUIRED');
-    const sms = await d.checkout(await d.page('phone-save', 'B'), 'brewing-class', 'B', 'b1b'); await billing(d, sms); await sms.page.getByTestId('sf-save-card').check(); await sms.page.getByTestId('sf-save-phone').fill(phone); await d.pay(sms); await d.settled(sms);
+    const sms = await d.checkout(await d.page('phone-save', 'B'), 'brewing-class', 'B', 'b1b'); await billing(d, sms); await sms.page.getByTestId('sf-save-card').check(); await sms.page.getByTestId('sf-save-phone').fill(phone); await d.pay(sms, undefined, { activation: 'keyboard' }); await d.settled(sms);
     for (const code of ['000000', '999999', '123456']) {
       if (code === '000000') await d.job(sms.page, `/checkout/${sms.ref}/verification`, { purpose: 'confirm_saved_payment_method', channel: 'sms' });
       const r = await d.job(sms.page, `/checkout/${sms.ref}/verification/confirm`, { code }); invariant(code === '123456' ? r.status === 200 : r.status >= 400, 'SANDBOX_SMS_RULE');
