@@ -26,10 +26,15 @@ export async function hostedInvoiceLaunch(d: Driver, name: string, invoiceId: st
 }
 export async function beginHostedAuthentication(d: Driver, name: string, launch: any): Promise<void> {
   invariant(launch.checkout_access?.checkout_auth_token && launch.checkout_session?.checkout_session_id && launch.checkout_session.order_id, 'PUBLIC_CHECKOUT_AUTHORITY_REQUIRED');
+  const token = d.fixtures.values.hostedConflictPaymentToken;
+  invariant(typeof token === 'string' && token.length > 0, 'HOSTED_CONFLICT_PAYMENT_TOKEN_REQUIRED');
+  invariant(/^pm_[A-Za-z0-9]+$/.test(token), 'HOSTED_CONFLICT_PAYMENT_TOKEN_INVALID');
   const id = launch.checkout_session.checkout_session_id;
   const checkout = new Client({ baseUrl: d.config.apiOrigin, authMode: 'checkout', credentials: { checkout: { CheckoutSessionIDHeader: id, CheckoutSessionSecretHeader: launch.checkout_access.checkout_auth_token } }, transport: pinnedFetch(), maxAttempts: 1 });
   const order = await checkout.orders.get(launch.checkout_session.order_id);
-  const request = { order_id: order.order_id, body: { action: 'pay' as const, expected_outstanding_money: money(order.settlement_amounts.outstanding_money), payment_source: { token: 'pm_card_authenticationRequired' } } };
+  // A new action needs a fresh one-shot source; the same ledger action may replay it.
+  invariant(!Object.entries(d.operator.ledger.state.actions).some(([actionId, action]) => actionId !== `A:${name}` && action.sandbox === 'A' && action.operation === 'orders.pay-checkout' && (action.args[0] as any)?.body?.payment_source?.token === token), 'HOSTED_CONFLICT_PAYMENT_TOKEN_REUSED');
+  const request = { order_id: order.order_id, body: { action: 'pay' as const, expected_outstanding_money: money(order.settlement_amounts.outstanding_money), payment_source: { token } } };
   const result = await d.operator.ledger.action(name, 'A', 'orders.pay-checkout', [request], async key => {
     await d.operator.clients.verify('A'); return checkout.orders.pay(request, { idempotencyKey: key });
   }, async () => { await d.trackOrder('A', order.order_id); });
