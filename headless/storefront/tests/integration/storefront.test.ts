@@ -21,7 +21,7 @@ test('storefront public SDK sandbox journeys',{timeout:180_000},async t=>{
   const journals=process.env.E2E_INTEGRATION_JOURNAL_DIR;
   if(journals)mkdirSync(journals,{recursive:true,mode:0o700});
   const directory=mkdtempSync(join(journals??tmpdir(),'storefront-integration-'));const runId=randomUUID();const runtime=createApp({config:{...config,appDatabasePath:join(directory,'app.sqlite'),identityDatabasePath:join(directory,'identity.sqlite')},client,preflight:ready});
-  type State={checkout_ref:string;kind:'order'|'subscription';collection_kind:'processor'|'settlement'|'setup'|'unavailable';order:Order;approved_outstanding_money:MoneyValue;next:string;delivery_quote?:{choice_groups:Array<{delivery_choice_group_id:string;availability_status:string;options:Array<{delivery_option_id:string;type:string}>}>};delivery_selection?:{status:string}};
+  type State={checkout_ref:string;kind:'order'|'subscription';collection_kind:'processor'|'settlement'|'setup'|'unavailable';order:Order;approved_outstanding_money:MoneyValue;next:string;delivery_quote?:{choice_groups:Array<{delivery_choice_group_id:string;availability_status:string;options:Array<{delivery_option_id:string;type:string}>}>};pickup_locations?:Array<{pickup:{location:{location_id:string}}}>;delivery_selection?:{status:string}};
   type Result={state:State;next?:string;error?:{code:string};client_action?:unknown};
   const created:{ref:string;subscription_id?:string}[]=[];
   const session=runtime.identity.createSession();const cookie=`${config.cookieName}=${session.token}`;
@@ -52,11 +52,10 @@ test('storefront public SDK sandbox journeys',{timeout:180_000},async t=>{
       const canceled=await request(`/checkout/${current.checkout_ref}/cancel-attempt`,{});assert.equal(canceled.status,200);assert.equal((await canceled.json() as Result).next,'new_payment');
       const cart=runtime.carts.current(session.session);await runtime.checkouts.editCart(cart,async()=>runtime.store.run('DELETE FROM cart_lines WHERE cart_id=?',cart.cart_id));
     });
-    await t.test('pickup uses the posted ZIP quote and selects its ready groups',async()=>{
-      const current=await checkout('house-blend');const quote=await request(`/checkout/${current.checkout_ref}/pickup-locations`,{postal_code:'78701',country:'US'});assert.equal(quote.status,200);const quoted=(await quote.json() as Result).state;
-      const groups=quoted.delivery_quote!.choice_groups.filter(group=>group.availability_status==='ready');assert.ok(groups.length);
-      const choices=groups.map(group=>({delivery_choice_group_id:group.delivery_choice_group_id,delivery_option_id:group.options.find(option=>option.type==='pickup')!.delivery_option_id}));
-      const selection=await request(`/checkout/${current.checkout_ref}/delivery/select`,{choices,recipient:{name:'Integration buyer',email:`storefront-${runId}@example.test`}});assert.equal(selection.status,200);assert.equal((await selection.json() as Result).state.delivery_selection?.status,'selected');
+    await t.test('pickup discovers locations by preview, then quotes and selects the chosen one',async()=>{
+      const current=await checkout('house-blend');const search=await request(`/checkout/${current.checkout_ref}/pickup-locations`,{postal_code:'78701',country:'US'});assert.equal(search.status,200);const found=(await search.json() as Result).state;
+      assert.ok(found.pickup_locations?.length);assert.equal(found.delivery_quote??null,null);
+      const selection=await request(`/checkout/${current.checkout_ref}/delivery/select`,{pickup_location_id:found.pickup_locations![0]!.pickup.location.location_id,recipient:{name:'Integration buyer',email:`storefront-${runId}@example.test`}});assert.equal(selection.status,200);assert.equal((await selection.json() as Result).state.delivery_selection?.status,'selected');
       const cart=runtime.carts.current(session.session);await runtime.checkouts.editCart(cart,async()=>runtime.store.run('DELETE FROM cart_lines WHERE cart_id=?',cart.cart_id));
     });
     await t.test('trial signup collects a setup payment method without charging',async()=>{

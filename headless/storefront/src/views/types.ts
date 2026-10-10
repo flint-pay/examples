@@ -335,6 +335,7 @@ export type PickupLocation = DeliveryOption & {
   delivery_choice_group_id: string;
   availability_status?: string;
   display_position?: number;
+  distance_meters?: number;
   input_requirements?: { field_path: string; purpose?: string }[];
   expires_at?: string;
 };
@@ -414,6 +415,8 @@ export type CheckoutState = {
   delivery_selection?: DeliverySelection | null;
   /** Pickup options projected from the quote, in display order, with their group and availability. */
   pickup_locations?: PickupLocation[] | null;
+  /** The ZIP code of the pickup search whose locations `pickup_locations` lists. */
+  pickup_search?: { postal_code: string } | null;
   saved_methods?: SavedMethod[] | null;
   verification?: CheckoutVerification | null;
   subscription?: CheckoutSubscription | null;

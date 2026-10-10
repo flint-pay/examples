@@ -1,4 +1,4 @@
-import type {Client,Order,CheckoutSession,BuyerDeliveryQuoteChoiceGroupResource,DeliveryAddressRequestInput,DeliveryBuyerLocationRequestInput,OrderTaxLocationFullAddressRequestInput,Subscription} from '@flintpay/node';
+import type {Client,Order,CheckoutSession,BuyerDeliveryQuoteChoiceGroupResource,DeliveryAddressResource,DeliveryPickupAvailabilityLocationResource,DeliveryAddressRequestInput,DeliveryBuyerLocationRequestInput,OrderTaxLocationFullAddressRequestInput,Subscription} from '@flintpay/node';
 import {createHash} from 'node:crypto';
 import type {Auth} from './auth.ts';
 import {LocalError,unknownOutcome,appError} from './errors.ts';
@@ -19,11 +19,16 @@ import type {PaymentResult} from '../payments/engine.ts';
 import {attemptOpen} from '../payments/next-step.ts';
 
 export type Quote={delivery_quote_id:string;choice_groups:BuyerDeliveryQuoteChoiceGroupResource[];expires_at:string;input_requirements:unknown[];buyer_reasons?:string[];status:string};
-export type Details={name?:string;contact?:{email?:string|null;phone?:string|null};billing_address?:OrderTaxLocationFullAddressRequestInput;delivery_quote?:Quote;delivery_selection?:{delivery_selection_id?:string;[key:string]:unknown};pickup_locations?:unknown[];quote_input?:{destination_address?:DeliveryAddressRequestInput;buyer_location?:DeliveryBuyerLocationRequestInput};verification?:{customer_verification_id:string;status:string;purpose?:string;channel?:string;email?:string;phone_last_digits?:string};receipt_sent_at?:number;gift_origin_replaced_at?:number};
+export type PickupPreviewLocation={location_id:string;name:string;address?:DeliveryAddressResource;distance_meters?:number;delivery_method_ids:string[]};
+export type PickupPreview={postal_code:string;country:string;evaluated_at:string;locations:PickupPreviewLocation[]};
+export type Details={name?:string;contact?:{email?:string|null;phone?:string|null};billing_address?:OrderTaxLocationFullAddressRequestInput;delivery_quote?:Quote;delivery_selection?:{delivery_selection_id?:string;[key:string]:unknown};pickup_preview?:PickupPreview;quote_basis?:{selection_id:string|null};quote_input?:{destination_address?:DeliveryAddressRequestInput;buyer_location?:DeliveryBuyerLocationRequestInput;pickup_location_id?:string};verification?:{customer_verification_id:string;status:string;purpose?:string;channel?:string;email?:string;phone_last_digits?:string};receipt_sent_at?:number;gift_origin_replaced_at?:number};
 export type ReadCheckout={record:CheckoutRecord;session:CheckoutSession;order:Order;result:PaymentResult};
 export type MutationContext={order_revision?:string;delivery_selection_id:string|null;delivery_quote_id?:string;customer_verification_id?:string};
 const displayNotices=new Set(['checkout_refreshed','delivery_released','total_changed','gift_card_changed','affirm_incomplete','trial_not_started','signed_in_mid_checkout','delivery_requoted']);
 
+export function pickupLocations(preview?:PickupPreview){
+  return preview?.locations.map((location,index)=>({delivery_option_id:location.location_id,delivery_method_id:location.delivery_method_ids[0]!,name:location.name,type:'pickup',amount_money:null,delivery_choice_group_id:'pickup_locations',availability_status:'ready',display_position:index,distance_meters:location.distance_meters,pickup:{location:{location_id:location.location_id,name:location.name,address:location.address}}}));
+}
 export class Checkouts {
   client:Client;auth:Auth;store:Store;identity:IdentityStore;config:Config;sandboxId:string;carts:Carts;payments:PaymentEngine;
   constructor(client:Client,auth:Auth,store:Store,identity:IdentityStore,config:Config,sandboxId:string,carts:Carts,payments:PaymentEngine){Object.assign(this,{client,auth,store,identity,config,sandboxId,carts,payments});this.client=client;this.auth=auth;this.store=store;this.identity=identity;this.config=config;this.sandboxId=sandboxId;this.carts=carts;this.payments=payments;}
@@ -119,7 +124,7 @@ export class Checkouts {
         const replay=previous&&(previous.status==='pending'||previous.status==='unknown'||previous.status!=='rejected'&&previous.body&&JSON.parse(previous.body).replace_checkout_session_id===record.checkout_session_id);
         if(!replay){this.store.run('UPDATE checkouts SET generation=generation+1 WHERE checkout_ref=?',ref);record=this.record(ref);}
         record=await this.launch(record,this.identity.isBound(user,this.sandboxId)?user.flint_customer_id!:undefined,session.status==='open');
-        const details=this.details(record);delete details.delivery_quote;delete details.delivery_selection;delete details.pickup_locations;delete details.verification;this.saveDetails(record,details);
+        const details=this.details(record);delete details.delivery_quote;delete details.delivery_selection;delete details.pickup_preview;delete details.quote_basis;delete details.verification;this.saveDetails(record,details);
         this.notice(record,'checkout_refreshed');
         session=await this.client.checkoutSessions.get(record.checkout_session_id!,undefined,this.auth.checkout(record));order=await this.client.orders.get(record.order_id!,undefined,this.auth.checkout(record));
         credentialsStale=false;
@@ -144,7 +149,7 @@ export class Checkouts {
     const input={expected_delivery_selection_id:details.delivery_selection?.delivery_selection_id??null,...details.quote_input};
     const quoted=await this.action(record,'delivery_requote',input,key=>this.client.checkoutSessions.createDeliveryQuote(record.checkout_session_id!,input,this.auth.checkout(record,key))) as Quote;
     details.delivery_quote=quoted;delete details.delivery_selection;
-    details.pickup_locations=details.quote_input?.buyer_location?quoted.choice_groups.flatMap(group=>group.options.filter(option=>option.type==='pickup').map(option=>({...option,delivery_choice_group_id:group.delivery_choice_group_id,availability_status:group.availability_status,input_requirements:group.input_requirements,expires_at:quoted.expires_at}))).sort((a,b)=>a.display_position-b.display_position):undefined;
+    details.quote_basis={selection_id:input.expected_delivery_selection_id};
     this.saveDetails(record,details);this.notice(record,'delivery_requoted');
   }
   project(read:ReadCheckout){
@@ -152,7 +157,7 @@ export class Checkouts {
     const verification=details.verification?{status:'code_sent',purpose:details.verification.purpose,delivery_channel:details.verification.channel,masked_email:details.verification.email,phone_last_digits:details.verification.phone_last_digits}:undefined;
     return {checkout_ref:read.record.checkout_ref,kind:read.record.kind,collection_kind:collectionKind(read.order,read.record.kind),session:safeSession(read.session),order:safeOrder(read.order),attempt:safeAttempt(read.result.attempt),next,
       payment_collection:buyerSafe(read.order.payment_collection??read.session.payment_collection),setup_collection:buyerSafe(read.order.setup_collection??read.session.setup_collection),
-      delivery_quote:buyerSafe(details.delivery_quote),delivery_selection:buyerSafe(details.delivery_selection),pickup_locations:buyerSafe(details.pickup_locations),verification,
+      delivery_quote:buyerSafe(details.delivery_quote),delivery_selection:buyerSafe(details.delivery_selection),pickup_locations:pickupLocations(details.pickup_preview),pickup_search:details.pickup_preview?{postal_code:details.pickup_preview.postal_code}:undefined,verification,
       contact_name:details.name,billing_address:details.billing_address??null,notices:this.displayNotices(read.record),approved_outstanding_money:read.order.settlement_amounts.outstanding_money};
   }
   async cartLock(cart:Cart,session:Session,user?:User):Promise<CheckoutRecord|undefined>{
@@ -170,7 +175,31 @@ export class Checkouts {
       return read(0);
     });
   }
-  async mutate<T>(ref:string,kind:string,body:unknown,call:(record:CheckoutRecord,key:string,context:MutationContext)=>Promise<T>):Promise<T>{
+  async previewPickup(ref:string,buyer_location:{type:'address';address:{postal_code:string;country:string}}):Promise<void>{
+    const initial=this.record(ref);
+    return this.store.locked(`order:${initial.order_id}`,async()=>{
+      const record=this.record(ref);
+      if(this.payments.unresolved(record))throw new LocalError('CHECKOUT_PAYMENT_RESOLVING',409);
+      if(this.store.get<ActionRecord>("SELECT * FROM actions WHERE resource=? AND kind NOT IN ('pay','resume','cancel') AND status IN ('pending','unknown')",`order:${record.order_id}`))throw new LocalError('ACTION_RECONCILIATION_REQUIRED',409);
+      const order=await this.payments.read(record);if(attemptOpen(order.active_payment_attempt))throw new LocalError('PAYMENT_ATTEMPT_IN_PROGRESS',409);
+      const details=this.details(record);
+      const response=await this.client.deliveryPreviews.create({body:{mode:'pickup_locations',checkout_session_id:record.checkout_session_id!,buyer_location,expected_delivery_selection_id:details.delivery_selection?.delivery_selection_id??null}},this.auth.checkout(record));
+      if((response as {mode?:string}).mode!=='pickup_locations')throw new LocalError('DELIVERY_SERVICE_UNAVAILABLE',503);
+      const preview=response as {evaluated_at:string;locations:DeliveryPickupAvailabilityLocationResource[]};
+      details.pickup_preview={postal_code:buyer_location.address.postal_code,country:buyer_location.address.country,evaluated_at:preview.evaluated_at,locations:preview.locations.filter(item=>item.candidate_outcome.type==='available'&&item.compatible_methods.length>0).map(item=>({location_id:item.location.location_id,name:item.location.name,address:item.location.address,distance_meters:item.distance_meters,delivery_method_ids:item.compatible_methods.map(method=>method.delivery_method_id)}))};
+      // A search owns the delivery section: the earlier shipping quote is only local state, so drop it unless a selection is active.
+      if(!details.delivery_selection){delete details.delivery_quote;delete details.quote_input;delete details.quote_basis;}
+      this.saveDetails(record,details);
+    });
+  }
+  /** The unresolved journaled input for a mutation kind, read without the order lock so callers can decide what to run before taking it. */
+  pendingInput<T>(ref:string,kind:string):T|undefined{
+    const record=this.record(ref);
+    const pending=this.store.get<ActionRecord>("SELECT * FROM actions WHERE resource=? AND kind=? AND status IN ('pending','unknown')",`order:${record.order_id}`,kind);
+    return pending?.body?(JSON.parse(pending.body) as {input:T}).input:undefined;
+  }
+  /** `body` may be built under the order lock from current details and the unresolved journal input, so a replay reuses the journaled request instead of rebuilding it. */
+  async mutate<T>(ref:string,kind:string,input:unknown,call:(record:CheckoutRecord,key:string,context:MutationContext)=>Promise<T>):Promise<T>{
     const initial=this.record(ref);
     return this.store.locked(`order:${initial.order_id}`,async()=>{
       const record=this.record(ref);
@@ -181,6 +210,7 @@ export class Checkouts {
       if(attemptOpen(order.active_payment_attempt))throw new LocalError('PAYMENT_ATTEMPT_IN_PROGRESS',409);
       const details=this.details(record);
       const saved=pending?.body?JSON.parse(pending.body) as {input:unknown;context:MutationContext}:undefined;
+      const body=typeof input==='function'?(input as (details:Details,saved?:{input:unknown})=>unknown)(details,saved):input;
       if(saved&&JSON.stringify(saved.input)!==JSON.stringify(body))throw new LocalError('ACTION_RECONCILIATION_REQUIRED',409);
       const context=saved?.context??{order_revision:order.order_revision,delivery_selection_id:details.delivery_selection?.delivery_selection_id??null,delivery_quote_id:details.delivery_quote?.delivery_quote_id,customer_verification_id:details.verification?.customer_verification_id};
       if(kind==='gift_remove')this.store.abandonGiftChallenges(ref,`order:${record.order_id}`);

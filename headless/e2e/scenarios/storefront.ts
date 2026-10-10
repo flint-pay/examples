@@ -50,6 +50,14 @@ async function subscription(d: Driver, trial: boolean): Promise<any> {
   d.created.set(trial ? 'trialSubscription' : 'paidSubscription', sub.subscription_id);
   return { c, sub };
 }
+/** Mirrors the storefront's shared formatMoney: exact bigint minor-to-decimal, then en-US currency formatting. */
+function formatCatalogMoney(m: { amount: string; currency: string }): string {
+  const formatter = new Intl.NumberFormat('en-US', { style: 'currency', currency: m.currency });
+  const digits = formatter.resolvedOptions().maximumFractionDigits ?? 2;
+  const text = BigInt(m.amount).toString().padStart(digits + 1, '0');
+  const decimal = digits === 0 ? text : `${text.slice(0, text.length - digits)}.${text.slice(text.length - digits)}`;
+  return formatter.format(decimal as unknown as number);
+}
 export const storefront: Record<string, Scenario> = {
   'SF-01': async d => {
     const page = await d.page('catalog'); await d.goto(page, d.sf(), '/'); await expect(page.getByTestId('sf-home')).toBeVisible(); await d.axe(page, 'sf-home');
@@ -57,7 +65,9 @@ export const storefront: Record<string, Scenario> = {
       const product = await d.operator.clients.clients.A.products.get(fixture.productId);
       invariant(product.product_id === fixture.productId, 'CATALOG_PRODUCT_MISMATCH');
       const card = page.getByTestId(`sf-product-card-${slug}`);
-      await expect(card.locator('[data-amount-minor]').first()).toHaveAttribute('data-amount-minor', fixture.unitPrice.amount);
+      // The catalog card renders `.card-price` text from the storefront's priceLabel (formatMoney of the lowest price), without a money data attribute.
+      // Multi-variant products would render "From {price}", which this exact assertion intentionally rejects instead of guessing which variant is shown.
+      await expect(card.locator('.card-price')).toHaveText(formatCatalogMoney(money(fixture.unitPrice)));
     }
     await d.cart(page); await d.axe(page, 'sf-cart-filled');
     const line = page.locator('[data-testid^="sf-cart-line-"]').first();

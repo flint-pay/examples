@@ -245,15 +245,12 @@ export function pickupOptions(state) {
 }
 
 /**
- * True when the last quote was a pickup search that found nothing.
+ * True when the last pickup search found no location that can fill the cart.
  * @param {CheckoutState} state
  */
 export function pickupNoneNearby(state) {
-  const quote = state.delivery_quote;
-  if (!quote || state.delivery_selection) return false;
-  const searchedPickup = quote.buyer_location?.type === 'address' && !quote.destination_address?.line1;
-  if (!searchedPickup) return false;
-  return pickupOptions(state).length === 0 || (quote.buyer_reasons ?? []).includes('no_pickup_location_nearby');
+  if (state.delivery_quote || state.delivery_selection || !state.pickup_search) return false;
+  return pickupOptions(state).length === 0;
 }
 
 /**
@@ -270,9 +267,9 @@ export function deliveryState(state) {
     if (selection.input_requirements?.length) return 'needs_input';
     return 'selected';
   }
+  if (!quote && state.pickup_search) return pickupNoneNearby(state) ? 'none_nearby' : 'options';
   if (quote) {
     if (selectionStale(state)) return 'stale';
-    if (pickupNoneNearby(state)) return 'none_nearby';
     const groups = quote.choice_groups ?? [];
     if (groups.length > 0 && groups.every((group) => group.availability_status === 'unavailable')) return 'unavailable';
     if (groups.some((group) => group.availability_status === 'needs_input') || (quote.input_requirements?.length ?? 0) > 0) return 'needs_input';
@@ -294,9 +291,9 @@ export function deliveryMode(state) {
   const choice = state.delivery_selection?.choices?.[0];
   if (choice) return isPickupType(choice) ? 'pickup' : 'ship';
   const quote = state.delivery_quote;
+  if (!quote && state.pickup_search) return 'pickup';
   if (quote) {
     if (quote.destination_address?.line1) return 'ship';
-    if (quote.buyer_location?.type === 'address' && !quote.destination_address) return 'pickup';
     const types = new Set(quote.choice_groups.flatMap((group) => group.method_types));
     if (types.size === 1 && types.has('pickup')) return 'pickup';
   }

@@ -195,16 +195,56 @@ export function createApp(options:AppOptions){
     const values=(await body(c)).order_discount_ids;if(!Array.isArray(values)||!values.length||!values.every(value=>typeof value==='string'))throw new LocalError('INVALID_INPUT');
     await checkouts.mutate(c.req.param('ref'),'discount_remove',{order_discount_ids:values},async(record,key)=>{const order=await payments.read(record);if(values.some(value=>!order.applied_discounts?.some(discount=>discount.order_discount_id===value)))throw new LocalError('NOT_FOUND',404);await client.orders.removeDiscounts(record.order_id!,{order_discount_ids:values as string[]},auth.checkout(record,key));const details=checkouts.details(record);delete details.delivery_selection;delete details.delivery_quote;checkouts.notice(record,'delivery_released');checkouts.saveDetails(record,details);});
   }));
-  async function quote(c:Context<Env>,pickup:boolean){
+  async function quote(c:Context<Env>){
     const input=await body(c);
-    const destination:DeliveryAddressRequestInput|undefined=pickup?undefined:Object.fromEntries(Object.entries(asRecord(input.destination_address)).filter(([key])=>['line1','line2','city','state','postal_code','country'].includes(key)).map(([key,value])=>[key,text(value,200)]));
-    const buyer_location=pickup?{type:'address' as const,address:{postal_code:text(input.postal_code,20),country:text(input.country??'US',2)}}:undefined;
-    await checkouts.mutate(c.req.param('ref')!,'delivery_quote',{destination_address:destination,buyer_location},async(record,key,context)=>{
-      const details=checkouts.details(record);const response=await client.checkoutSessions.createDeliveryQuote(record.checkout_session_id!,{expected_delivery_selection_id:context.delivery_selection_id,...(destination?{destination_address:destination}:{}),...(buyer_location?{buyer_location}:{})},auth.checkout(record,key));
-      const quoted=response as Quote;details.delivery_quote=quoted;
-      details.quote_input={...(destination?{destination_address:destination}:{}),...(buyer_location?{buyer_location}:{})};
-      details.pickup_locations=pickup?quoted.choice_groups.flatMap(group=>group.options.filter(option=>option.type==='pickup').map(option=>({...option,delivery_choice_group_id:group.delivery_choice_group_id,availability_status:group.availability_status,input_requirements:group.input_requirements,buyer_reasons:quoted.buyer_reasons,expires_at:quoted.expires_at}))).sort((a,b)=>a.display_position-b.display_position):undefined;
+    const destination:DeliveryAddressRequestInput=Object.fromEntries(Object.entries(asRecord(input.destination_address)).filter(([key])=>['line1','line2','city','state','postal_code','country'].includes(key)).map(([key,value])=>[key,text(value,200)]));
+    await checkouts.mutate(c.req.param('ref')!,'delivery_quote',{destination_address:destination},async(record,key,context)=>{
+      const details=checkouts.details(record);const response=await client.checkoutSessions.createDeliveryQuote(record.checkout_session_id!,{expected_delivery_selection_id:context.delivery_selection_id,destination_address:destination},auth.checkout(record,key));
+      details.delivery_quote=response as Quote;details.quote_input={destination_address:destination};details.quote_basis={selection_id:context.delivery_selection_id};
       checkouts.saveDetails(record,details);
+    });
+  }
+  async function pickupSelect(c:Context<Env>,pickupLocationId:string,recipient:{name:string;email?:string;phone?:string}){
+    const ref=c.req.param('ref')!;const known=(details:Details)=>details.pickup_preview?.locations.find(location=>location.location_id===pickupLocationId);
+    type PickupRequest={choices:{delivery_choice_group_id:string;delivery_option_id:string}[];delivery_quote_id:string;expected_delivery_selection_id:string|null};
+    type PickupInput={pickup_location_id:string;recipient:typeof recipient;request?:PickupRequest};
+    // A selection whose outcome is unknown may already exist remotely, so it is replayed from its journal before any new quote is considered.
+    const unresolved=checkouts.pendingInput<PickupInput>(ref,'delivery_select');
+    const replaying=!!unresolved?.request&&unresolved.pickup_location_id===pickupLocationId&&JSON.stringify(unresolved.recipient)===JSON.stringify(recipient);
+    const current=checkouts.details(checkouts.record(ref));
+    if(!replaying){
+      if(!known(current))throw new LocalError('INVALID_DELIVERY_SELECTION');
+      const quoted=current.delivery_quote;
+      const reusable=current.quote_input?.pickup_location_id===pickupLocationId&&!!quoted&&Date.parse(quoted.expires_at)>Date.now()&&current.quote_basis?.selection_id===(current.delivery_selection?.delivery_selection_id??null);
+      if(!reusable)await checkouts.mutate(ref,'delivery_quote',{pickup_location_id:pickupLocationId},async(record,key,context)=>{
+        const details=checkouts.details(record);if(!known(details))throw new LocalError('INVALID_DELIVERY_SELECTION');
+        details.delivery_quote=await client.checkoutSessions.createDeliveryQuote(record.checkout_session_id!,{expected_delivery_selection_id:context.delivery_selection_id,pickup_location_id:pickupLocationId},auth.checkout(record,key)) as Quote;
+        details.quote_input={pickup_location_id:pickupLocationId};details.quote_basis={selection_id:context.delivery_selection_id};checkouts.saveDetails(record,details);
+      });
+    }
+    let sent:PickupRequest|undefined;
+    // The canonical request is journaled with the action; a replay sends it unchanged, including after the quote's local expiry.
+    const build=(details:Details,saved?:{input:unknown}):PickupInput=>{
+      const journaled=saved?.input as PickupInput|undefined;
+      if(journaled){
+        if(journaled.pickup_location_id!==pickupLocationId||JSON.stringify(journaled.recipient)!==JSON.stringify(recipient)||!journaled.request)throw new LocalError('ACTION_RECONCILIATION_REQUIRED',409);
+        sent=journaled.request;return journaled;
+      }
+      const location=known(details);const quote=details.delivery_quote;if(!quote)throw new LocalError('DELIVERY_QUOTE_STALE',409);
+      if(!location)throw new LocalError('INVALID_DELIVERY_SELECTION');
+      if(new Date(quote.expires_at).getTime()<Date.now())throw new LocalError('DELIVERY_QUOTE_EXPIRED',409);
+      const choices=quote.choice_groups.filter(group=>group.availability_status==='ready').map(group=>{
+        const options=group.options.filter(option=>option.type==='pickup'&&!!option.delivery_option_id&&option.pickup?.location?.location_id===pickupLocationId&&location.delivery_method_ids.includes(option.delivery_method_id));
+        if(options.length!==1)throw new LocalError('INVALID_DELIVERY_SELECTION');
+        return {delivery_choice_group_id:group.delivery_choice_group_id,delivery_option_id:options[0]!.delivery_option_id!};
+      });
+      if(!choices.length)throw new LocalError('INVALID_DELIVERY_SELECTION');
+      sent={choices,delivery_quote_id:quote.delivery_quote_id,expected_delivery_selection_id:details.delivery_selection?.delivery_selection_id??null};
+      return {pickup_location_id:pickupLocationId,recipient,request:sent};
+    };
+    await checkouts.mutate(ref,'delivery_select',build,async(record,key)=>{
+      const request=sent!;const response=await client.checkoutSessions.createDeliverySelection(record.checkout_session_id!,{choices:request.choices,recipient,delivery_quote_id:request.delivery_quote_id,expected_delivery_selection_id:request.expected_delivery_selection_id},auth.checkout(record,key));
+      const details=checkouts.details(record);details.delivery_selection=(response as {delivery_selection:Details['delivery_selection']}).delivery_selection;checkouts.saveDetails(record,details);
     });
   }
   app.post('/checkout/:ref/billing-address',async c=>job(c,async()=>{
@@ -218,10 +258,14 @@ export function createApp(options:AppOptions){
       details.billing_address=address;checkouts.saveDetails(record,details);
     });
   }));
-  app.post('/checkout/:ref/delivery/quote',async c=>job(c,()=>quote(c,false)));
-  app.post('/checkout/:ref/pickup-locations',async c=>job(c,()=>quote(c,true)));
+  app.post('/checkout/:ref/delivery/quote',async c=>job(c,()=>quote(c)));
+  app.post('/checkout/:ref/pickup-locations',async c=>job(c,async()=>{
+    const input=await body(c);await checkouts.previewPickup(c.req.param('ref')!,{type:'address',address:{postal_code:text(input.postal_code,20),country:text(input.country??'US',2)}});
+  }));
   app.post('/checkout/:ref/delivery/select',async c=>job(c,async()=>{
-    const input=await body(c);if(!Array.isArray(input.choices))throw new LocalError('INVALID_INPUT');
+    const input=await body(c);
+    if(input.pickup_location_id!==undefined){const raw=asRecord(input.recipient);return pickupSelect(c,text(input.pickup_location_id,200),{name:text(raw.name,200),...(raw.email?{email:email(raw.email)}:{}),...(raw.phone?{phone:phone(raw.phone)!}:{})});}
+    if(!Array.isArray(input.choices))throw new LocalError('INVALID_INPUT');
     const choices=input.choices.map(value=>{const choice=asRecord(value);return {delivery_choice_group_id:text(choice.delivery_choice_group_id),delivery_option_id:text(choice.delivery_option_id)};});
     const raw=asRecord(input.recipient);const recipient={name:text(raw.name,200),...(raw.email?{email:email(raw.email)}:{}),...(raw.phone?{phone:phone(raw.phone)!}:{})};
     await checkouts.mutate(c.req.param('ref'),'delivery_select',{choices,recipient},async(record,key,context)=>{

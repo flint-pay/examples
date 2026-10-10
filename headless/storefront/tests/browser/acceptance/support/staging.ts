@@ -115,7 +115,7 @@ export async function shipToAddress(page: Page, address: { line1: string; city: 
 
 export async function pickUpAtRoastery(page: Page) {
   await page.getByTestId('sf-delivery-mode-pickup').check();
-  await page.getByTestId('sf-pickup-postal').fill(TEXAS_ADDRESS.postal);
+  await page.getByTestId('sf-pickup-postal').fill(process.env.E2E_PICKUP_POSTAL_CODE ?? TEXAS_ADDRESS.postal);
   await page.getByTestId('sf-pickup-search').click();
   await expect(page.getByTestId('sf-pickup-location-0')).toBeVisible({ timeout: 30_000 });
   await page.getByTestId('sf-pickup-location-0').check();

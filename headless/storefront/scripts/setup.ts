@@ -1,4 +1,4 @@
-import type {Client,CreateProductRequestInput,CreateDeliveryMethodRequestInput,Product,Location,DeliveryMethod,DeliveryLocationSet,SubscriptionPlan,Promotion} from '@flintpay/node';
+import type {Client,CreateProductRequestInput,CreateDeliveryMethodRequestInput,CreatePromotionRequestInput,Product,Location,DeliveryMethod,DeliveryLocationSet,SubscriptionPlan,Promotion,PromotionCode} from '@flintpay/node';
 import {SdkError} from '@flintpay/node';
 import {mkdirSync,writeFileSync,chmodSync,existsSync} from 'node:fs';
 import {dirname,resolve} from 'node:path';
@@ -41,6 +41,13 @@ export function deliveryInputs(locationId:string,setId:string):CreateDeliveryMet
     {name:'Pickup at the roastery',type:'pickup',status:'active',metadata:metadata('roastery-pickup'),configuration:{origin:{type:'pickup_location_collection',delivery_location_set_id:setId},pricing:{type:'fixed',fixed:{currency_options:{USD:{amount:'0',currency:'USD'}}}},public_details:{pickup_mode:'in_store'}}}
   ];
 }
+export function welcomePromotionInput():CreatePromotionRequestInput{
+  return {name:'Welcome discount',display_name:'Welcome discount',discount_class:'order',redemption_type:'code',application_method:{type:'percent_off',percent_off:10},codes:[{code:'WELCOME10',metadata:metadata('welcome10')}],metadata:metadata('welcome10')};
+}
+export function validateWelcomeCodes(codes:readonly Pick<PromotionCode,'promotion_id'|'status'>[],promotionId?:string):void{
+  if(codes.some(code=>code.promotion_id!==promotionId))throw new Error('WELCOME10 belongs to another promotion. Choose a dedicated sandbox for this sample.');
+  if(codes.some(code=>code.promotion_id===promotionId&&code.status!=='active'))throw new Error('WELCOME10 exists but is not active. Activate the example promotion code before setup.');
+}
 export function deterministicKey(sandboxId:string,resource:string):string{return `examples-headless-storefront-${sandboxId}-${resource}-v1`;}
 export function owned<T extends {metadata?:Record<string,string>}>(rows:T[],slug:string):T|undefined{
   const matches=rows.filter(row=>row.metadata?.example_catalog===catalog&&row.metadata.example_slug===slug);
@@ -81,6 +88,8 @@ export async function setup(args:string[]=process.argv.slice(2)){
   store.db.exec('CREATE TABLE IF NOT EXISTS setup_probes(name TEXT PRIMARY KEY,idempotency_key TEXT NOT NULL,resource_id TEXT); CREATE TABLE IF NOT EXISTS setup_readiness(sandbox_id TEXT PRIMARY KEY,ach INTEGER NOT NULL,affirm INTEGER NOT NULL,tax INTEGER NOT NULL,checked_at INTEGER NOT NULL)');
   try{await store.locked(`setup:${ready.sandboxId}`,async()=>{
     const existing=await inventory(client,auth);const settings=await client.settings.get(undefined,auth.merchant());
+    const existingPromotion=owned(existing.promotions,'welcome10');
+    validateWelcomeCodes(await collect(client.promotions.listCodesItems({code:'WELCOME10',page_size:100},auth.merchant())),existingPromotion?.promotion_id);
     const affirm=affirmReady((await client.capabilities.list({capability:'accept_affirm_payments'},auth.merchant())).data);
     let ach=false;let tax=false;
     const last=store.get<{ach:number;affirm:number;tax:number;checked_at:number}>('SELECT * FROM setup_readiness WHERE sandbox_id=?',ready.sandboxId);
@@ -104,11 +113,10 @@ export async function setup(args:string[]=process.argv.slice(2)){
     for(const input of methodInputs){const slug=input.metadata!.example_slug!;const method=await resource(slug,owned(existing.methods,slug),input,()=>client.deliveryMethods.create(input,auth.merchant(key(slug))));if(method){if(method.status!=='active')throw new Error(`${slug} must be active before it becomes a checkout default.`);methodIds.push(method.delivery_method_id);}}
     for(const item of catalogProducts){const input=productInput(item);const product=await resource(item.slug,owned(existing.products,item.slug),input,()=>client.products.create(input,auth.merchant(key(item.slug))));if(product&&product.status!=='active')throw new Error(`${item.slug} exists but is not active. Activate it before setup.`);}
     for(const item of catalogPlans){const input={name:item.name,billing_interval:'monthly' as const,billing_interval_count:1,currency:'USD',line_items:[{name:'Monthly coffee club',unit_price_money:{amount:'2200',currency:'USD'},quantity:1}],...(item.trial?{trial_period_days:item.trial}:{}),metadata:metadata(item.slug)};const plan=await resource(item.slug,owned(existing.plans,item.slug),input,()=>client.subscriptionPlans.create(input,auth.merchant(key(item.slug))));if(plan&&plan.status!=='active')throw new Error(`${item.slug} exists but is not active. Activate it before setup.`);}
-    const promotionInput={name:'Welcome discount',display_name:'Welcome discount',discount_class:'order' as const,redemption_type:'code' as const,application_method:{type:'percent_off' as const,percent_off:10},metadata:metadata('welcome10')};
-    const promotion=await resource('welcome10',owned(existing.promotions,'welcome10'),promotionInput,()=>client.promotions.create(promotionInput,auth.merchant(key('welcome10'))));
+    const promotionInput=welcomePromotionInput();
+    const promotion=await resource('welcome10',existingPromotion,promotionInput,()=>client.promotions.create(promotionInput,auth.merchant(key('welcome10'))));
     const codes=await collect(client.promotions.listCodesItems({code:'WELCOME10',page_size:100},auth.merchant()));
-    if(codes.some(code=>code.promotion_id!==promotion?.promotion_id))throw new Error('WELCOME10 belongs to another promotion. Choose a dedicated sandbox for this sample.');
-    if(codes.some(code=>code.promotion_id===promotion?.promotion_id&&code.status!=='active'))throw new Error('WELCOME10 exists but is not active. Activate the example promotion code before setup.');
+    validateWelcomeCodes(codes,promotion?.promotion_id);
     if(!codes.some(code=>code.promotion_id===promotion?.promotion_id)){
       console.info(`${apply?'Create':'Would create'} promotion code WELCOME10.`);
       if(apply&&promotion)await client.promotions.createCode(promotion.promotion_id,{code:'WELCOME10',metadata:metadata('welcome10')},auth.merchant(key('welcome10-code')));

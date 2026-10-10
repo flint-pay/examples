@@ -115,6 +115,7 @@ export class FakeCheckout {
   }
   savedMethods: Json[] = [];
   pickupLocations: Json[] | null = null;
+  pickupSearch: Json | null = null;
   /** An unresolved saved pay request the app must replay. Nothing in the browser can change it. */
   journal: { remaining: number; outcome: 'ok' | 'fail' } | null = null;
   subscription: Json | null = null;
@@ -381,6 +382,7 @@ export class FakeCheckout {
       delivery_quote: this.quote,
       delivery_selection: this.selection,
       pickup_locations: this.pickupLocations,
+      pickup_search: this.pickupSearch,
       verification: this.verification,
       notices: [...this.notices],
       approved_outstanding_money: money,
@@ -433,9 +435,9 @@ export class FakeCheckout {
       case 'billing-address':
         return this.billingAddress(body);
       case 'delivery/quote':
-        return this.deliveryQuote(body, false);
+        return this.deliveryQuote(body);
       case 'pickup-locations':
-        return this.deliveryQuote(body, true);
+        return this.pickupSearchResult(body);
       case 'delivery/select':
         return this.deliverySelect(body);
       case 'gift-card':
@@ -516,16 +518,18 @@ export class FakeCheckout {
     return this.ok();
   }
 
-  private deliveryQuote(body: Json, pickup: boolean): Reply {
-    const postal = String(pickup ? body.postal_code : body.destination_address?.postal_code ?? '');
-    const group = (options: Json[], availability: string) => ({
-      delivery_choice_group_id: 'grp_fixture_1',
-      availability_status: availability,
-      evaluation_status: 'complete',
-      method_types: pickup ? ['pickup'] : ['shipment', 'pickup'],
-      options,
-      input_requirements: [],
-    });
+  /** What the app projects from a checkout-authorized pickup preview: actual locations, no quote and no price. */
+  private pickupSearchResult(body: Json): Reply {
+    const postal = String(body.postal_code);
+    this.pickupSearch = { postal_code: postal };
+    // As the app does: a search supersedes an earlier shipping quote unless a selection is active.
+    if (!this.selection) this.quote = null;
+    this.pickupLocations = postal === '99999' ? [] : [{ delivery_option_id: 'loc_fixture', delivery_method_id: 'dm_pickup', name: 'Cedar & Stone Roastery', type: 'pickup', amount_money: null, delivery_choice_group_id: 'pickup_locations', availability_status: 'ready', display_position: 0, distance_meters: 1609.344, pickup: { location: { location_id: 'loc_fixture', name: 'Cedar & Stone Roastery', address: { line1: '400 Congress Ave', city: 'Austin', state: 'TX', postal_code: '78701' } } } }];
+    return this.ok();
+  }
+
+  private deliveryQuote(body: Json): Reply {
+    const postal = String(body.destination_address?.postal_code ?? '');
     const ship = {
       delivery_option_id: 'opt_ship_std',
       delivery_method_id: 'dm_ship',
@@ -534,17 +538,8 @@ export class FakeCheckout {
       amount_money: usd(900),
       arrival_estimate: { earliest_date: '2026-10-12', latest_date: '2026-10-15' },
     };
-    const pick = {
-      delivery_option_id: 'opt_pickup',
-      delivery_method_id: 'dm_pickup',
-      name: 'Pickup at the roastery',
-      type: 'pickup',
-      amount_money: usd(0),
-      pickup: { pickup_mode: 'in_store', location: { location_id: 'loc_fixture', name: 'Cedar & Stone Roastery', address: { line1: '400 Congress Ave', city: 'Austin', state: 'TX', postal_code: '78701' }, instructions: 'Ask at the counter.' } },
-    };
-    const unavailable = postal === '99999' && !pickup;
-    const noneNearby = pickup && postal === '99999';
-    if (!pickup && body.destination_address?.line1 === 'Stale St' && !this.staleServed) {
+    const unavailable = postal === '99999';
+    if (body.destination_address?.line1 === 'Stale St' && !this.staleServed) {
       this.staleOnce = true;
       this.staleServed = true;
     }
@@ -552,13 +547,12 @@ export class FakeCheckout {
       delivery_quote_id: `dq_fixture_${++this.seq}`,
       status: 'open',
       expires_at: new Date(Date.now() + 3600_000).toISOString(),
-      buyer_reasons: unavailable ? ['This address is outside the delivery area.'] : noneNearby ? ['no_pickup_location_nearby'] : [],
+      buyer_reasons: unavailable ? ['This address is outside the delivery area.'] : [],
       selection_required: true,
-      ...(pickup ? { buyer_location: { type: 'address', address: { postal_code: postal, country: 'US' } } } : { destination_address: body.destination_address }),
-      choice_groups: [unavailable ? group([], 'unavailable') : noneNearby ? group([], 'ready') : group(pickup ? [pick] : [ship], 'ready')],
+      destination_address: body.destination_address,
+      choice_groups: [{ delivery_choice_group_id: 'grp_fixture_1', availability_status: unavailable ? 'unavailable' : 'ready', evaluation_status: 'complete', method_types: ['shipment', 'pickup'], options: unavailable ? [] : [ship], input_requirements: [] }],
       input_requirements: [],
     };
-    this.pickupLocations = pickup && !noneNearby ? [{ ...pick, delivery_choice_group_id: 'grp_fixture_1', availability_status: 'ready', display_position: 0 }] : null;
     return this.ok();
   }
 
@@ -573,12 +567,16 @@ export class FakeCheckout {
   }
 
   private deliverySelect(body: Json): Reply {
+    const pickupId = body.pickup_location_id;
+    if (pickupId !== undefined && !this.pickupLocations?.some((location) => location.delivery_option_id === pickupId)) return fail(400, 'validation', 'INVALID_DELIVERY_SELECTION', 'invalid_delivery_selection', this.project());
+    // Choosing a searched location quotes it first. The quote is the stub's single pickup option.
+    if (pickupId !== undefined) this.quote = { delivery_quote_id: `dq_fixture_${++this.seq}`, status: 'open', expires_at: new Date(Date.now() + 3600_000).toISOString(), selection_required: true, choice_groups: [{ delivery_choice_group_id: 'grp_fixture_1', availability_status: 'ready', method_types: ['pickup'], options: [{ delivery_option_id: 'opt_pickup', delivery_method_id: 'dm_pickup', name: 'Pickup at the roastery', type: 'pickup', amount_money: usd(0), pickup: this.pickupLocations![0].pickup }], input_requirements: [] }], input_requirements: [] };
     if (!this.quote) return fail(409, 'conflict', 'DELIVERY_QUOTE_STALE', 'delivery_quote_stale', this.project());
     if (this.staleOnce) {
       this.staleOnce = false;
       return fail(409, 'conflict', 'DELIVERY_QUOTE_STALE', 'delivery_quote_stale', this.project());
     }
-    const picked = body.choices?.[0];
+    const picked = pickupId !== undefined ? { delivery_choice_group_id: 'grp_fixture_1', delivery_option_id: 'opt_pickup' } : body.choices?.[0];
     const options: Json[] = this.quote.choice_groups.flatMap((g: Json) => g.options);
     const option = options.find((o) => o.delivery_option_id === picked?.delivery_option_id);
     if (!option) return fail(400, 'validation', 'INVALID_DELIVERY_SELECTION', 'invalid_delivery_selection', this.project());
