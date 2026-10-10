@@ -36,6 +36,7 @@ function formPage() {
   const page = {
     locator: (selector: string) => { assert.equal(selector, 'form[action="/addresses"]:visible'); return new Locator(); },
     waitForLoadState: async (state: string) => { assert.equal(state, 'domcontentloaded'); },
+    waitForNavigation: async (options: { waitUntil: string }) => { assert.equal(options.waitUntil, 'domcontentloaded'); },
   } as unknown as Page;
   return { page, fields, submissions };
 }

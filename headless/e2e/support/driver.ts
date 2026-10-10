@@ -75,8 +75,14 @@ export class Driver {
       if (await input.first().getAttribute('type') === 'hidden') await expect(input.first()).toHaveValue(value);
       else if (tag === 'select') await input.selectOption(value); else await input.fill(value);
     }
-    await form.locator('button[type="submit"], input[type="submit"], button:not([type])').first().click();
-    await page.waitForLoadState('domcontentloaded');
+    const submit = form.locator('button[type="submit"], input[type="submit"], button:not([type])').first();
+    if (await form.getAttribute('data-job-form')) {
+      await submit.click();
+      await page.waitForLoadState('domcontentloaded');
+    } else {
+      // Arm the document wait before clicking, including a redirect back to the same URL.
+      await Promise.all([page.waitForNavigation({ waitUntil: 'domcontentloaded' }), submit.click()]);
+    }
   }
   async login(page: Page, buyer: Buyer, at = this.config.origins.accountA): Promise<void> {
     const b = this.fixtures.buyers[buyer]; invariant(b, 'BUYER_CONFIGURATION_REQUIRED');
