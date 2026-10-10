@@ -130,7 +130,7 @@ export class Checkouts {
         credentialsStale=true;
         session=await this.client.checkoutSessions.get(record.checkout_session_id!,undefined,this.auth.merchant());
       }
-      if(session.status==='open'&&!credentialsStale&&!record.needs_replacement&&await this.restoreContact(record))session=await this.client.checkoutSessions.get(record.checkout_session_id!,undefined,this.auth.checkout(record));
+      if(session.status==='open'&&!session.recovery_mode&&!credentialsStale&&!record.needs_replacement&&await this.restoreContact(record))session=await this.client.checkoutSessions.get(record.checkout_session_id!,undefined,this.auth.checkout(record));
       const managedRead=['paid','partially_paid'].includes(session.status)||['invalidated','expired','closed'].includes(session.status)&&!session.recovery_mode;
       let order=managedRead?await this.client.orders.get(record.order_id!,undefined,this.auth.merchant()):await this.payments.read(record);
       const unresolved=this.payments.unresolved(record);
@@ -154,7 +154,7 @@ export class Checkouts {
         session=await this.client.checkoutSessions.get(record.checkout_session_id!,undefined,this.auth.checkout(record));order=await this.client.orders.get(record.order_id!,undefined,this.auth.checkout(record));
         credentialsStale=false;
       }
-      if(session.status==='open'&&!credentialsStale){
+      if(session.status==='open'&&!session.recovery_mode&&!credentialsStale){
         const selected=await this.client.checkoutSessions.getCurrentDeliverySelection(record.checkout_session_id!,undefined,this.auth.checkout(record)) as {delivery_selection?:Details['delivery_selection']};
         const details=this.details(record);details.delivery_selection=selected.delivery_selection;this.saveDetails(record,details);
         const stale=details.delivery_selection&&['expired','released','superseded'].includes(String(details.delivery_selection.status));

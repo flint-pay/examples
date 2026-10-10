@@ -28,7 +28,7 @@ export const settlement: Record<string, Scenario> = {
     return ['ZERO_BALANCE_PUBLIC_PAY_WITHOUT_PROCESSOR'];
   },
   'SF-05Z1': async d => {
-    const c = await d.checkout(await d.page('gift-full'), 'house-blend'); await d.delivery(c, true);
+    const c = await d.checkout(await d.page('gift-full'), 'house-blend'); await d.delivery(c);
     const outstanding = money(c.state.order.settlement_amounts.outstanding_money), issued = await d.operator.issueGiftCard('full-gift-funded', (BigInt(outstanding.amount) + 1000n).toString());
     invariant(issued.code, 'PUBLIC_GIFT_CODE_REQUIRED'); d.scanner.addGift(issued.code);
     await d.applyGift(c,issued.code);
@@ -43,8 +43,8 @@ export const settlement: Record<string, Scenario> = {
     invariant(order.gift_card_settlements?.length === 1, 'FULL_GIFT_SETTLEMENT_MISSING'); return ['FULL_GIFT_EXACT_ALLOCATION_NO_PROCESSOR'];
   },
   'SF-05Z3': async d => {
-    const main = await d.checkout(await d.page('gift-change-main'), 'house-blend'); await d.delivery(main, true);
-    const spend = await d.checkout(await d.page('gift-change-spend'), 'brewing-class');
+    const main = await d.checkout(await d.page('gift-change-main'), 'house-blend'); await d.delivery(main);
+    const spend = await d.checkout(await d.page('gift-change-spend'), 'brewing-class'); await billing(d, spend);
     const expected = money(main.state.order.settlement_amounts.outstanding_money), spending = money(spend.state.order.settlement_amounts.outstanding_money);
     invariant(expected.currency === spending.currency && BigInt(expected.amount) > 500n, 'GIFT_CONCURRENCY_MONEY_REQUIRED');
     const issued = await d.operator.issueGiftCard('gift-allocation-change', (BigInt(expected.amount) + BigInt(spending.amount) - 500n).toString());
