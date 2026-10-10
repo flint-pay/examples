@@ -39,7 +39,14 @@ const app = {
   paymentState: /** @type {string} */ ('loading'),
   busy: false,
   flow: /** @type {Awaited<ReturnType<typeof createStripePayment>> | null} */ (null),
+  /** What the mounted form was built for. A matching key keeps the form; see `mountPayment`. */
   flowKey: '',
+  /** The part of the guidance Elements cannot change after creation. A refresh that differs rebuilds the form. */
+  flowElements: '',
+  /** The mount in progress. Mounts run one at a time. */
+  mounting: /** @type {Promise<void> | null} */ (null),
+  /** True while a wallet confirmation is turning the form into a credential. */
+  collecting: false,
   excludeAffirm: logic.affirmShouldBeRemoved(logic.declineCode(boot.state)),
   elementsComplete: false,
   selectedType: 'card',
@@ -342,25 +349,53 @@ function applyState(state) {
   app.state = state;
   const outstanding = logic.outstandingOf(state);
   const processor = logic.processorMoney(state);
-  if (!sameMoney(processor, logic.processorMoney(previous))) app.flow?.updateAmount(processor);
+  // Elements fix their payment method types when created. When the current guidance differs, for example after a
+  // gift card leaves only a card remainder, the form is rebuilt below instead of updated. A payment being collected
+  // keeps its form, and `totalChanged` rebuilds it afterwards.
+  const rebuild = Boolean(app.flow) && needsProcessor() && elementsKeyOf(state) !== app.flowElements && !flowInUse();
+  if (rebuild) dropFlow();
+  else if (!sameMoney(processor, logic.processorMoney(previous))) app.flow?.updateAmount(processor);
   app.approved = outstanding;
   const section = paymentSection();
   if (section) section.setAttribute('data-kind', state.kind);
   // When nothing is left for a processor, drop the card form so no entered card is carried over.
   if (!needsProcessor() && app.flow) {
-    app.flow.destroy();
-    app.flow = null;
-    app.flowKey = '';
-    app.elementsComplete = false;
-    $('#payment-element')?.replaceChildren();
-    $('#express-checkout')?.replaceChildren();
-    $('#affirm-messaging')?.replaceChildren();
+    dropFlow();
     const card = $('#save-card');
     if (card instanceof HTMLInputElement) card.checked = false;
   }
   refreshPayControls();
   // Removing a gift card can bring the card form back after a settlement-only load.
-  if (needsProcessor() && !app.flow && payForm() && app.paymentState !== 'loading' && !OPEN_STATES.has(app.paymentState)) void mountPayment();
+  if (needsProcessor() && !app.flow && payForm() && app.paymentState !== 'loading' && !OPEN_STATES.has(app.paymentState)) void mountPayment({ quiet: rebuild });
+}
+
+/** The card form is being used to make a credential, so it must not be replaced. */
+function flowInUse() {
+  return app.busy || app.collecting || OPEN_STATES.has(app.paymentState);
+}
+
+/** Removes the mounted form and anything the buyer entered into it. */
+function dropFlow() {
+  app.flow?.destroy();
+  app.flow = null;
+  app.flowKey = '';
+  app.flowElements = '';
+  app.elementsComplete = false;
+  app.selectedType = 'card';
+  $('#payment-element')?.replaceChildren();
+  $('#express-checkout')?.replaceChildren();
+  $('#affirm-messaging')?.replaceChildren();
+}
+
+/**
+ * The guidance Elements are built from. The return address is left out because it is read when a credential is made.
+ * @param {CheckoutState} state
+ */
+function elementsKeyOf(state) {
+  const source = logic.guidanceOf(state)?.stripe;
+  const elements = source?.elements;
+  if (!source || !elements) return '';
+  return JSON.stringify([source.publishable_key, source.account_id, elements.mode, elements.next_step, elements.payment_method_types, elements.payment_method_options, elements.digital_wallets]);
 }
 
 /**
@@ -1313,28 +1348,42 @@ function shippingForAffirm() {
   };
 }
 
-async function mountPayment() {
+/**
+ * Mounts the card form for the current guidance, or keeps the one that already matches. Mounts run one at a time.
+ * `quiet` keeps the settled payment state while the form is rebuilt.
+ * @param {{ quiet?: boolean }} [options]
+ * @returns {Promise<void>}
+ */
+function mountPayment(options = {}) {
+  const run = (app.mounting ?? Promise.resolve()).then(() => mountOnce(options));
+  app.mounting = run;
+  void run.finally(() => {
+    if (app.mounting === run) app.mounting = null;
+  });
+  return run;
+}
+
+/** @param {{ quiet?: boolean }} options */
+async function mountOnce(options) {
   const guidanceSource = logic.guidanceOf(app.state)?.stripe;
   const paymentNode = document.getElementById('payment-element');
   if (!needsProcessor() || !guidanceSource || !paymentNode) {
     setPaymentState(logic.derivePaymentState(app.state) === 'ready' ? 'ready' : logic.derivePaymentState(app.state));
     return;
   }
-  const key = JSON.stringify([guidanceSource.publishable_key, guidanceSource.account_id, guidanceSource.elements?.mode, guidanceSource.elements?.payment_method_types, guidanceSource.return_url, app.excludeAffirm]);
+  const elementsKey = elementsKeyOf(app.state);
+  const key = JSON.stringify([elementsKey, guidanceSource.return_url, app.excludeAffirm]);
   if (app.flow && app.flowKey === key) return;
-  app.flow?.destroy();
-  app.flow = null;
-  paymentNode.replaceChildren();
-  $('#express-checkout')?.replaceChildren();
-  $('#affirm-messaging')?.replaceChildren();
-  setPaymentState('loading');
+  dropFlow();
+  if (!options.quiet) setPaymentState('loading');
+  const amount = logic.processorMoney(app.state);
   try {
     app.flow = await createStripePayment({
       guidance: guidanceSource,
       kind: app.state.kind,
       saveOffered: Boolean($('#save-card')),
       excludeAffirm: app.excludeAffirm,
-      amount: logic.processorMoney(app.state),
+      amount,
       mounts: {
         payment: paymentNode,
         wallets: document.getElementById('express-checkout'),
@@ -1359,19 +1408,37 @@ async function mountPayment() {
         return true;
       },
       onWalletConfirm: async (event, makeCredential) => {
-        const made = await makeCredential();
-        if (made.error || !made.credential) {
-          event.paymentFailed?.({ reason: 'fail' });
-          showMessage(made.error?.message || msg('stripe_error_generic'), true);
-          return;
+        app.collecting = true;
+        try {
+          const made = await makeCredential();
+          if (made.error || !made.credential) {
+            event.paymentFailed?.({ reason: 'fail' });
+            showMessage(made.error?.message || msg('stripe_error_generic'), true);
+            return;
+          }
+          const ok = await payWith(made.credential);
+          if (!ok) event.paymentFailed?.({ reason: 'fail' });
+        } finally {
+          app.collecting = false;
         }
-        const ok = await payWith(made.credential);
-        if (!ok) event.paymentFailed?.({ reason: 'fail' });
       },
       getBilling: () => ({ name: value('contact-name'), email: value('contact-email') }),
       getShipping: shippingForAffirm,
     });
     app.flowKey = key;
+    app.flowElements = elementsKey;
+    // The order can change while Stripe.js loads, and then the guidance read at the start is out of date.
+    if (!needsProcessor()) {
+      dropFlow();
+      setPaymentState(logic.derivePaymentState(app.state));
+      return;
+    }
+    if (elementsKeyOf(app.state) !== elementsKey) {
+      await mountOnce({ quiet: options.quiet });
+      return;
+    }
+    const now = logic.processorMoney(app.state);
+    if (!sameMoney(now, amount)) app.flow.updateAmount(now);
     const saveCard = $('#save-card');
     if (saveCard instanceof HTMLInputElement && saveCard.checked && !saveCard.disabled) await app.flow.setSaving(true);
   } catch (error) {
@@ -1555,7 +1622,7 @@ async function totalChanged(giftChanged) {
   await refreshRegions();
   app.approved = logic.outstandingOf(app.state);
   // The refresh cannot mount while the payment is submitting, so a new processor balance brings the card form back here.
-  if (needsProcessor() && !app.flow && payForm() && app.paymentState !== 'loading') {
+  if (needsProcessor() && (!app.flow || elementsKeyOf(app.state) !== app.flowElements) && payForm() && app.paymentState !== 'loading') {
     await mountPayment();
     if (app.paymentState === 'unavailable') return false;
   }
