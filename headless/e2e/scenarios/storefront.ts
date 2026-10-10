@@ -205,10 +205,10 @@ export const storefront: Record<string, Scenario> = {
     await d.delivery(c); await d.pay(c, '4000002500003155');
     const client = d.operator.clients.clients.A, activeAttemptId = async () => { const attempt = (await client.orders.get(c.orderId)).active_payment_attempt; return attempt?.status === 'requires_action' ? attempt.order_payment_attempt_id : undefined; };
     await expect.poll(activeAttemptId, { timeout: 60_000 }).toBeTruthy(); const attemptId = await activeAttemptId(); invariant(attemptId, 'REQUIRES_ACTION_ATTEMPT_REQUIRED');
-    const open = (await client.checkoutSessions.list({ order_id: c.orderId, status: 'open', page_size: 100 })).data; invariant(open.length === 1, 'OPEN_CHECKOUT_SESSION_REQUIRED'); const openId = open[0]!.checkout_session_id, idsBefore = await sessionIds();
+    const open = (await client.checkoutSessions.list({ order_id: c.orderId, status: 'open', page_size: 100 })).data; invariant(open.length === 1, 'OPEN_CHECKOUT_SESSION_REQUIRED'); const idsBefore = await sessionIds();
     await c.page.waitForTimeout((ttl + 2) * 1000); await c.page.reload();
-    // The page may resume the challenge on its own as soon as it loads, so the server session is the proof that recovery began.
-    await expect.poll(async () => (await client.checkoutSessions.get(openId)).recovery_mode, { timeout: 60_000 }).toBe(true);
+    // The buyer /state carries the checkout-auth recovery projection, and the page can resume the challenge automatically as soon as it loads, so poll /state for recovery_mode.
+    await expect.poll(async () => (await d.state(c)).session.recovery_mode, { timeout: 60_000 }).toBe(true);
     invariant((await d.state(c)).session.recovery_mode === true, 'BUYER_SESSION_RECOVERY_MODE_REQUIRED');
     invariant(await activeAttemptId() === attemptId, 'RECOVERY_ATTEMPT_CHANGED');
     const idsAfter = await sessionIds(); invariant(idsAfter.size === idsBefore.size && [...idsBefore].every(id => idsAfter.has(id)), 'RECOVERY_SESSION_IDS_CHANGED');
