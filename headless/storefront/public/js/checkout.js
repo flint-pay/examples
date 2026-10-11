@@ -1673,6 +1673,17 @@ async function handlePayError(result) {
 }
 
 /**
+ * A refreshed order can rotate the return address while the Elements stay the same. The open form takes the new
+ * address in place, because a rebuild would drop what was entered and a wallet sheet that is still confirming.
+ */
+function carryReturnUrl() {
+  const source = logic.guidanceOf(app.state)?.stripe;
+  if (!app.flow || !source || !needsProcessor() || elementsKeyOf(app.state) !== app.flowElements) return;
+  app.flow.setReturnUrl(source.return_url);
+  app.flowKey = JSON.stringify([app.flowElements, source.return_url, JSON.parse(app.flowKey || '[]')[2] ?? app.excludeAffirm]);
+}
+
+/**
  * Shows the new amount and waits for a fresh press of Pay.
  * @param {boolean} giftChanged
  * @param {string} [messageKey]
@@ -1681,6 +1692,7 @@ async function handlePayError(result) {
 async function totalChanged(giftChanged, messageKey) {
   await refreshRegions();
   app.approved = logic.outstandingOf(app.state);
+  carryReturnUrl();
   // The refresh cannot mount while the payment is submitting, so a new processor balance brings the card form back here.
   if (needsProcessor() && (!app.flow || elementsKeyOf(app.state) !== app.flowElements) && payForm() && app.paymentState !== 'loading') {
     await mountPayment();

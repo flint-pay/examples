@@ -114,6 +114,8 @@ export async function createStripePayment(options) {
   const factory = await whenStripeLoaded();
   const stripeInfo = options.guidance;
   const guidance = stripeInfo.elements;
+  // The return address rotates when the order is refreshed, so it is read when a credential is made.
+  let returnUrl = stripeInfo.return_url;
   if (!stripeInfo.publishable_key || !guidance) throw new Error('payment_guidance_missing');
   /** @type {any} */
   let stripe = factory(stripeInfo.publishable_key, stripeInfo.account_id ? { stripeAccount: stripeInfo.account_id } : undefined);
@@ -220,7 +222,7 @@ export async function createStripePayment(options) {
     if (guidance?.next_step === 'create_confirmation_token') {
       /** @type {Record<string, any>} */
       const params = { payment_method_data: { billing_details: billingDetails } };
-      if (stripeInfo.return_url) params.return_url = stripeInfo.return_url;
+      if (returnUrl) params.return_url = returnUrl;
       const shipping = options.getShipping();
       if (shipping) params.shipping = shipping;
       const result = await stripe.createConfirmationToken({ elements, params });
@@ -239,6 +241,11 @@ export async function createStripePayment(options) {
       const submit = await paymentElements.submit();
       if (submit?.error) return { error: submit.error };
       return makeToken(paymentElements, 'card');
+    },
+
+    /** @param {string | undefined} value */
+    setReturnUrl(value) {
+      returnUrl = value;
     },
 
     isComplete: () => complete,
