@@ -93,6 +93,30 @@ test('a saved request that fails returns to a usable form with the decline copy 
   expect(payCount).toBe(1);
 });
 
+test('a reloaded declined checkout keeps its decline message and code after the card form is ready', async ({ page, request }) => {
+  await openCheckout(page, 'methoddeclined');
+  await waitForPayment(page, 'declined');
+  await expect(page.getByTestId('fake-card')).toBeVisible();
+  await expect(page.locator('[data-skeleton]')).toBeHidden();
+  const message = page.getByTestId('sf-payment-message');
+  await expect(message).toBeVisible();
+  await expect(message).toHaveText("Affirm didn't approve this purchase. Pay another way.");
+  await expect(message).toHaveAttribute('data-code', 'payment_method_declined');
+  // The message must stay once the form has settled, not only at first paint.
+  await page.waitForTimeout(500);
+  await expect(page.getByTestId('sf-payment')).toHaveAttribute('data-state', 'declined');
+  await expect(message).toBeVisible();
+  await expect(message).toHaveAttribute('data-code', 'payment_method_declined');
+  // Another card still works.
+  await fillContact(page);
+  await chooseShipping(page);
+  await page.getByTestId('sf-delivery-option-0').check();
+  await typeCard(page, 'ok');
+  await page.getByTestId('sf-pay-button').click();
+  await expect(page).toHaveURL(/complete$/);
+  expect((await fixtureLog(request, 'chk_methoddeclined')).payCount).toBe(1);
+});
+
 test('after a stuck run the page never starts a second payment, even if Pay is forced', async ({ page, request }) => {
   await openCheckout(page, 'stuckresume');
   await expect(page.getByTestId('sf-check-again')).toBeVisible({ timeout: 15_000 });

@@ -41,7 +41,7 @@ export function cartData(lines: { id: string; slug: string; variant: number; qua
 
 export type Scenario =
   | 'card' | 'pickup' | 'service' | 'subtrial' | 'subpaid' | 'gift' | 'expired' | 'recovery' | 'unavailable'
-  | 'authenticating' | 'waiting' | 'bank' | 'affirm' | 'declined' | 'remaining' | 'paid' | 'bankdone' | 'signedin' | 'returning' | 'wallet' | 'lostresume' | 'stuckresume' | 'resumefail'
+  | 'authenticating' | 'waiting' | 'bank' | 'affirm' | 'declined' | 'methoddeclined' | 'remaining' | 'paid' | 'bankdone' | 'signedin' | 'returning' | 'wallet' | 'lostresume' | 'stuckresume' | 'resumefail'
   | 'subtrialdeclined' | 'subtrialwaiting'
   | 'taxneeded' | 'taxset' | 'subtrialtax'
   | 'guestsave' | 'guestemail' | 'guestnotext' | 'guestsaved' | 'guestexpired' | 'guestleft';

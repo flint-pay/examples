@@ -218,6 +218,7 @@ export class FakeCheckout {
     if (s === 'subtrialdeclined') this.attempt = this.makeAttempt('failed', { is_resumable: false, failure_code: 'incorrect_cvc' });
     if (s === 'subtrialwaiting') this.attempt = this.makeAttempt('processing', { is_resumable: false });
     if (s === 'declined') this.attempt = this.makeAttempt('failed', { is_resumable: false, failure_code: 'incorrect_cvc' });
+    if (s === 'methoddeclined') this.attempt = this.makeAttempt('failed', { is_resumable: false, failure_code: 'payment_method_declined' });
     if (s === 'remaining') this.attempt = this.makeAttempt('partially_succeeded', { is_resumable: false });
     if (s === 'paid') this.markPaid();
     if (s === 'guestsaved' || s === 'guestexpired' || s === 'guestleft') {
