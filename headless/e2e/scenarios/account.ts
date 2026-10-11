@@ -199,6 +199,8 @@ export const account: Record<string, Scenario> = {
       await d.card(page, number); await page.getByTestId('ac-card-save').click();
       if (number !== '4242424242424242') await d.challenge(page, 'success', { activation: 'keyboard' });
       await expect.poll(async () => (await d.operator.clients.clients.A.paymentMethods.get(body.payment_method.payment_method_id)).status, { timeout: 60_000 }).toBe('active');
+      await page.waitForURL(u => u.pathname === '/payment-methods', { timeout: 60_000 });
+      await expect(page.getByTestId(`ac-card-${body.payment_method.payment_method_id}`)).toBeVisible();
     }
     const cards = (await d.operator.clients.clients.A.paymentMethods.list({ customer_id: customer })).data.filter(m => !before.includes(m.payment_method_id)); invariant(cards.length === 2, 'SAVED_CARD_COUNT');
     const ordinaryId = recorded.get('4242424242424242'), threeDsId = recorded.get('4000002500003155');
