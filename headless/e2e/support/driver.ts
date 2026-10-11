@@ -280,13 +280,17 @@ export class Driver {
     }
     const postal = frame.locator('#payment-postalCodeInput'); if (await postal.count()) await postal.fill('78701');
   }
-  async challenge(page: Page, outcome: 'success' | 'fail'): Promise<void> {
+  async challenge(page: Page, outcome: 'success' | 'fail', options: { activation?: 'pointer' | 'keyboard' } = {}): Promise<void> {
     for (let i = 0; i < 300; i++) {
       for (const frame of page.frames()) {
         let url: URL; try { url = new URL(frame.url()); } catch { continue; }
         if (url.protocol !== 'https:' || url.username || url.password || url.port || !(url.hostname === 'stripe.com' || url.hostname.endsWith('.stripe.com'))) continue;
         const button = frame.getByRole('button', { name: outcome === 'success' ? /^(?:Complete authentication|Complete)$/i : /^(?:Fail authentication|Fail)$/i });
-        if (await button.isVisible()) { await this.auditKnownStates(page); await button.click(); return; }
+        if (await button.isVisible()) {
+          await this.auditKnownStates(page);
+          if (options.activation === 'keyboard') { await button.focus(); await expect(button).toBeFocused(); await page.keyboard.press('Enter'); } else await button.click();
+          return;
+        }
       }
       await page.waitForTimeout(100);
     }
