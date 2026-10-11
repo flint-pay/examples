@@ -397,6 +397,12 @@ test.describe('invoice payment', () => {
     await open(page, 'invoice', 'wallets');
     await ready(page);
     await expect(page.getByTestId('ac-wallets')).toBeVisible();
+    const { elements, create } = await stubCalls(page);
+    expect(create.map((call) => call.type)).toEqual(['payment', 'expressCheckout']);
+    expect(elements).toHaveLength(2);
+    expect(elements[1]).toMatchObject({ mode: 'payment', amount: 12000, currency: 'usd', paymentMethodCreation: 'manual' });
+    expect(elements[1]?.paymentMethodTypes).toEqual(['card']);
+    expect(elements[1]).toEqual(elements[0]);
     await page.getByTestId('stub-wallet').click();
     await expect(page).toHaveURL(new RegExp(`${COMPLETE_INVOICE}$`));
     const posts = await submitCalls(request);

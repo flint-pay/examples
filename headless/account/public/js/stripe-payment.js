@@ -389,22 +389,20 @@ async function run(root, boot) {
     mountedKey = key;
     const isReady = await ready;
     if (elementMount instanceof HTMLElement) elementMount.classList.remove('skeleton');
-    mountWallets(guidance, amount);
+    mountWallets(guidance, options);
     return Boolean(isReady);
   }
 
-  /** @param {any} guidance @param {number} amount */
-  function mountWallets(guidance, amount) {
+  /**
+   * The Express Checkout Elements reuse the Payment Element's options, so both name the same explicit
+   * methods. Stripe refuses a wallet token from Elements that use automatic methods when the server lists its allowed methods.
+   * @param {any} guidance @param {Record<string, any>} elementsOptions
+   */
+  function mountWallets(guidance, elementsOptions) {
     const wallets = guidance.elements.digital_wallets ?? [];
     if (!wallets.length || !stripe || !(walletsBox instanceof HTMLElement)) return;
     try {
-      expressElements = stripe.elements({
-        mode: 'payment',
-        amount,
-        currency: state.approved_outstanding_money.currency.toLowerCase(),
-        paymentMethodCreation: 'manual',
-        appearance,
-      });
+      expressElements = stripe.elements(elementsOptions);
       const express = expressElements.create('expressCheckout', {
         paymentMethods: { applePay: wallets.includes('apple_pay') ? 'auto' : 'never', googlePay: wallets.includes('google_pay') ? 'auto' : 'never', link: 'never', amazonPay: 'never', paypal: 'never' },
       });
