@@ -1734,6 +1734,16 @@ async function advance(next, clientAction) {
   }
 }
 
+/**
+ * Mounting the payment form clears the message the page was served with. A page that
+ * opens already declined shows it again once the form is up.
+ */
+function restoreDeclineMessage() {
+  const code = logic.declineCode(app.state);
+  messageNode()?.setAttribute('data-code', code ?? '');
+  setPaymentState('declined', { focus: false, message: declineText(code) });
+}
+
 /** @param {string | null} code */
 function declineText(code) {
   const key = (code ?? '').toLowerCase();
@@ -1964,6 +1974,7 @@ async function start() {
       if (resting === 'declined') messageNode()?.setAttribute('data-code', logic.declineCode(app.state) ?? '');
       await mountPayment();
       if (!needsProcessor()) setPaymentState(resting);
+      else if (resting === 'declined' && (app.paymentState === 'loading' || app.paymentState === 'declined')) restoreDeclineMessage();
       else if (app.paymentState === 'loading') setPaymentState(resting);
       else if (resting !== 'ready' && app.paymentState === 'ready') setPaymentState(resting, { focus: false, message: resting === 'declined' ? declineText(logic.declineCode(app.state)) : $('#payment-message')?.textContent ?? '' });
       break;
