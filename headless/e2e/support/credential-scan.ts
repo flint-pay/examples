@@ -1,4 +1,4 @@
-import { relayOrigin, relayPath } from './boundary-allowlist.ts';
+import { paymentRelayOrigin, relayPath } from './boundary-allowlist.ts';
 import { invariant } from './safe.ts';
 
 export type Surface = 'url' | 'cookie' | 'storage' | 'dom' | 'body' | 'console' | 'child' | 'request';
@@ -41,7 +41,7 @@ function elementsTransportRemainder(value: string, url: URL, context: ScanContex
 }
 // Stripe's redirect return: exactly three plain query names on the exact relay, with the secret bound to the intent.
 export function paymentReturnRelayUrl(url: URL): boolean {
-  if (url.origin !== relayOrigin || !relayPath.test(url.pathname) || url.username || url.password || url.href.includes('#') || !/^\?[A-Za-z0-9_=&]+$/.test(url.search)) return false;
+  if (url.origin !== paymentRelayOrigin || !relayPath.test(url.pathname) || url.username || url.password || url.href.includes('#') || !/^\?[A-Za-z0-9_=&]+$/.test(url.search)) return false;
   const entries = url.search.slice(1).split('&').map(part => part.split('='));
   if (entries.length !== 3 || entries.some(entry => entry.length !== 2 || !entry[1])) return false;
   const query = new Map(entries.map(([key, value]) => [key, value] as const));

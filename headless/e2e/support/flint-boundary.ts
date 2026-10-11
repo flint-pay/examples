@@ -1,5 +1,5 @@
 import type { BrowserContext, Frame, Page, Request } from '@playwright/test';
-import { relayOrigin, relayPath, stripeOrigins } from './boundary-allowlist.ts';
+import { paymentRelayOrigin, relayOrigin, relayPath, stripeOrigins } from './boundary-allowlist.ts';
 import { CredentialScanner, paymentReturnRelayUrl, stripeTransportPath } from './credential-scan.ts';
 import { accountRelayPath, preferenceRelayPath } from './email-links.ts';
 import type { LinkRole } from './email-links.ts';
@@ -16,7 +16,7 @@ export function navigationDecision(raw: string, method: string, mainFrame: boole
   if (!/(^|\.)withflintpay\.com$/i.test(u.hostname)) return 'app-or-provider';
   if(!mainFrame&&method==='GET'&&navigation&&challengeUrls.has(raw))return 'gift-frame';
   if(!mainFrame&&method==='POST'&&challengeUrls.has(frameUrl)&&raw===`${frameUrl}/proof`)return 'gift-proof';
-  if (u.origin === relayOrigin && relayPath.test(u.pathname) && (!u.search || paymentReturnRelayUrl(u)) && !u.hash && method === 'GET' && mainFrame && navigation) return 'relay';
+  if (u.origin === paymentRelayOrigin && relayPath.test(u.pathname) && (!u.search || paymentReturnRelayUrl(u)) && !u.hash && method === 'GET' && mainFrame && navigation) return 'relay';
   const role = auditedRelays.get(raw);
   if (u.origin === relayOrigin && method === 'GET' && mainFrame && !u.hash && (role === 'flint_account_link_relay' && accountRelayPath.test(u.pathname) || role === 'flint_email_preferences_relay' && preferenceRelayPath.test(u.pathname))) return 'email-relay';
   return 'reject';

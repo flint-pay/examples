@@ -3,17 +3,18 @@ import assert from 'node:assert/strict';
 import type { BrowserContext, Request, Route } from '@playwright/test';
 import { BrowserGuard, navigationDecision, validateRelayResponse } from '../../support/flint-boundary.ts';
 import { CredentialScanner } from '../../support/credential-scan.ts';
+import { paymentRelayOrigin } from '../../support/boundary-allowlist.ts';
 import { pinApiOrigin, origin, API_ORIGIN, alias } from '../../support/config.ts';
 import { pinnedFetch } from '../../support/sdk.ts';
 import { auditLinks, parseLinks } from '../../support/inbox.ts';
 import { safeFailure, HarnessError, canonical } from '../../support/safe.ts';
 
 test('only the exact main-frame provider relay is admitted', () => {
-  assert.equal(navigationDecision(`${API_ORIGIN}/payment-returns/relay_PLACEHOLDER`, 'GET', true), 'relay');
-  for (const [url, method, main] of [[`${API_ORIGIN}/payment-returns/x?token=PLACEHOLDER`, 'GET', true], [`${API_ORIGIN}/payment-returns/x`, 'POST', true], [`${API_ORIGIN}/payment-returns/x`, 'GET', false], ['https://checkout.staging.withflintpay.com/x', 'GET', true], ['https://withflintpay.com/x', 'GET', true], ['https://api.withflintpay.com/payment-returns/x', 'GET', true]] as const) assert.equal(navigationDecision(url, method, main), 'reject');
+  assert.equal(navigationDecision(`${paymentRelayOrigin}/payment-returns/relay_PLACEHOLDER`, 'GET', true), 'relay');
+  for (const [url, method, main] of [[`${paymentRelayOrigin}/payment-returns/x?token=PLACEHOLDER`, 'GET', true], [`${paymentRelayOrigin}/payment-returns/x`, 'POST', true], [`${paymentRelayOrigin}/payment-returns/x`, 'GET', false], [`${API_ORIGIN}/payment-returns/relay_PLACEHOLDER`, 'GET', true], ['https://checkout.staging.withflintpay.com/x', 'GET', true], ['https://withflintpay.com/x', 'GET', true], ['https://api.withflintpay.com/payment-returns/x', 'GET', true]] as const) assert.equal(navigationDecision(url, method, main), 'reject');
 });
 const returnSecret = 'pi_PLACEHOLDER_secret_PLACEHOLDER';
-const returnUrl = `${API_ORIGIN}/payment-returns/relay_PLACEHOLDER?payment_intent=pi_PLACEHOLDER&payment_intent_client_secret=${returnSecret}&redirect_status=succeeded`;
+const returnUrl = `${paymentRelayOrigin}/payment-returns/relay_PLACEHOLDER?payment_intent=pi_PLACEHOLDER&payment_intent_client_secret=${returnSecret}&redirect_status=succeeded`;
 test('Stripe payment return is admitted only as the exact canonical query on the exact relay', () => {
   assert.equal(navigationDecision(returnUrl, 'GET', true), 'relay');
   assert.equal(navigationDecision(returnUrl, 'GET', true, new Map(), new Set(), '', false), 'reject');
@@ -27,7 +28,8 @@ test('Stripe payment return is admitted only as the exact canonical query on the
     ['unknown status', returnUrl.replace('succeeded', 'canceled')], ['empty value', returnUrl.replace('=succeeded', '=')],
     ['hash', returnUrl + '#x'], ['empty hash', returnUrl + '#'], ['userinfo', returnUrl.replace('https://', 'https://user:pass@')],
     ['POST', returnUrl, 'POST'], ['sub-frame', returnUrl, 'GET', false],
-    ['production host', returnUrl.replace('api.staging.', 'api.')], ['checkout host', returnUrl.replace('api.staging.', 'checkout.staging.')],
+    ['production host', returnUrl.replace('payment-returns.staging.', 'payment-returns.')], ['checkout host', returnUrl.replace(paymentRelayOrigin, 'https://checkout.staging.withflintpay.com')],
+    ['API host', returnUrl.replace(paymentRelayOrigin, API_ORIGIN)],
     ['nested path', returnUrl.replace('relay_PLACEHOLDER', 'relay_PLACEHOLDER/extra')],
   ] as const) assert.equal(navigationDecision(url, method, main), 'reject', name);
 });
@@ -35,7 +37,7 @@ test('payment return secret is exempt only on the exact URL scan context, never 
   const scan = (value: string, surface: 'url' | 'request' | 'dom' | 'body', context = {}) => { const scanner = new CredentialScanner(); scanner.scan(value, surface, context); return scanner; };
   assert.throws(() => scan(returnUrl, 'url').assertClean(), { code: 'CREDENTIAL_LEAK' });
   scan(returnUrl, 'url', { paymentReturn: true }).assertClean();
-  for (const url of [returnUrl + '&unknown=value', returnUrl.replace('secret=pi_PLACEHOLDER_', 'secret=pi_OTHER_'), returnUrl.replace('succeeded', 'canceled'), returnUrl.replace('api.staging.', 'api.')]) assert.throws(() => scan(url, 'url', { paymentReturn: true }).assertClean(), { code: 'CREDENTIAL_LEAK' });
+  for (const url of [returnUrl + '&unknown=value', returnUrl.replace('secret=pi_PLACEHOLDER_', 'secret=pi_OTHER_'), returnUrl.replace('succeeded', 'canceled'), returnUrl.replace('payment-returns.staging.', 'payment-returns.'), returnUrl.replace(paymentRelayOrigin, API_ORIGIN)]) assert.throws(() => scan(url, 'url', { paymentReturn: true }).assertClean(), { code: 'CREDENTIAL_LEAK' });
   const flint = new CredentialScanner(); flint.addCredential('PLACEHOLDER_FLINT'); flint.scan(returnUrl.replace('succeeded', 'succeeded&x=PLACEHOLDER_FLINT'), 'url', { paymentReturn: true });
   assert.throws(() => flint.assertClean(), { code: 'CREDENTIAL_LEAK' });
   for (const surface of ['request', 'dom', 'body'] as const) assert.throws(() => scan(returnUrl, surface, { paymentReturn: true }).assertClean(), { code: 'CREDENTIAL_LEAK' });
