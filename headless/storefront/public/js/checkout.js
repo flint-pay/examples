@@ -1627,7 +1627,7 @@ async function handlePayError(result) {
   switch (code) {
     case 'ORDER_CHANGED_REFRESH_REQUIRED':
     case 'EXPECTED_AMOUNT_REQUIRED':
-      return totalChanged(error?.message_key === 'gift_card_changed' || error?.message_key === 'gift_card_allocation_changed');
+      return totalChanged(error?.message_key === 'gift_card_changed' || error?.message_key === 'gift_card_allocation_changed', error?.message_key === 'tax_updated' ? 'tax_updated' : undefined);
     case 'FULFILLMENT_SELECTION_REQUIRED':
     case 'DELIVERY_RECIPIENT_REQUIRED': {
       await refreshRegions({ focusRegion: 'delivery' });
@@ -1675,9 +1675,10 @@ async function handlePayError(result) {
 /**
  * Shows the new amount and waits for a fresh press of Pay.
  * @param {boolean} giftChanged
+ * @param {string} [messageKey]
  * @returns {Promise<false>}
  */
-async function totalChanged(giftChanged) {
+async function totalChanged(giftChanged, messageKey) {
   await refreshRegions();
   app.approved = logic.outstandingOf(app.state);
   // The refresh cannot mount while the payment is submitting, so a new processor balance brings the card form back here.
@@ -1686,7 +1687,7 @@ async function totalChanged(giftChanged) {
     if (app.paymentState === 'unavailable') return false;
   }
   app.flow?.updateAmount(logic.processorMoney(app.state));
-  setPaymentState('total_changed', { message: giftChanged ? msg('gift_card_changed') : msg('total_changed', { amount: formatMoney(app.approved) }) });
+  setPaymentState('total_changed', { message: giftChanged ? msg('gift_card_changed') : msg(messageKey ?? 'total_changed', { amount: formatMoney(app.approved) }) });
   return false;
 }
 

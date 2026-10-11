@@ -377,6 +377,70 @@ test('total changed asks for a fresh click and shows the new amount', async ({ p
   await expect(page).toHaveURL(/complete$/);
 });
 
+for (const scenario of ['pickup', 'service']) {
+  test(`stale tax on a ${scenario} order refreshes, keeps the same total, and asks for a fresh Pay`, async ({ page, request }) => {
+    await readyOrder(page, scenario);
+    if (scenario === 'pickup') await pickupSelected(page);
+    const ref = `chk_${scenario}`;
+    const before = await page.getByTestId('sf-pay-button').textContent();
+    await typeCard(page, 'taxstale');
+    await page.getByTestId('sf-pay-button').click();
+    await waitForPayment(page, 'total_changed');
+    await expect(page.getByTestId('sf-payment-message')).toContainText('We updated the tax on your order, and nothing was charged. Your total is still');
+    await expect(page.getByTestId('sf-pay-button')).toHaveText(before!);
+    await page.waitForTimeout(300);
+    expect((await fixtureLog(request, ref)).payCount).toBe(1);
+    await typeCard(page, 'ok');
+    await page.getByTestId('sf-pay-button').click();
+    await expect(page).toHaveURL(/complete$/);
+    const fixture = await fixtureLog(request, ref);
+    expect(fixture.payCount).toBe(2);
+  });
+}
+
+test('stale tax that changes the total shows the new amount and pays only after a fresh approval', async ({ page, request }) => {
+  await readyOrder(page, 'service');
+  await typeCard(page, 'taxstalebump');
+  await page.getByTestId('sf-pay-button').click();
+  await waitForPayment(page, 'total_changed');
+  await expect(page.getByTestId('sf-payment-message')).toContainText('Your total changed to');
+  await typeCard(page, 'ok');
+  const amount = (await page.getByTestId('sf-pay-button').textContent())!.replace('Pay ', '').replace('$', '').replace('.', '');
+  await page.getByTestId('sf-pay-button').click();
+  await expect(page).toHaveURL(/complete$/);
+  const fixture = await fixtureLog(request, 'chk_service');
+  expect(fixture.payCount).toBe(2);
+  expect(fixture.log.filter((entry) => entry.path === 'pay').at(-1)!.body.approved_outstanding_money.amount).toBe(amount);
+});
+
+test('stale tax that cannot be refreshed shows a recoverable message without a reference ID or a second pay', async ({ page, request }) => {
+  await readyOrder(page, 'service');
+  await typeCard(page, 'taxfail');
+  await page.getByTestId('sf-pay-button').click();
+  await waitForPayment(page, 'ready');
+  const message = page.getByTestId('sf-payment-message');
+  await expect(message).toContainText("We couldn't confirm the tax on your order, so nothing was charged. Try again.");
+  await expect(message).not.toContainText('Reference ID');
+  await page.waitForTimeout(300);
+  expect((await fixtureLog(request, 'chk_service')).payCount).toBe(1);
+});
+
+test('a wallet confirmed on stale tax fails the sheet and needs a second wallet press', async ({ page, request }) => {
+  await readyOrder(page, 'wallet');
+  await pickupSelected(page);
+  await typeCard(page, 'taxstale');
+  await page.getByTestId('fake-wallet-button').click();
+  await waitForPayment(page, 'total_changed');
+  await expect(page.getByTestId('sf-payment-message')).toContainText('We updated the tax on your order');
+  expect((await stripeCalls(page)).filter((call) => call.name === 'paymentFailed')).toHaveLength(1);
+  await page.waitForTimeout(300);
+  expect((await fixtureLog(request, 'chk_wallet')).payCount).toBe(1);
+  await typeCard(page, 'ok');
+  await page.getByTestId('fake-wallet-button').click();
+  await expect(page).toHaveURL(/complete$/);
+  expect((await fixtureLog(request, 'chk_wallet')).payCount).toBe(2);
+});
+
 test('gift card: unavailable, challenge, partial, and full coverage use settlement', async ({ page, request }) => {
   await readyOrder(page);
   await shipAndSelect(page);
