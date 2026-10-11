@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buyerBillingCountry, derivePaymentState, serverBlockers, taxLocationState } from '../../public/js/checkout-logic.js';
+import { buyerBillingCountry, buyerBillingPostalCode, derivePaymentState, serverBlockers, taxLocationState } from '../../public/js/checkout-logic.js';
 import { checkoutPage } from '../../src/views/pages/checkout.ts';
 import { browserMessages, copy, messages } from '../../src/copy.ts';
 import type { CheckoutData, CheckoutState, PageContext } from '../../src/views/types.ts';
@@ -123,5 +123,15 @@ test('the buyer billing country comes only from the saved billing address', () =
   assert.equal(buyerBillingCountry(state({ billing: { country: 'US' } })), 'US');
   const provided = state({ tax: { enabled: true, status: 'calculated', location: { address_source: 'provided', address_type: 'billing_address' } } });
   assert.equal(buyerBillingCountry(provided), '');
-  for (const key of ['billing_country_missing', 'billing_country_unsupported'] as const) assert.equal(browserMessages[key], messages[key]);
+  for (const key of ['billing_country_missing', 'billing_country_unsupported', 'billing_postal_code_missing'] as const) assert.equal(browserMessages[key], messages[key]);
+});
+
+test('the buyer billing postal code comes only from the saved billing address', () => {
+  assert.equal(buyerBillingPostalCode(state()), '');
+  assert.equal(buyerBillingPostalCode(state({ billing: { country: 'US', postal_code: '78702' } })), '78702');
+  assert.equal(buyerBillingPostalCode(state({ billing: { country: 'US' } })), '');
+  const provided = state({ tax: { enabled: true, status: 'calculated', location: { address_source: 'provided', address_type: 'billing_address' } } });
+  assert.equal(buyerBillingPostalCode(provided), '');
+  assert.equal(messages.billing_postal_code_missing, 'Enter your billing postal code to pay with Affirm.');
+  assert.equal(copy.checkout.billingPostalCode, 'Billing postal code');
 });

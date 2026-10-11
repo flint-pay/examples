@@ -589,9 +589,10 @@ test('the polite live region announces the amount after an update', async ({ pag
   await expect(page.getByTestId('sf-live')).toHaveText(/Amount due now \$54\.00/);
 });
 
-// ----- Affirm billing country -----
+// ----- Affirm billing country and postal code -----
 
 const affirmCountry = (page: any) => page.getByTestId('sf-affirm-country');
+const affirmPostal = (page: any) => page.getByTestId('sf-affirm-postal');
 const tokenCalls = async (page: any) => (await stripeCalls(page)).filter((call) => call.name === 'createConfirmationToken');
 
 /** Presses Pay with the Pay request held, so the token's parameters can be read before the page leaves. */
@@ -604,24 +605,39 @@ async function payHeld(page: any, ref: string) {
   return calls;
 }
 
-test('Affirm on a delivery checkout asks for the billing country, then the token carries US with shipping unchanged', async ({ page }) => {
+test('Affirm on a delivery checkout asks for the billing country and postal code, then the token carries both with shipping unchanged', async ({ page }) => {
   await readyOrder(page);
   await shipAndSelect(page);
   await expect(affirmCountry(page)).toBeHidden();
+  await expect(affirmPostal(page)).toBeHidden();
   await typeCard(page, 'affirm');
   await expect(affirmCountry(page)).toBeVisible();
   await expect(affirmCountry(page)).toHaveValue('');
   await expect(affirmCountry(page)).toHaveAttribute('required', '');
   await expect(page.getByLabel('Billing country')).toBeVisible();
+  // The delivery postal code is known, and still does not fill the billing one.
+  await expect(page.getByLabel('Billing postal code')).toBeVisible();
+  await expect(affirmPostal(page)).toHaveValue('');
+  await expect(affirmPostal(page)).toHaveAttribute('required', '');
+  await expect(affirmPostal(page)).toHaveAttribute('autocomplete', 'billing postal-code');
+  await expect(affirmPostal(page)).toHaveAttribute('inputmode', 'numeric');
   await expect(affirmCountry(page).locator('option')).toHaveText(['Choose a country', 'United States', 'Another country']);
   await expect(page.getByTestId('sf-pay-blocker')).toHaveAttribute('data-blocker', 'billing_country_missing');
   await expect(page.getByTestId('sf-pay-blocker')).toHaveText('Choose your billing country to pay with Affirm.');
   await expect(page.getByTestId('sf-pay-button')).toBeDisabled();
   await affirmCountry(page).selectOption('US');
+  await expect(page.getByTestId('sf-pay-blocker')).toHaveAttribute('data-blocker', 'billing_postal_code_missing');
+  await expect(page.getByTestId('sf-pay-blocker')).toHaveText('Enter your billing postal code to pay with Affirm.');
+  await expect(page.getByTestId('sf-pay-button')).toBeDisabled();
+  await affirmPostal(page).fill('787');
+  await expect(page.getByTestId('sf-pay-blocker')).toHaveAttribute('data-blocker', 'billing_postal_code_required');
+  await expect(page.getByTestId('sf-pay-blocker')).toHaveText('Enter a 5-digit postal code.');
+  await expect(page.getByTestId('sf-pay-button')).toBeDisabled();
+  await affirmPostal(page).fill('78702');
   await expect(page.getByTestId('sf-pay-button')).toBeEnabled();
   const tokens = await payHeld(page, 'chk_card');
   expect(tokens).toHaveLength(1);
-  expect(tokens[0].params.payment_method_data.billing_details).toEqual({ name: 'Test Buyer', email: 'buyer@example.test', address: { country: 'US' } });
+  expect(tokens[0].params.payment_method_data.billing_details).toEqual({ name: 'Test Buyer', email: 'buyer@example.test', address: { country: 'US', postal_code: '78702' } });
   expect(tokens[0].params.shipping.address.postal_code).toBe('78701');
   expect(tokens[0].params.shipping.address.country).toBe('US');
   await expect(page).toHaveURL(/complete$/);
@@ -631,7 +647,12 @@ test('Another country keeps Pay disabled with the unsupported copy and makes no 
   await readyOrder(page);
   await shipAndSelect(page);
   await typeCard(page, 'affirm');
+  await affirmCountry(page).selectOption('US');
+  await affirmPostal(page).fill('78702');
   await affirmCountry(page).selectOption('other');
+  await expect(affirmPostal(page)).toBeHidden();
+  await expect(affirmPostal(page)).toBeDisabled();
+  await expect(affirmPostal(page)).toHaveValue('78702');
   await expect(page.getByTestId('sf-pay-blocker')).toHaveAttribute('data-blocker', 'billing_country_unsupported');
   await expect(page.getByTestId('sf-pay-blocker')).toHaveText('Affirm is only available with a United States billing address. Choose another way to pay.');
   await expect(page.getByTestId('sf-pay-button')).toBeDisabled();
@@ -641,6 +662,67 @@ test('Another country keeps Pay disabled with the unsupported copy and makes no 
   await expect(affirmCountry(page)).toBeHidden();
   await expect(page.getByTestId('sf-pay-button')).toBeEnabled();
 });
+
+test('a billing postal code is trimmed, and a ZIP+4 is sent whole', async ({ page }) => {
+  await readyOrder(page);
+  await shipAndSelect(page);
+  await typeCard(page, 'affirm');
+  await affirmCountry(page).selectOption('US');
+  // The limit leaves room for padding around a 10 character ZIP+4, so a padded entry or paste is not cut short.
+  await expect(affirmPostal(page)).toHaveAttribute('maxlength', '12');
+  await affirmPostal(page).fill('');
+  await affirmPostal(page).focus();
+  await page.keyboard.insertText(' 78702-1234 ');
+  await expect(affirmPostal(page)).toHaveValue(' 78702-1234 ');
+  await expect(page.getByTestId('sf-pay-button')).toBeEnabled();
+  await affirmPostal(page).fill(' 78702-1234 ');
+  await expect(affirmPostal(page)).toHaveValue(' 78702-1234 ');
+  await expect(page.getByTestId('sf-pay-button')).toBeEnabled();
+  const tokens = await payHeld(page, 'chk_card');
+  expect(tokens).toHaveLength(1);
+  expect(tokens[0].params.payment_method_data.billing_details.address).toEqual({ country: 'US', postal_code: '78702-1234' });
+});
+
+test('the billing postal code marks itself invalid on blur and recovers while typing, and Enter makes no token while blocked', async ({ page }) => {
+  await readyOrder(page);
+  await shipAndSelect(page);
+  await typeCard(page, 'affirm');
+  await affirmCountry(page).selectOption('US');
+  await affirmPostal(page).focus();
+  await affirmPostal(page).blur();
+  await expect(affirmPostal(page)).not.toHaveAttribute('aria-invalid', 'true');
+  await affirmPostal(page).fill('787');
+  await expect(affirmPostal(page)).not.toHaveAttribute('aria-invalid', 'true');
+  await affirmPostal(page).blur();
+  await expect(affirmPostal(page)).toHaveAttribute('aria-invalid', 'true');
+  await affirmPostal(page).focus();
+  await affirmPostal(page).press('Enter');
+  expect(await tokenCalls(page)).toHaveLength(0);
+  await affirmPostal(page).fill('78702');
+  await expect(affirmPostal(page)).not.toHaveAttribute('aria-invalid', 'true');
+  await expect(page.getByTestId('sf-pay-button')).toBeEnabled();
+});
+
+for (const size of [{ width: 375, height: 800 }, { width: 1280, height: 800 }]) {
+  test(`the billing postal code sits under the country at ${size.width}px, and the tab order runs country, postal code, then Pay (saving is off for Affirm)`, async ({ page }) => {
+    await page.setViewportSize(size);
+    await readyOrder(page);
+    await shipAndSelect(page);
+    await typeCard(page, 'affirm');
+    await affirmCountry(page).selectOption('US');
+    const country = (await affirmCountry(page).boundingBox())!;
+    const postal = (await affirmPostal(page).boundingBox())!;
+    expect(postal.y).toBeGreaterThanOrEqual(country.y + country.height);
+    expect(postal.x).toBe(country.x);
+    await affirmCountry(page).focus();
+    await page.keyboard.press('Tab');
+    await expect(affirmPostal(page)).toBeFocused();
+    await affirmPostal(page).fill('78702');
+    await expect(page.getByTestId('sf-save-card')).toBeDisabled();
+    await page.keyboard.press('Tab');
+    await expect(page.getByTestId('sf-pay-button')).toBeFocused();
+  });
+}
 
 test('a tax location marked provided without a billing address does not stand in for the country', async ({ page }) => {
   await page.route('**/checkout/chk_card', async (route: any) => {
@@ -658,14 +740,15 @@ test('a tax location marked provided without a billing address does not stand in
   await expect(page.getByTestId('sf-pay-button')).toBeDisabled();
 });
 
-test('a saved US billing address hides the field and the token carries US', async ({ page }) => {
+test('a saved US billing address hides both fields and the token carries its country and postal code', async ({ page }) => {
   await readyOrder(page, 'taxset');
   await typeCard(page, 'affirm');
   await expect(page.getByTestId('sf-pay-button')).toBeEnabled();
   await expect(affirmCountry(page)).toBeHidden();
+  await expect(affirmPostal(page)).toBeHidden();
   const tokens = await payHeld(page, 'chk_taxset');
   expect(tokens).toHaveLength(1);
-  expect(tokens[0].params.payment_method_data.billing_details).toEqual({ name: 'Test Buyer', email: 'buyer@example.test', address: { country: 'US' } });
+  expect(tokens[0].params.payment_method_data.billing_details).toEqual({ name: 'Test Buyer', email: 'buyer@example.test', address: { country: 'US', postal_code: '78701' } });
 });
 
 test('a saved billing address outside the US blocks Affirm without showing the field', async ({ page }) => {
@@ -679,6 +762,7 @@ test('a saved billing address outside the US blocks Affirm without showing the f
   await readyOrder(page, 'taxset');
   await typeCard(page, 'affirm');
   await expect(affirmCountry(page)).toBeHidden();
+  await expect(affirmPostal(page)).toBeHidden();
   await expect(page.getByTestId('sf-pay-blocker')).toHaveAttribute('data-blocker', 'billing_country_unsupported');
   await expect(page.getByTestId('sf-pay-button')).toBeDisabled();
   expect(await tokenCalls(page)).toHaveLength(0);
@@ -689,6 +773,8 @@ test('card and bank payments keep the field hidden and send only name and email'
   await shipAndSelect(page);
   await typeCard(page, 'ok');
   await expect(affirmCountry(page)).toBeHidden();
+  await expect(affirmPostal(page)).toBeHidden();
+  await expect(affirmPostal(page)).toBeDisabled();
   await expect(page.getByTestId('sf-pay-button')).toBeEnabled();
   const tokens = await payHeld(page, 'chk_card');
   expect(tokens).toHaveLength(1);
@@ -700,36 +786,48 @@ test('a bank account payment keeps the field hidden and sends only name and emai
   await shipAndSelect(page);
   await typeCard(page, 'bank');
   await expect(affirmCountry(page)).toBeHidden();
+  await expect(affirmPostal(page)).toBeHidden();
+  await expect(affirmPostal(page)).toBeDisabled();
   await expect(page.getByTestId('sf-pay-button')).toBeEnabled();
   const tokens = await payHeld(page, 'chk_card');
   expect(tokens).toHaveLength(1);
   expect(tokens[0].params.payment_method_data.billing_details).toEqual({ name: 'Test Buyer', email: 'buyer@example.test' });
 });
 
-test('a wallet is not blocked by the Affirm billing country blockers', async ({ page, request }) => {
+test('a wallet is not blocked by the Affirm billing country and postal code blockers', async ({ page, request }) => {
   await readyOrder(page, 'wallet');
   await pickupSelected(page);
   await typeCard(page, 'affirm');
   await expect(page.getByTestId('sf-pay-blocker')).toHaveAttribute('data-blocker', 'billing_country_missing');
+  await affirmCountry(page).selectOption('US');
+  await expect(affirmPostal(page)).toHaveValue('');
+  await expect(page.getByTestId('sf-pay-blocker')).toHaveAttribute('data-blocker', 'billing_postal_code_missing');
   await page.getByTestId('fake-wallet-button').click();
   await expect.poll(async () => (await fixtureLog(request, 'chk_wallet')).payCount).toBe(1);
 });
 
-test('the Affirm country select is disabled unless Affirm is selected, and while a payment is open', async ({ page }) => {
+test('the Affirm country and postal fields are disabled unless Affirm is selected, and while a payment is open', async ({ page }) => {
   await readyOrder(page);
   await shipAndSelect(page);
   await expect(affirmCountry(page)).toBeDisabled();
+  await expect(affirmPostal(page)).toBeDisabled();
   await typeCard(page, 'affirm');
   await expect(affirmCountry(page)).toBeEnabled();
+  await expect(affirmPostal(page)).toBeEnabled();
   await affirmCountry(page).selectOption('US');
+  await affirmPostal(page).fill('78702');
   await page.getByTestId('fake-card').fill('ok');
   await expect(affirmCountry(page)).toBeDisabled();
+  await expect(affirmPostal(page)).toBeDisabled();
   await page.getByTestId('fake-card').fill('affirm');
   await expect(affirmCountry(page)).toBeEnabled();
   await expect(affirmCountry(page)).toHaveValue('US');
+  await expect(affirmPostal(page)).toBeEnabled();
+  await expect(affirmPostal(page)).toHaveValue('78702');
   const pay = await hold(page, 'chk_card', 'pay');
   await page.getByTestId('sf-pay-button').click();
   await pay.sent;
   await expect(affirmCountry(page)).toBeDisabled();
+  await expect(affirmPostal(page)).toBeDisabled();
   await pay.release();
 });
