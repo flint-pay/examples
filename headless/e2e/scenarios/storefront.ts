@@ -169,7 +169,9 @@ export const storefront: Record<string, Scenario> = {
   },
   'SF-12': async d => {
     const page = await d.page('b1'); await d.login(page, 'b1', d.sf()); const c = await d.checkout(page); await d.delivery(c);
-    const saved = page.locator('[data-testid^="sf-saved-method-"]').first(); await expect(saved).toBeVisible(); await saved.check(); await page.getByTestId('sf-pay-button').click();
+    const saved = page.locator('[data-testid^="sf-saved-method-"]').first(); await expect(saved).toBeVisible();
+    const method = d.created.get('accountSavedCardMethod'); invariant(method, 'ACCOUNT_SAVED_CARD_METHOD_REQUIRED'); await expect(saved).toHaveValue(method);
+    await saved.check(); await page.getByTestId('sf-pay-button').click();
     const next = page.locator('[data-testid="sf-complete"][data-state="paid"], [data-testid="sf-payment"][data-state="authenticating"]').first(); await expect(next).toBeAttached({ timeout: 60_000 });
     if (await next.getAttribute('data-testid') === 'sf-payment') await d.challenge(page, 'success', { activation: 'keyboard' });
     const order = await d.settled(c); invariant(order.customer_id === d.fixtures.buyers.b1.customerId, 'SIGNED_IN_ORDER_BINDING'); await d.goto(page, d.config.origins.accountA, `/orders/${order.order_id}`); await expect(page.getByTestId('ac-order')).toBeVisible(); return ['SIGNED_IN_SAVED_CARD_ACCOUNT_ORDER'];

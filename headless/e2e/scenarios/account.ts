@@ -191,18 +191,25 @@ export const account: Record<string, Scenario> = {
     const page = await signed(d);
     const customer = d.fixtures.buyers.b1.customerId!; d.requireOwned('A', customer);
     const before = (await d.operator.clients.clients.A.paymentMethods.list({ customer_id: customer })).data.map(m => m.payment_method_id);
+    const recorded = new Map<string, string>();
     for (const number of ['4242424242424242', '4000002500003155']) {
       const responsePromise = page.waitForResponse(r => new URL(r.url()).pathname === '/payment-methods/new/setup' && r.request().method() === 'POST');
       await d.goto(page, d.config.origins.accountA, '/payment-methods/new'); const response = await responsePromise; const body = await response.json(); invariant(body.payment_method?.status === 'pending', 'SAVED_CARD_MUST_START_PENDING');
-      await d.track('A', 'payment_method', body.payment_method.payment_method_id, 'payment_method');
+      await d.track('A', 'payment_method', body.payment_method.payment_method_id, 'payment_method'); recorded.set(number, body.payment_method.payment_method_id);
       await d.card(page, number); await page.getByTestId('ac-card-save').click();
       if (number !== '4242424242424242') await d.challenge(page, 'success', { activation: 'keyboard' });
       await expect.poll(async () => (await d.operator.clients.clients.A.paymentMethods.get(body.payment_method.payment_method_id)).status, { timeout: 60_000 }).toBe('active');
+      await page.waitForURL(u => u.pathname === '/payment-methods', { timeout: 60_000 });
+      await expect(page.getByTestId(`ac-card-${body.payment_method.payment_method_id}`)).toBeVisible();
     }
     const cards = (await d.operator.clients.clients.A.paymentMethods.list({ customer_id: customer })).data.filter(m => !before.includes(m.payment_method_id)); invariant(cards.length === 2, 'SAVED_CARD_COUNT');
-    await d.goto(page, d.config.origins.accountA, '/payment-methods'); const card = page.getByTestId(`ac-card-${cards[0].payment_method_id}`); await card.locator('form[action$="/default"] button').click();
-    invariant((await d.operator.clients.clients.A.customers.get(customer)).default_payment_method_id === cards[0].payment_method_id, 'DEFAULT_METHOD_NOT_SET');
-    const remove = page.getByTestId(`ac-card-${cards[1].payment_method_id}`); await remove.getByTestId('ac-card-remove').click(); await expect(page.getByRole('dialog')).toBeVisible(); await page.getByRole('dialog').getByRole('button', { name: /remove/i }).click(); await expect(remove).toHaveCount(0); await d.axe(page, 'ac-payment-methods'); return ['CARD_PENDING_ACTIVE_3DS_DEFAULT_REMOVE'];
+    const ordinaryId = recorded.get('4242424242424242'), threeDsId = recorded.get('4000002500003155');
+    invariant(ordinaryId && threeDsId && ordinaryId !== threeDsId && cards.every(m => m.payment_method_id === ordinaryId || m.payment_method_id === threeDsId), 'SAVED_CARD_IDS');
+    await d.goto(page, d.config.origins.accountA, '/payment-methods'); const card = page.getByTestId(`ac-card-${ordinaryId}`); await card.locator('form[action$="/default"] button').click();
+    invariant((await d.operator.clients.clients.A.customers.get(customer)).default_payment_method_id === ordinaryId, 'DEFAULT_METHOD_NOT_SET');
+    const remove = page.getByTestId(`ac-card-${threeDsId}`); await remove.getByTestId('ac-card-remove').click(); await expect(page.getByRole('dialog')).toBeVisible(); await page.getByRole('dialog').getByRole('button', { name: /remove/i }).click(); await expect(remove).toHaveCount(0);
+    await expect.poll(async () => (await d.operator.clients.clients.A.paymentMethods.list({ customer_id: customer })).data.map(m => m.payment_method_id).filter(id => !before.includes(id)), { timeout: 60_000, message: 'SAVED_CARD_REMOVAL' }).toEqual([ordinaryId]);
+    await d.axe(page, 'ac-payment-methods'); d.created.set('accountSavedCardMethod', ordinaryId); return ['CARD_PENDING_ACTIVE_3DS_DEFAULT_REMOVE'];
   },
   'AC-10': async d => {
     const page = await signed(d, 'b2'); d.requireOwned('A', d.fixtures.buyers.b2.customerId!); await d.goto(page, d.config.origins.accountA, '/profile'); await d.form(page, '/profile', { name: 'Updated acceptance buyer', phone: '+12025550123' });
