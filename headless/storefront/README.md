@@ -16,7 +16,7 @@ This example uses the `@flintpay/node` 3.0.0 beta, so names and shapes can still
 ## Requirements
 
 - Node.js 24 or later.
-- A Flint sandbox with payments set up (`accept_card_payments` ready), and a sandbox test key (`flint_test_...`). The app reads the catalog and capabilities, creates orders and checkout sessions, and creates customers and customer verifications. The setup script needs write access to the resources it creates.
+- A Flint sandbox with payments set up (`accept_card_payments` ready), and a sandbox test key (`flint_test_...`). The app reads the catalog and capabilities, creates orders and checkout sessions, and creates customers and customer verifications. The setup script needs write access to the resources it creates. To tell pending payment methods apart on reload, the key must include `commerce.orders.read` and `payments.payment_intents.read`.
 - Optional: `accept_affirm_payments`, ACH debit (activated by Flint support), and an automatic tax connection. Run `npm run setup -- --check` to see what your sandbox has.
 - Optional: a registered HTTPS domain for Apple Pay and Google Pay. On `localhost`, the wallet area stays hidden and cards still work.
 - Emails from Flint Pay show the sandbox's business name, which can differ from Cedar & Stone.

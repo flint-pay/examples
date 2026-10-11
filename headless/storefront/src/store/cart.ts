@@ -39,7 +39,7 @@ export class Carts {
       this.store.run("UPDATE checkouts SET cart_dirty=1 WHERE cart_id=? AND status='open'",target.cart_id);
     });
   }
-  complete(checkoutRef:string,order:import('@flintpay/node').Order){
+  complete(checkoutRef:string,order:import('../payments/engine.ts').SourcedOrder){
     this.store.transaction(()=>{
       const checkout=this.store.get<{cart_id:string|null;cart_finalized:number}>('SELECT cart_id,cart_finalized FROM checkouts WHERE checkout_ref=?',checkoutRef);
       if(!checkout?.cart_id||checkout.cart_finalized)return;

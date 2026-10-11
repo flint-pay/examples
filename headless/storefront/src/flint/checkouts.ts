@@ -15,14 +15,14 @@ import {Carts} from '../store/cart.ts';
 import type {Cart,CartLine} from '../store/cart.ts';
 import type {Config} from '../config.ts';
 import {PaymentEngine,collectionKind,paymentComplete} from '../payments/engine.ts';
-import type {PaymentResult} from '../payments/engine.ts';
+import type {PaymentResult,SourcedOrder} from '../payments/engine.ts';
 import {attemptOpen} from '../payments/next-step.ts';
 
 export type Quote={delivery_quote_id:string;choice_groups:BuyerDeliveryQuoteChoiceGroupResource[];expires_at:string;input_requirements:unknown[];buyer_reasons?:string[];status:string};
 export type PickupPreviewLocation={location_id:string;name:string;address?:DeliveryAddressResource;distance_meters?:number;delivery_method_ids:string[]};
 export type PickupPreview={postal_code:string;country:string;evaluated_at:string;locations:PickupPreviewLocation[]};
 export type Details={name?:string;contact?:{email?:string|null;phone?:string|null};billing_address?:OrderTaxLocationFullAddressRequestInput;customer_billing_address?:OrderTaxLocationFullAddressRequestInput;delivery_quote?:Quote;delivery_selection?:{delivery_selection_id?:string;[key:string]:unknown};pickup_preview?:PickupPreview;quote_basis?:{selection_id:string|null};quote_input?:{destination_address?:DeliveryAddressRequestInput;buyer_location?:DeliveryBuyerLocationRequestInput;pickup_location_id?:string};verification?:{customer_verification_id:string;status:string;purpose?:string;channel?:string;email?:string;phone_last_digits?:string};receipt_sent_at?:number;gift_origin_replaced_at?:number};
-export type ReadCheckout={record:CheckoutRecord;session:CheckoutSession;order:Order;result:PaymentResult};
+export type ReadCheckout={record:CheckoutRecord;session:CheckoutSession;order:SourcedOrder;result:PaymentResult};
 export type MutationContext={order_revision?:string;delivery_selection_id:string|null;delivery_quote_id?:string;customer_verification_id?:string};
 const displayNotices=new Set(['checkout_refreshed','delivery_released','total_changed','gift_card_changed','affirm_incomplete','trial_not_started','signed_in_mid_checkout','delivery_requoted']);
 
@@ -167,11 +167,12 @@ export class Checkouts {
           await this.refreshQuote(record,details);order=await this.client.orders.get(record.order_id!,undefined,this.auth.checkout(record));
         }
       }
+      const sourced=await this.payments.withPaymentSources(record,order);
       const attempt=await this.payments.attempt(record,order,managedRead);this.payments.remember(record,attempt);
-      const result=this.payments.observe(record,order,attempt);
+      const result=this.payments.observe(record,sourced,attempt);
       const status=paymentComplete(order)?'paid':this.payments.next(result)==='bank_processing'?'bank_processing':'open';
       if(status!=='open'||record.status!==status)this.store.run('UPDATE checkouts SET status=?,completed_at=CASE WHEN ?=\'open\' THEN NULL ELSE COALESCE(completed_at,?) END,updated_at=? WHERE checkout_ref=?',status,status,Date.now(),Date.now(),ref);
-      return {record,session,order,result};
+      return {record,session,order:sourced,result};
     });
   }
   async refreshQuote(record:CheckoutRecord,details:Details){
