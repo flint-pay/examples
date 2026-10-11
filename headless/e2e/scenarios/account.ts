@@ -196,7 +196,7 @@ export const account: Record<string, Scenario> = {
       await d.goto(page, d.config.origins.accountA, '/payment-methods/new'); const response = await responsePromise; const body = await response.json(); invariant(body.payment_method?.status === 'pending', 'SAVED_CARD_MUST_START_PENDING');
       await d.track('A', 'payment_method', body.payment_method.payment_method_id, 'payment_method');
       await d.card(page, number); await page.getByTestId('ac-card-save').click();
-      if (number !== '4242424242424242') await d.challenge(page, 'success');
+      if (number !== '4242424242424242') await d.challenge(page, 'success', { activation: 'keyboard' });
       await expect.poll(async () => (await d.operator.clients.clients.A.paymentMethods.get(body.payment_method.payment_method_id)).status, { timeout: 60_000 }).toBe('active');
     }
     const cards = (await d.operator.clients.clients.A.paymentMethods.list({ customer_id: customer })).data.filter(m => !before.includes(m.payment_method_id)); invariant(cards.length === 2, 'SAVED_CARD_COUNT');

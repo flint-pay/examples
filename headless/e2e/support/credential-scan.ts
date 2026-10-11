@@ -23,8 +23,9 @@ function urlValues(value: string, url?: URL): string[] {
 const transportShapes = [
   { path: /^\/v1\/elements\/sessions$/, secret: /^seti_[A-Za-z0-9]+_secret_[A-Za-z0-9]+$/ },
   { path: /^\/v1\/payment_intents\/(pi_[A-Za-z0-9]+)$/, secret: /^pi_[A-Za-z0-9]+_secret_[A-Za-z0-9]+$/, boundId: true },
+  { path: /^\/v1\/setup_intents\/(seti_[A-Za-z0-9]+)$/, secret: /^seti_[A-Za-z0-9]+_secret_[A-Za-z0-9]+$/, boundId: true },
 ];
-export const stripeTransportPath = /^\/v1\/(?:elements\/sessions|payment_intents\/pi_[A-Za-z0-9]+)$/;
+export const stripeTransportPath = /^\/v1\/(?:elements\/sessions|payment_intents\/pi_[A-Za-z0-9]+|setup_intents\/seti_[A-Za-z0-9]+)$/;
 function elementsTransportRemainder(value: string, url: URL, context: ScanContext): URL | undefined {
   if (!context.stripeTransport || url.origin !== 'https://api.stripe.com' || url.username || url.password || value.includes('#')) return;
   const shape = transportShapes.map(candidate => ({ candidate, match: candidate.path.exec(url.pathname) })).find(entry => entry.match);

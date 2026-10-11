@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { BrowserContext, Request, Route } from '@playwright/test';
 import { BrowserGuard, navigationDecision, validateRelayResponse } from '../../support/flint-boundary.ts';
-import { CredentialScanner } from '../../support/credential-scan.ts';
+import { CredentialScanner, stripeTransportPath } from '../../support/credential-scan.ts';
 import { paymentRelayOrigin } from '../../support/boundary-allowlist.ts';
 import { pinApiOrigin, origin, API_ORIGIN, alias } from '../../support/config.ts';
 import { pinnedFetch } from '../../support/sdk.ts';
@@ -365,6 +365,53 @@ for (const [name, value] of [
   ['basic auth', intentUrl.replace('https://', 'https://user:pass@')],
 ]) test(`PaymentIntent URL exception rejects ${name}`, () => {
   assert.throws(() => elementsScan(value).assertClean(), { code: 'CREDENTIAL_LEAK' });
+});
+
+const setupIntentUrl = `https://api.stripe.com/v1/setup_intents/seti_PLACEHOLDER?client_secret=${setupSecret}&key=pk_test_PLACEHOLDER&is_stripe_sdk=false`;
+test('SetupIntent transport permits a bound client secret, one test key and benign extra parameters', () => {
+  elementsScan(setupIntentUrl).assertClean();
+  elementsScan(setupIntentUrl.replace(setupSecret, setupSecret.replaceAll('_', '%5F'))).assertClean();
+});
+
+for (const [name, value] of [
+  ['secret bound to another SetupIntent', setupIntentUrl.replace('setup_intents/seti_PLACEHOLDER?', 'setup_intents/seti_OTHER?')],
+  ['PaymentIntent secret', setupIntentUrl.replace(setupSecret, intentSecret)],
+  ['duplicate secret', setupIntentUrl + `&client_secret=${setupSecret}`],
+  ['duplicate publishable key', setupIntentUrl + '&key=pk_test_PLACEHOLDER'],
+  ['missing publishable key', setupIntentUrl.replace('&key=pk_test_PLACEHOLDER', '')],
+  ['live publishable key', setupIntentUrl.replace('pk_test_', 'pk_live_')],
+  ['basic auth', setupIntentUrl.replace('https://', 'https://user:pass@')],
+  ['fragment', setupIntentUrl + '#fragment'],
+  ['sensitive extra name', setupIntentUrl + '&email=buyer%40example.invalid'],
+  ['encoded sensitive extra name', setupIntentUrl + '&%2574oken=unit'],
+  ['extra value with a provider secret', setupIntentUrl + `&metadata=${setupSecret}`],
+  ['malformed escape in the remainder', setupIntentUrl + '&metadata=%25ZZ'],
+  ['insecure origin', setupIntentUrl.replace('https://', 'http://')],
+  ['other Stripe origin', setupIntentUrl.replace('api.stripe.com', 'js.stripe.com')],
+  ['confirm suffix', setupIntentUrl.replace('seti_PLACEHOLDER?', 'seti_PLACEHOLDER/confirm?')],
+  ['trailing slash', setupIntentUrl.replace('seti_PLACEHOLDER?', 'seti_PLACEHOLDER/?')],
+  ['list endpoint', setupIntentUrl.replace('/seti_PLACEHOLDER?', '?')],
+]) test(`SetupIntent URL exception rejects ${name}`, () => {
+  assert.throws(() => elementsScan(value).assertClean(), { code: 'CREDENTIAL_LEAK' });
+});
+
+test('SetupIntent URL exception requires Stripe transport context', () => {
+  const scanner = new CredentialScanner(); scanner.scan(setupIntentUrl, 'url');
+  assert.throws(() => scanner.assertClean(), { code: 'CREDENTIAL_LEAK' });
+  assert.equal(scanner.violations.has('PROVIDER_SECRET_URL'), true);
+});
+
+test('SetupIntent transport still reports a Flint credential or sensitive name in extra parameters', () => {
+  const credential = elementsScan(setupIntentUrl + '&metadata=flint_test_PLACEHOLDER');
+  assert.throws(() => credential.assertClean(), { code: 'CREDENTIAL_LEAK' });
+  assert.equal(credential.violations.has('CREDENTIAL_URL'), true);
+  const sensitive = elementsScan(setupIntentUrl + '&code=unit');
+  assert.equal(sensitive.violations.has('SENSITIVE_URL'), true);
+});
+
+test('stripeTransportPath matches only the exact documented Stripe.js retrieval paths', () => {
+  for (const path of ['/v1/elements/sessions', '/v1/payment_intents/pi_PLACEHOLDER', '/v1/setup_intents/seti_PLACEHOLDER']) assert.equal(stripeTransportPath.test(path), true, path);
+  for (const path of ['/v1/setup_intents', '/v1/setup_intents/', '/v1/setup_intents/seti_PLACEHOLDER/', '/v1/setup_intents/seti_PLACEHOLDER/confirm', '/v1/setup_intents/pi_PLACEHOLDER', '/v1/setup_intents/unit']) assert.equal(stripeTransportPath.test(path), false, path);
 });
 
 test('PaymentIntent URL exception requires Stripe transport context', () => {
