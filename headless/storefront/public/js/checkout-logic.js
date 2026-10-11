@@ -394,6 +394,16 @@ export function buyerBillingCountry(state) {
   return state.billing_address?.country ?? '';
 }
 
+/**
+ * The postal code of the billing address the buyer saved. The delivery address, the pickup search and the tax location
+ * never stand in for it.
+ * @param {CheckoutState} state
+ * @returns {string}
+ */
+export function buyerBillingPostalCode(state) {
+  return state.billing_address?.postal_code ?? '';
+}
+
 /** @param {unknown} value @returns {boolean} */
 export function looksLikeEmail(value) {
   return typeof value === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());

@@ -269,7 +269,7 @@ input:disabled { background: #ece6da; color: #4a453c; cursor: not-allowed; }
 .wallets-label { font-weight: 600; margin-bottom: 8px; }
 .wallets-or { text-align: center; color: var(--muted); margin: 12px 0 0; }
 .messaging { margin-top: 12px; }
-.payment-fields > [data-affirm-country] { margin-top: 12px; }
+.payment-fields > [data-affirm-country], .payment-fields > [data-affirm-postal] { margin-top: 12px; }
 .save-block { margin-top: 12px; }
 .terms { margin-top: 16px; color: var(--muted); font-size: 0.95rem; }
 .pay-row { margin-top: 20px; }

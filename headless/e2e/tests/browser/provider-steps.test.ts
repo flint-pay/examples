@@ -124,7 +124,7 @@ test('provider steps select a unique visible control across frames on the exact 
   });
 });
 
-test('affirm() waits for the app to see Affirm selected before it chooses a billing country', async t => {
+test('affirm() waits for the app to see Affirm selected before it chooses a billing country and postal code', async t => {
   const browser = await chromium.launch({ headless: true, env: browserEnvironment() });
   t.after(() => browser.close());
   const recipes = {
@@ -135,10 +135,12 @@ test('affirm() waits for the app to see Affirm selected before it chooses a bill
   // The Stripe frame reports the selection to the merchant page after a delay, like the Payment Element's change event.
   // Pay is enabled from the start, so a helper that does not wait would press it before the country is chosen.
   const checkout = (saved: boolean) => `<select id="affirm-country" data-testid="sf-affirm-country" disabled hidden><option value="">Choose a country</option><option value="US">United States</option></select>
+<input id="affirm-postal" data-testid="sf-affirm-postal" disabled hidden>
 <button data-testid="sf-pay-button" type="button">Pay</button>
 <iframe src="${stripe}/affirm"></iframe>
 <script>
   const country = document.getElementById('affirm-country');
+  const postal = document.getElementById('affirm-postal');
   window.__log = [];
   window.__approved = false;
   window.addEventListener('message', event => {
@@ -148,25 +150,31 @@ test('affirm() waits for the app to see Affirm selected before it chooses a bill
     window.__log.push('selected:before disabled=' + country.disabled + ' hidden=' + country.hidden);
     country.disabled = false;
     country.hidden = ${saved};
+    postal.disabled = false;
+    postal.hidden = ${saved};
   });
-  document.querySelector('[data-testid="sf-pay-button"]').addEventListener('click', () => window.__log.push('pay:' + country.value));
+  document.querySelector('[data-testid="sf-pay-button"]').addEventListener('click', () => window.__log.push('pay:' + country.value + ':' + postal.value));
 </script>`;
   const frame = `<button name="affirm-select" onclick="setTimeout(() => parent.postMessage('affirm-selected', '*'), 400)">Affirm</button><button name="affirm-approve" onclick="parent.postMessage('affirm-approved', '*')">Approve</button>`;
 
-  await t.test('without a saved billing address the country appears, US is chosen, and only then does Pay run', async () => {
+  await t.test('without a saved billing address the country and postal code appear, are filled, and only then does Pay run', async () => {
     await documents(browser, { [`${merchant}/checkout`]: checkout(false), [`${stripe}/affirm`]: frame }, async page => {
       await affirm(d, { page } as unknown as Checkout, 'approve');
-      expect(await page.evaluate(() => (window as any).__log)).toEqual(['selected:before disabled=true hidden=true', 'pay:US']);
+      expect(await page.evaluate(() => (window as any).__log)).toEqual(['selected:before disabled=true hidden=true', 'pay:US:78702']);
       await expect(page.getByTestId('sf-affirm-country')).toBeVisible();
       await expect(page.getByTestId('sf-affirm-country')).toHaveValue('US');
+      await expect(page.getByTestId('sf-affirm-postal')).toBeVisible();
+      await expect(page.getByTestId('sf-affirm-postal')).toHaveValue('78702');
       assert.equal(await page.evaluate(() => (window as any).__approved), true);
     });
   });
 
-  await t.test('with a saved billing address the country stays hidden and Pay runs without choosing one', async () => {
+  await t.test('with a saved billing address the country and postal code stay hidden and Pay runs without filling them', async () => {
     await documents(browser, { [`${merchant}/checkout`]: checkout(true), [`${stripe}/affirm`]: frame }, async page => {
       await affirm(d, { page } as unknown as Checkout, 'approve');
-      expect(await page.evaluate(() => (window as any).__log)).toEqual(['selected:before disabled=true hidden=true', 'pay:']);
+      expect(await page.evaluate(() => (window as any).__log)).toEqual(['selected:before disabled=true hidden=true', 'pay::']);
+      await expect(page.getByTestId('sf-affirm-postal')).toBeHidden();
+      await expect(page.getByTestId('sf-affirm-postal')).toHaveValue('');
       await expect(page.getByTestId('sf-affirm-country')).toBeHidden();
       await expect(page.getByTestId('sf-affirm-country')).toBeEnabled();
       await expect(page.getByTestId('sf-affirm-country')).toHaveValue('');

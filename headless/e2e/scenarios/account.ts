@@ -55,7 +55,7 @@ export const account: Record<string, Scenario> = {
     for (const id of [card, ach]) {
       invariant((await d.operator.clients.clients.A.orders.get(id)).customer_id === customer, 'GUEST_ORDER_NOT_LINKED'); await d.goto(page, d.config.origins.accountA, `/orders/${id}`); await expect(page.getByTestId('ac-order')).toBeVisible();
     }
-    const other = await signed(d, 'b2'); await d.goto(other, d.config.origins.accountA, `/orders/${card}`); await expect(other.getByTestId('ac-notice')).toContainText("isn't in");
+    const other = await signed(d, 'b2'); await d.goto(other, d.config.origins.accountA, `/orders/${card}`); await expect(other.getByTestId('ac-notice')).toHaveAttribute('data-notice', 'not_in_account'); await expect(other.getByTestId('ac-notice')).toBeVisible();
     const link = d.created.get('receiptLink'); if (link) { await d.form(page, '/sign-out'); await page.goto(link); await d.form(page, '/sign-in', { email: d.fixtures.buyers.b1.email, password: d.fixtures.buyers.b1.password }); await expect(page.getByTestId('ac-order')).toBeVisible(); }
     return ['VERIFIED_GUEST_LINKING_BOTH_ORDERS_FOREIGN_USER_DENIED'];
   },
@@ -93,7 +93,7 @@ export const account: Record<string, Scenario> = {
         await d.form(page, '/sign-in', { email: d.fixtures.buyers.b1.email, password: d.fixtures.buyers.b1.password });
         const url = new URL(page.url()); invariant(url.origin === d.config.origins.accountA && /^\/(orders|subscriptions|returns|invoices)\/[A-Za-z0-9_-]+$/.test(url.pathname), 'EMAIL_RESOURCE_DESTINATION_REQUIRED');
         invariant(!url.searchParams.has('flint_resource_type') && !url.searchParams.has('flint_environment_id') && !url.hash, 'RESOURCE_HINT_NOT_CONSUMED');
-        const other = await signed(d, 'b2'); await other.goto(link); await expect(other.getByTestId('ac-notice')).toContainText("isn't in");
+        const other = await signed(d, 'b2'); await other.goto(link); await expect(other.getByTestId('ac-notice')).toHaveAttribute('data-notice', 'not_in_account'); await expect(other.getByTestId('ac-notice')).toBeVisible();
         const type = ({ orders: 'order', subscriptions: 'subscription', returns: 'return', invoices: 'invoice' } as Record<string, string>)[url.pathname.split('/')[1]];
         url.searchParams.set('flint_resource_type', type); url.searchParams.set('flint_environment_id', d.config.pins.B.sandboxId); await page.goto(url.href); await expect(page.getByTestId('ac-notice')).toContainText('different');
         url.searchParams.set('flint_environment_id', d.config.pins.A.sandboxId); url.searchParams.set('flint_resource_type', 'unknown'); await page.goto(url.href); invariant(new URL(page.url()).pathname === '/', 'UNKNOWN_HINT_HOME_REQUIRED');

@@ -600,6 +600,10 @@ function paymentSection(ctx: Ctx): Html {
             <option value="US">${copy.checkout.countryUs}</option>
             <option value="other">${copy.checkout.countryOther}</option>
           </select>
+        </div>
+        <div class="field" data-affirm-postal hidden>
+          <label for="affirm-postal">${copy.checkout.billingPostalCode}</label>
+          <input id="affirm-postal" name="billing_postal_code" type="text" inputmode="numeric" autocomplete="billing postal-code" maxlength="12" required disabled data-testid="sf-affirm-postal">
         </div>`
           : ''}
         ${saveOffered

@@ -55,6 +55,12 @@ export async function affirm(d: Driver, c: Checkout, outcome: 'approve' | 'decli
     await expect(country).toBeEnabled();
     if (await country.isVisible()) await country.selectOption('US');
   }
+  // The billing postal code is asked for next to the country, and a saved billing address hides it too.
+  const postal = c.page.getByTestId('sf-affirm-postal');
+  if (await postal.count() && await postal.isVisible()) {
+    await expect(postal).toBeEnabled();
+    await postal.fill('78702');
+  }
   await expect(c.page.getByTestId('sf-pay-button')).toBeEnabled(); await c.page.getByTestId('sf-pay-button').click();
   await providerSteps(d, c.page, `affirm-${outcome}`);
 }

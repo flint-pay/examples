@@ -183,7 +183,12 @@ function affirmCountrySelect() {
   return select instanceof HTMLSelectElement ? select : null;
 }
 
-/** The buyer is paying with Affirm in the Payment Element, so a billing country is needed. */
+function affirmPostalInput() {
+  const input = document.getElementById('affirm-postal');
+  return input instanceof HTMLInputElement ? input : null;
+}
+
+/** The buyer is paying with Affirm in the Payment Element, so a billing country and postal code are needed. */
 function affirmActive() {
   return needsProcessor() && !savedChoice() && app.selectedType === 'affirm';
 }
@@ -196,6 +201,25 @@ function affirmCountry() {
   const saved = logic.buyerBillingCountry(app.state);
   if (saved) return saved;
   return affirmCountrySelect()?.value === 'US' ? 'US' : '';
+}
+
+const US_POSTAL_CODE = /^\d{5}(-\d{4})?$/;
+
+/**
+ * The billing postal code Affirm gets: the saved billing address first, then the buyer's valid entry. The delivery
+ * address, the pickup search and the tax location are never used.
+ */
+function affirmPostalCode() {
+  const saved = logic.buyerBillingPostalCode(app.state);
+  if (saved) return saved;
+  const typed = affirmPostalInput()?.value.trim() ?? '';
+  return US_POSTAL_CODE.test(typed) ? typed : '';
+}
+
+/** The postal field is asked for only when Affirm is active, no postal code is saved, and the country can be US. */
+function affirmPostalShown() {
+  const saved = logic.buyerBillingCountry(app.state);
+  return affirmActive() && !logic.buyerBillingPostalCode(app.state) && (!saved || saved === 'US') && affirmCountrySelect()?.value !== 'other';
 }
 
 function contact() {
@@ -301,8 +325,9 @@ function currentBlockers() {
     const saved = logic.buyerBillingCountry(app.state);
     if (saved && saved !== 'US') blockers.push('billing_country_unsupported');
     else if (!affirmCountry()) blockers.push(affirmCountrySelect()?.value === 'other' ? 'billing_country_unsupported' : 'billing_country_missing');
+    else if (!affirmPostalCode()) blockers.push(affirmPostalInput()?.value.trim() ? 'billing_postal_code_required' : 'billing_postal_code_missing');
   }
-  const priority = ['session_not_open', 'attempt_open', 'contact_email_missing', 'billing_address_missing', 'billing_country_missing', 'billing_country_unsupported', 'delivery_selection_missing', 'delivery_input_required', 'elements_incomplete'];
+  const priority = ['session_not_open', 'attempt_open', 'contact_email_missing', 'billing_address_missing', 'billing_country_missing', 'billing_country_unsupported', 'billing_postal_code_missing', 'billing_postal_code_required', 'delivery_selection_missing', 'delivery_input_required', 'elements_incomplete'];
   return [...new Set(blockers)].sort((a, b) => priority.indexOf(a) - priority.indexOf(b));
 }
 
@@ -341,6 +366,10 @@ function refreshPayControls() {
   const country = affirmCountrySelect();
   // Disabled while the field is not asked for, so it never takes part in form validation or submission.
   if (country) country.disabled = !affirmActive() || OPEN_STATES.has(app.paymentState);
+  const postalShown = affirmPostalShown();
+  $('[data-affirm-postal]')?.toggleAttribute('hidden', !postalShown);
+  const postal = affirmPostalInput();
+  if (postal) postal.disabled = !postalShown || OPEN_STATES.has(app.paymentState);
   const settlement = logic.isSettlementOnly(app.state);
   const settlementNote = $('[data-settlement-note]');
   if (settlementNote) {
@@ -1430,7 +1459,7 @@ async function mountOnce(options) {
         if (app.paymentState === 'loading') setPaymentState(initialRestingState());
       },
       onWalletClick: () => {
-        const blockers = currentBlockers().filter((code) => !['elements_incomplete', 'billing_country_missing', 'billing_country_unsupported'].includes(code));
+        const blockers = currentBlockers().filter((code) => !['elements_incomplete', 'billing_country_missing', 'billing_country_unsupported', 'billing_postal_code_missing', 'billing_postal_code_required'].includes(code));
         if (blockers.length) {
           showMessage(msg(blockers[0]), true);
           return false;
@@ -1452,7 +1481,7 @@ async function mountOnce(options) {
           app.collecting = false;
         }
       },
-      getBilling: () => ({ name: value('contact-name'), email: value('contact-email'), country: affirmCountry() }),
+      getBilling: () => ({ name: value('contact-name'), email: value('contact-email'), country: affirmCountry(), postal_code: affirmPostalCode() }),
       getShipping: shippingForAffirm,
     });
     app.flowKey = key;
@@ -1878,6 +1907,17 @@ function wireStatic() {
   const form = payForm();
   form?.addEventListener('submit', onPay);
   affirmCountrySelect()?.addEventListener('change', refreshPayControls);
+  const postal = affirmPostalInput();
+  postal?.addEventListener('input', () => {
+    const typed = postal.value.trim();
+    if (!typed || US_POSTAL_CODE.test(typed)) postal.removeAttribute('aria-invalid');
+    refreshPayControls();
+  });
+  postal?.addEventListener('change', refreshPayControls);
+  postal?.addEventListener('blur', () => {
+    const typed = postal.value.trim();
+    if (typed && !US_POSTAL_CODE.test(typed)) postal.setAttribute('aria-invalid', 'true');
+  });
   document.addEventListener('submit', onJobSubmit);
   wireGiftChallenge();
   const card = $('#save-card');
