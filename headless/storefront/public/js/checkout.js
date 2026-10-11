@@ -1467,18 +1467,30 @@ async function mountOnce(options) {
         return true;
       },
       onWalletConfirm: async (event, makeCredential) => {
+        if (app.busy) {
+          event.paymentFailed?.({ reason: 'fail' });
+          return;
+        }
+        // Like Pay: show progress and lock the order before the token and the request, whatever way they end.
+        app.busy = true;
         app.collecting = true;
+        setPaymentState('submitting', { message: '' });
         try {
           const made = await makeCredential();
           if (made.error || !made.credential) {
             event.paymentFailed?.({ reason: 'fail' });
-            showMessage(made.error?.message || msg('stripe_error_generic'), true);
+            setPaymentState('ready', { message: made.error?.message || msg('stripe_error_generic') });
             return;
           }
           const ok = await payWith(made.credential);
           if (!ok) event.paymentFailed?.({ reason: 'fail' });
+        } catch {
+          event.paymentFailed?.({ reason: 'fail' });
+          // A state the pay result already set, such as recovery, is not replaced.
+          if (app.paymentState === 'submitting') setPaymentState('ready', { message: msg('stripe_error_generic') });
         } finally {
           app.collecting = false;
+          app.busy = false;
         }
       },
       getBilling: () => ({ name: value('contact-name'), email: value('contact-email'), country: affirmCountry(), postal_code: affirmPostalCode() }),

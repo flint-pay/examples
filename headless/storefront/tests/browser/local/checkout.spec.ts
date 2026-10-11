@@ -432,6 +432,8 @@ test('a wallet confirmed on stale tax fails the sheet and needs a second wallet 
   await page.getByTestId('fake-wallet-button').click();
   await waitForPayment(page, 'total_changed');
   await expect(page.getByTestId('sf-payment-message')).toContainText('We updated the tax on your order');
+  await expect(page.getByTestId('sf-locked-note')).toBeHidden();
+  await expect(page.getByTestId('sf-contact-name')).toBeEnabled();
   expect((await stripeCalls(page)).filter((call) => call.name === 'paymentFailed')).toHaveLength(1);
   await page.waitForTimeout(300);
   expect((await fixtureLog(request, 'chk_wallet')).payCount).toBe(1);
@@ -439,6 +441,42 @@ test('a wallet confirmed on stale tax fails the sheet and needs a second wallet 
   await page.getByTestId('fake-wallet-button').click();
   await expect(page).toHaveURL(/complete$/);
   expect((await fixtureLog(request, 'chk_wallet')).payCount).toBe(2);
+});
+
+test('a wallet confirm shows payment progress and locks the order until it lands on the confirmation', async ({ page, request }) => {
+  await readyOrder(page, 'wallet');
+  await pickupSelected(page);
+  await typeCard(page, 'ok');
+  const pay = await hold(page, 'chk_wallet', 'pay');
+  await page.getByTestId('fake-wallet-button').click();
+  await pay.sent;
+  await waitForPayment(page, 'submitting');
+  await expect(page.getByTestId('sf-locked-note')).toBeVisible();
+  await expect(page.getByTestId('sf-pay-button')).toBeDisabled();
+  await expect(page.getByTestId('sf-pay-button')).toHaveAttribute('aria-busy', 'true');
+  for (const id of ['sf-contact-name', 'sf-contact-email', 'sf-contact-phone', 'sf-tip-15']) await expect(page.getByTestId(id)).toBeDisabled();
+  expect((await stripeCalls(page)).filter((call) => call.name === 'paymentFailed')).toHaveLength(0);
+  await pay.release();
+  await expect(page).toHaveURL(/complete$/);
+  expect((await fixtureLog(request, 'chk_wallet')).payCount).toBe(1);
+});
+
+test('a wallet whose token cannot be made unlocks the order, keeps what was entered, and fails the sheet', async ({ page, request }) => {
+  await readyOrder(page, 'wallet');
+  await pickupSelected(page);
+  await typeCard(page, 'tokenerror');
+  await page.getByTestId('fake-wallet-button').click();
+  await waitForPayment(page, 'ready');
+  await expect(page.getByTestId('sf-payment-message')).toHaveText('Your card number is incomplete.');
+  await expect(page.getByTestId('sf-locked-note')).toBeHidden();
+  for (const id of ['sf-contact-name', 'sf-contact-email', 'sf-tip-15']) await expect(page.getByTestId(id)).toBeEnabled();
+  await expect(page.getByTestId('sf-contact-email')).toHaveValue('buyer@example.test');
+  await expect(page.getByTestId('fake-card')).toHaveValue('tokenerror');
+  expect((await stripeCalls(page)).filter((call) => call.name === 'paymentFailed')).toHaveLength(1);
+  expect((await fixtureLog(request, 'chk_wallet')).payCount).toBe(0);
+  await typeCard(page, 'ok');
+  await page.getByTestId('fake-wallet-button').click();
+  await expect(page).toHaveURL(/complete$/);
 });
 
 test('a wallet press after a tax refresh binds the rotated return relay at an unchanged total', async ({ page }) => {

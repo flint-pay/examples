@@ -5,7 +5,7 @@
 //
 // The "card" is a plain input. Its text picks the behavior the stand-in
 // backend reacts to: ok, decline, cvc, 3ds, 3dsfail, unknown, slow, bank,
-// changed, affirmdeclined.
+// changed, affirmdeclined, tokenerror (no token is made).
 
 import type { Page } from '@playwright/test';
 
@@ -73,7 +73,7 @@ const SCRIPT = `
         return elements;
       },
       // The Elements a token is bound to: Stripe rejects a confirmation whose payment method types differ from them.
-      async createConfirmationToken(args) { record.calls.push({ name: 'createConfirmationToken', params: args.params, elements: args.elements.options }); sessionStorage.setItem('__tokenElements', JSON.stringify([...JSON.parse(sessionStorage.getItem('__tokenElements') || '[]'), args.elements.options])); const id = 'ctoken_fake_' + behavior(); record.tokens.push(id); return { confirmationToken: { id } }; },
+      async createConfirmationToken(args) { record.calls.push({ name: 'createConfirmationToken', params: args.params, elements: args.elements.options }); sessionStorage.setItem('__tokenElements', JSON.stringify([...JSON.parse(sessionStorage.getItem('__tokenElements') || '[]'), args.elements.options])); if (behavior() === 'tokenerror') return { error: { message: 'Your card number is incomplete.' } }; const id = 'ctoken_fake_' + behavior(); record.tokens.push(id); return { confirmationToken: { id } }; },
       async createPaymentMethod(args) { record.calls.push({ name: 'createPaymentMethod', params: args.params }); const id = 'pm_fake_' + behavior(); record.tokens.push(id); return { paymentMethod: { id } }; },
       async handleNextAction(args) { record.calls.push({ name: 'handleNextAction', hasSecret: Boolean(args && args.clientSecret) }); return record.nextAction === 'error' ? { error: { message: 'Authentication failed' } } : {}; },
     };
