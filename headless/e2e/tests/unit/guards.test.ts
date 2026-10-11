@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { BrowserContext, Request, Route } from '@playwright/test';
-import { BrowserGuard, navigationDecision } from '../../support/flint-boundary.ts';
+import { BrowserGuard, navigationDecision, validateRelayResponse } from '../../support/flint-boundary.ts';
 import { CredentialScanner } from '../../support/credential-scan.ts';
 import { pinApiOrigin, origin, API_ORIGIN, alias } from '../../support/config.ts';
 import { pinnedFetch } from '../../support/sdk.ts';
@@ -11,6 +11,56 @@ import { safeFailure, HarnessError, canonical } from '../../support/safe.ts';
 test('only the exact main-frame provider relay is admitted', () => {
   assert.equal(navigationDecision(`${API_ORIGIN}/payment-returns/relay_PLACEHOLDER`, 'GET', true), 'relay');
   for (const [url, method, main] of [[`${API_ORIGIN}/payment-returns/x?token=PLACEHOLDER`, 'GET', true], [`${API_ORIGIN}/payment-returns/x`, 'POST', true], [`${API_ORIGIN}/payment-returns/x`, 'GET', false], ['https://checkout.staging.withflintpay.com/x', 'GET', true], ['https://withflintpay.com/x', 'GET', true], ['https://api.withflintpay.com/payment-returns/x', 'GET', true]] as const) assert.equal(navigationDecision(url, method, main), 'reject');
+});
+const returnSecret = 'pi_PLACEHOLDER_secret_PLACEHOLDER';
+const returnUrl = `${API_ORIGIN}/payment-returns/relay_PLACEHOLDER?payment_intent=pi_PLACEHOLDER&payment_intent_client_secret=${returnSecret}&redirect_status=succeeded`;
+test('Stripe payment return is admitted only as the exact canonical query on the exact relay', () => {
+  assert.equal(navigationDecision(returnUrl, 'GET', true), 'relay');
+  assert.equal(navigationDecision(returnUrl, 'GET', true, new Map(), new Set(), '', false), 'reject');
+  for (const status of ['pending', 'failed']) assert.equal(navigationDecision(returnUrl.replace('succeeded', status), 'GET', true), 'relay');
+  for (const [name, url, method = 'GET', main = true] of [
+    ['another intent', returnUrl.replace('secret=pi_PLACEHOLDER_', 'secret=pi_OTHER_')],
+    ['extra key', returnUrl + '&unknown=value'], ['setup intent', returnUrl + '&setup_intent=seti_PLACEHOLDER'],
+    ['client secret', returnUrl + `&client_secret=${returnSecret}`], ['missing key', returnUrl.replace('&redirect_status=succeeded', '')],
+    ['duplicate key', returnUrl + '&redirect_status=succeeded'], ['encoded key', returnUrl.replace('payment_intent=', 'payment%5Fintent=')],
+    ['encoded value', returnUrl.replace('succeeded', 'succ%65eded')], ['plus', returnUrl.replace('succeeded', 'succ+eded')],
+    ['unknown status', returnUrl.replace('succeeded', 'canceled')], ['empty value', returnUrl.replace('=succeeded', '=')],
+    ['hash', returnUrl + '#x'], ['empty hash', returnUrl + '#'], ['userinfo', returnUrl.replace('https://', 'https://user:pass@')],
+    ['POST', returnUrl, 'POST'], ['sub-frame', returnUrl, 'GET', false],
+    ['production host', returnUrl.replace('api.staging.', 'api.')], ['checkout host', returnUrl.replace('api.staging.', 'checkout.staging.')],
+    ['nested path', returnUrl.replace('relay_PLACEHOLDER', 'relay_PLACEHOLDER/extra')],
+  ] as const) assert.equal(navigationDecision(url, method, main), 'reject', name);
+});
+test('payment return secret is exempt only on the exact URL scan context, never elsewhere', () => {
+  const scan = (value: string, surface: 'url' | 'request' | 'dom' | 'body', context = {}) => { const scanner = new CredentialScanner(); scanner.scan(value, surface, context); return scanner; };
+  assert.throws(() => scan(returnUrl, 'url').assertClean(), { code: 'CREDENTIAL_LEAK' });
+  scan(returnUrl, 'url', { paymentReturn: true }).assertClean();
+  for (const url of [returnUrl + '&unknown=value', returnUrl.replace('secret=pi_PLACEHOLDER_', 'secret=pi_OTHER_'), returnUrl.replace('succeeded', 'canceled'), returnUrl.replace('api.staging.', 'api.')]) assert.throws(() => scan(url, 'url', { paymentReturn: true }).assertClean(), { code: 'CREDENTIAL_LEAK' });
+  const flint = new CredentialScanner(); flint.addCredential('PLACEHOLDER_FLINT'); flint.scan(returnUrl.replace('succeeded', 'succeeded&x=PLACEHOLDER_FLINT'), 'url', { paymentReturn: true });
+  assert.throws(() => flint.assertClean(), { code: 'CREDENTIAL_LEAK' });
+  for (const surface of ['request', 'dom', 'body'] as const) assert.throws(() => scan(returnUrl, surface, { paymentReturn: true }).assertClean(), { code: 'CREDENTIAL_LEAK' });
+  assert.throws(() => scan(returnSecret, 'dom', { paymentReturn: true }).assertClean(), { code: 'CREDENTIAL_LEAK' });
+});
+test('BrowserGuard grants the payment return context only to a main-frame GET navigation, and scans Referer without it', async () => {
+  const run = async (options: { method?: string; navigation?: boolean; main?: boolean; referer?: string; url?: string }) => {
+    const scanner = new CredentialScanner(), guard = new BrowserGuard(scanner, ['https://store.example.invalid']);
+    let listener!: (request: Request) => void;
+    await guard.attach({ serviceWorkers: () => [], pages: () => [], on: (event: string, callback: (request: Request) => void) => { if (event === 'request') listener = callback; }, route: async () => {} } as unknown as BrowserContext);
+    const page = { mainFrame: () => main }, main = { page: () => page }, other = { page: () => page };
+    listener({ url: () => options.url ?? returnUrl, method: () => options.method ?? 'GET', isNavigationRequest: () => options.navigation ?? true, frame: () => options.main === false ? other : main, resourceType: () => 'document', postData: () => '', headers: () => options.referer ? { referer: options.referer } : {} } as unknown as Request);
+    return scanner;
+  };
+  (await run({})).assertClean();
+  for (const options of [{ method: 'POST' }, { navigation: false }, { main: false }, { referer: returnUrl }, { url: returnUrl + '&unknown=value' }]) { const scanner = await run(options); assert.throws(() => scanner.assertClean(), { code: 'CREDENTIAL_LEAK' }, JSON.stringify(options)); }
+});
+test('payment return relay response must redirect with no-referrer and no-store headers', () => {
+  const headers = { 'referrer-policy': 'no-referrer', 'cache-control': 'no-store, max-age=0' }, app = ['https://store.example.invalid'];
+  const validate = (status: number, location: string | undefined, h: Record<string, string>) => validateRelayResponse(returnUrl, status, location, 'relay', app, app[0], undefined, h);
+  assert.equal(validate(303, `${app[0]}/done`, headers), `${app[0]}/done`);
+  for (const [status, location, h] of [[200, undefined, headers], [303, `${app[0]}/done`, { 'cache-control': headers['cache-control'] }], [303, `${app[0]}/done`, { 'referrer-policy': 'no-referrer' }],
+    [303, `${app[0]}/done`, { ...headers, 'referrer-policy': 'origin' }], [303, `${app[0]}/done`, { ...headers, 'cache-control': 'no-cache' }], [303, `${app[0]}/?client_secret=x`, headers], [303, 'https://other.example.invalid/', headers]] as const) {
+    if (location?.includes('client_secret')) { const scanner = new CredentialScanner(); scanner.scan(validate(status, location, h), 'url'); assert.throws(() => scanner.assertClean(), { code: 'CREDENTIAL_LEAK' }); } else assert.throws(() => validate(status, location, h));
+  }
 });
 test('staging origin cannot be overridden by URL equivalence or a production host', () => {
   assert.equal(pinApiOrigin(API_ORIGIN), API_ORIGIN);
@@ -291,6 +341,41 @@ test('Elements transport retains known, Flint, gift, and challenge authority che
   }
   const scanner = new CredentialScanner([setupSecret]);
   assert.throws(() => elementsScan(elementsUrl, scanner).assertClean(), { code: 'CREDENTIAL_LEAK' });
+});
+
+const intentSecret = 'pi_PLACEHOLDER_secret_PLACEHOLDER';
+const intentUrl = `https://api.stripe.com/v1/payment_intents/pi_PLACEHOLDER?client_secret=${intentSecret}&key=pk_test_PLACEHOLDER&is_stripe_sdk=false`;
+test('PaymentIntent transport permits a matching client secret in the query slot', () => {
+  elementsScan(intentUrl).assertClean();
+  elementsScan(intentUrl.replace(intentSecret, intentSecret.replaceAll('_', '%5F'))).assertClean();
+});
+
+for (const [name, value] of [
+  ['mismatched intent id', intentUrl.replace('payment_intents/pi_PLACEHOLDER?', 'payment_intents/pi_OTHER?')],
+  ['setup secret', intentUrl.replace(intentSecret, setupSecret)],
+  ['confirm suffix', intentUrl.replace('pi_PLACEHOLDER?', 'pi_PLACEHOLDER/confirm?')],
+  ['other Stripe origin', intentUrl.replace('api.stripe.com', 'js.stripe.com')],
+  ['duplicate secret', intentUrl + `&client_secret=${intentSecret}`],
+  ['live publishable key', intentUrl.replace('pk_test_', 'pk_live_')],
+  ['email parameter', intentUrl + '&email=buyer%40example.invalid'],
+  ['non-slot secret', intentUrl + `&metadata=${intentSecret}`],
+  ['fragment', intentUrl + '#fragment'],
+  ['basic auth', intentUrl.replace('https://', 'https://user:pass@')],
+]) test(`PaymentIntent URL exception rejects ${name}`, () => {
+  assert.throws(() => elementsScan(value).assertClean(), { code: 'CREDENTIAL_LEAK' });
+});
+
+test('PaymentIntent URL exception requires Stripe transport context', () => {
+  const scanner = new CredentialScanner(); scanner.scan(intentUrl, 'url');
+  assert.throws(() => scanner.assertClean(), { code: 'CREDENTIAL_LEAK' });
+});
+
+test('BrowserGuard classifies only non-navigation GET fetch/xhr PaymentIntent requests', async () => {
+  for (const resourceType of ['fetch', 'xhr']) (await browserElementsRequest({ url: intentUrl, resourceType })).assertClean();
+  for (const options of [{ method: 'POST' }, { navigation: true }, { resourceType: 'document' }, { resourceType: 'image' }]) {
+    const scanner = await browserElementsRequest({ ...options, url: intentUrl });
+    assert.throws(() => scanner.assertClean(), { code: 'CREDENTIAL_LEAK' });
+  }
 });
 
 test('transport context never permits a provider secret in persistent or visible surfaces', () => {

@@ -1,7 +1,8 @@
+import { relayOrigin, relayPath } from './boundary-allowlist.ts';
 import { invariant } from './safe.ts';
 
 export type Surface = 'url' | 'cookie' | 'storage' | 'dom' | 'body' | 'console' | 'child' | 'request';
-export type ScanContext = { providerJob?: boolean; sensitiveInput?: boolean; submittedGift?: boolean; stripeTransport?: boolean;challengeProofSubmit?:boolean };
+export type ScanContext = { providerJob?: boolean; sensitiveInput?: boolean; submittedGift?: boolean; stripeTransport?: boolean;challengeProofSubmit?:boolean;paymentReturn?: boolean };
 function decodedValues(value: string, rejectMalformed = false): string[] {
   const values = [value];
   for (let depth = 0; depth < 5; depth++) {
@@ -19,15 +20,38 @@ function urlValues(value: string, url?: URL): string[] {
   if (url) parts.push(url.username, url.password, url.pathname, url.hash, ...[...url.searchParams].flat());
   return parts.flatMap(part => decodedValues(part));
 }
+const transportShapes = [
+  { path: /^\/v1\/elements\/sessions$/, secret: /^seti_[A-Za-z0-9]+_secret_[A-Za-z0-9]+$/ },
+  { path: /^\/v1\/payment_intents\/(pi_[A-Za-z0-9]+)$/, secret: /^pi_[A-Za-z0-9]+_secret_[A-Za-z0-9]+$/, boundId: true },
+];
+export const stripeTransportPath = /^\/v1\/(?:elements\/sessions|payment_intents\/pi_[A-Za-z0-9]+)$/;
 function elementsTransportRemainder(value: string, url: URL, context: ScanContext): URL | undefined {
-  if (!context.stripeTransport || url.origin !== 'https://api.stripe.com' || url.pathname !== '/v1/elements/sessions' || url.username || url.password || value.includes('#')) return;
+  if (!context.stripeTransport || url.origin !== 'https://api.stripe.com' || url.username || url.password || value.includes('#')) return;
+  const shape = transportShapes.map(candidate => ({ candidate, match: candidate.path.exec(url.pathname) })).find(entry => entry.match);
+  if (!shape) return;
   const secrets = url.searchParams.getAll('client_secret'), keys = url.searchParams.getAll('key');
-  if (secrets.length !== 1 || !/^seti_[A-Za-z0-9]+_secret_[A-Za-z0-9]+$/.test(secrets[0]) || keys.length !== 1 || !/^pk_test_[A-Za-z0-9]+$/.test(keys[0])) return;
+  if (secrets.length !== 1 || !shape.candidate.secret.test(secrets[0]) || keys.length !== 1 || !/^pk_test_[A-Za-z0-9]+$/.test(keys[0])) return;
+  if (shape.candidate.boundId && !secrets[0].startsWith(`${shape.match![1]}_secret_`)) return;
   if ([...url.searchParams.keys()].some(key => key !== 'client_secret' && decodedValues(key).some(decoded => /^(?:email|password|code|client_secret|access_token|checkout_auth_token|secret|token|refresh_token|customer_session_secret)$/i.test(decoded)))) return;
   const remainder = new URL(url.href);
   remainder.searchParams.delete('client_secret');
   const parts = [remainder.href, remainder.pathname, ...[...remainder.searchParams].flat()];
   if (parts.some(part => decodedValues(part, true).length === 0)) return;
+  return remainder;
+}
+// Stripe's redirect return: exactly three plain query names on the exact relay, with the secret bound to the intent.
+export function paymentReturnRelayUrl(url: URL): boolean {
+  if (url.origin !== relayOrigin || !relayPath.test(url.pathname) || url.username || url.password || url.href.includes('#') || !/^\?[A-Za-z0-9_=&]+$/.test(url.search)) return false;
+  const entries = url.search.slice(1).split('&').map(part => part.split('='));
+  if (entries.length !== 3 || entries.some(entry => entry.length !== 2 || !entry[1])) return false;
+  const query = new Map(entries.map(([key, value]) => [key, value] as const));
+  const intent = query.get('payment_intent'), secret = query.get('payment_intent_client_secret'), status = query.get('redirect_status');
+  return query.size === 3 && !!intent && !!secret && !!status && /^pi_[A-Za-z0-9]{1,64}$/.test(intent) && /^pi_[A-Za-z0-9]+_secret_[A-Za-z0-9]{1,128}$/.test(secret) && secret.startsWith(`${intent}_secret_`) && ['succeeded', 'pending', 'failed'].includes(status);
+}
+function paymentReturnRemainder(url: URL, context: ScanContext): URL | undefined {
+  if (!context.paymentReturn || !paymentReturnRelayUrl(url)) return;
+  const remainder = new URL(url.href);
+  remainder.searchParams.delete('payment_intent_client_secret');
   return remainder;
 }
 export class CredentialScanner {
@@ -53,7 +77,7 @@ export class CredentialScanner {
       else this.violations.add(`CHALLENGE_PROOF_${surface.toUpperCase()}`);
     }
     if ([...this.#giftSecrets].some(s => values.some(v => v.includes(s))) && !(surface === 'request' && context.submittedGift) && !(surface === 'dom' && context.sensitiveInput)) this.violations.add(`GIFT_AUTHORITY_${surface.toUpperCase()}`);
-    const remainder = url && elementsTransportRemainder(value, url, context);
+    const remainder = url && (elementsTransportRemainder(value, url, context) ?? paymentReturnRemainder(url, context));
     const providerValues = remainder ? urlValues(remainder.href, remainder) : values;
     if (providerValues.some(v => /[A-Za-z0-9_-]+_secret_[A-Za-z0-9_-]+/.test(v)) && !(surface === 'body' && context.providerJob) && !(surface === 'request' && context.stripeTransport)) this.violations.add(`PROVIDER_SECRET_${surface.toUpperCase()}`);
     if (surface === 'body' && /"(?:checkout_auth_token|customer_session_secret|refresh_token|checkout_session_id|superseding_checkout_session_id|recovery_payment_attempt_id)"\s*:/.test(value)) this.violations.add('PRIVATE_DTO_FIELD');

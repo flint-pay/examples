@@ -1,6 +1,6 @@
 import type { BrowserContext, Frame, Page, Request } from '@playwright/test';
 import { relayOrigin, relayPath, stripeOrigins } from './boundary-allowlist.ts';
-import { CredentialScanner } from './credential-scan.ts';
+import { CredentialScanner, paymentReturnRelayUrl, stripeTransportPath } from './credential-scan.ts';
 import { accountRelayPath, preferenceRelayPath } from './email-links.ts';
 import type { LinkRole } from './email-links.ts';
 import { invariant, requestId } from './safe.ts';
@@ -16,14 +16,15 @@ export function navigationDecision(raw: string, method: string, mainFrame: boole
   if (!/(^|\.)withflintpay\.com$/i.test(u.hostname)) return 'app-or-provider';
   if(!mainFrame&&method==='GET'&&navigation&&challengeUrls.has(raw))return 'gift-frame';
   if(!mainFrame&&method==='POST'&&challengeUrls.has(frameUrl)&&raw===`${frameUrl}/proof`)return 'gift-proof';
-  if (u.origin === relayOrigin && relayPath.test(u.pathname) && !u.search && !u.hash && method === 'GET' && mainFrame) return 'relay';
+  if (u.origin === relayOrigin && relayPath.test(u.pathname) && (!u.search || paymentReturnRelayUrl(u)) && !u.hash && method === 'GET' && mainFrame && navigation) return 'relay';
   const role = auditedRelays.get(raw);
   if (u.origin === relayOrigin && method === 'GET' && mainFrame && !u.hash && (role === 'flint_account_link_relay' && accountRelayPath.test(u.pathname) || role === 'flint_email_preferences_relay' && preferenceRelayPath.test(u.pathname))) return 'email-relay';
   return 'reject';
 }
 export type PreferenceRelayBinding = { merchantId: string; sandboxId: string };
-export function validateRelayResponse(raw: string, status: number, location: string | undefined, role: 'relay' | LinkRole, appOrigins: string[], accountOrigin: string, preferenceBinding?: PreferenceRelayBinding): string {
+export function validateRelayResponse(raw: string, status: number, location: string | undefined, role: 'relay' | LinkRole, appOrigins: string[], accountOrigin: string, preferenceBinding?: PreferenceRelayBinding, headers: Record<string, string> = {}): string {
   invariant(status >= 300 && status < 400 && location, 'RELAY_MUST_REDIRECT_WITHOUT_DOCUMENT');
+  if (role === 'relay') invariant(headers['referrer-policy'] === 'no-referrer' && /(^|,)\s*no-store\s*(,|$)/i.test(headers['cache-control'] ?? ''), 'RELAY_PRIVACY_HEADERS_REQUIRED');
   const destination = new URL(location, raw);
   invariant(!destination.username && !destination.password && appOrigins.includes(destination.origin), 'RELAY_DESTINATION_FORBIDDEN');
   if (role !== 'relay') invariant(destination.origin === accountOrigin, 'EMAIL_RELAY_ACCOUNT_ORIGIN_REQUIRED');
@@ -69,8 +70,11 @@ export class BrowserGuard {
     context.on('serviceworker', () => this.violations.add('SERVICE_WORKER_UNINSPECTED'));
     context.on('request', request => {
       const u = new URL(request.url());
-      const elementsTransport = u.origin === 'https://api.stripe.com' && u.pathname === '/v1/elements/sessions' && request.method() === 'GET' && !request.isNavigationRequest() && ['fetch', 'xhr'].includes(request.resourceType());
-      this.scanner.scan(request.url(), 'url', { stripeTransport: elementsTransport });
+      const elementsTransport = u.origin === 'https://api.stripe.com' && stripeTransportPath.test(u.pathname) && request.method() === 'GET' && !request.isNavigationRequest() && ['fetch', 'xhr'].includes(request.resourceType());
+      let mainFrame = false;
+      try { const frame = request.frame(); mainFrame = frame === frame.page().mainFrame(); } catch { /* no inspectable frame */ }
+      const paymentReturn = request.method() === 'GET' && request.isNavigationRequest() && mainFrame && paymentReturnRelayUrl(u);
+      this.scanner.scan(request.url(), 'url', { stripeTransport: elementsTransport, paymentReturn });
       const challengeProofSubmit=request.method()==='POST'&&this.appOrigins.includes(u.origin)&&(/^\/checkout\/[^/]+\/gift-card\/challenge$/.test(u.pathname)||u.origin===this.accountOrigin&&/^\/(invoices|returns)\/[^/]+\/pay\/gift-card\/challenge$/.test(u.pathname));
       const gift = challengeProofSubmit || request.method() === 'POST' && this.appOrigins.includes(u.origin) && (/^\/checkout\/[^/]+\/gift-card$/.test(u.pathname) || u.origin===this.accountOrigin&&/^\/(invoices|returns)\/[^/]+\/pay\/gift-card$/.test(u.pathname) || u.pathname === '/gift-cards');
       this.scanner.scan(request.postData() ?? '', 'request', { submittedGift: gift,challengeProofSubmit,stripeTransport: stripeOrigins.has(u.origin) });
@@ -92,7 +96,7 @@ export class BrowserGuard {
         try {
           const response = await route.fetch({ maxRedirects: 0, timeout: 10_000 });
           const role = decision === 'relay' ? 'relay' : this.auditedRelays.get(request.url())!;
-          const destination = validateRelayResponse(request.url(), response.status(), response.headers()['location'], role, this.appOrigins, this.accountOrigin, this.preferenceBindings.get(request.url()));
+          const destination = validateRelayResponse(request.url(), response.status(), response.headers()['location'], role, this.appOrigins, this.accountOrigin, this.preferenceBindings.get(request.url()), response.headers());
           this.scanner.scan(destination, 'url'); this.scanner.assertClean();
           const timer = setTimeout(() => { this.violations.add('RELAY_RETURN_TIMEOUT'); this.relays.delete(page); }, 10_000);
           this.relays.set(page, { timer, destination }); await route.fulfill({ response });

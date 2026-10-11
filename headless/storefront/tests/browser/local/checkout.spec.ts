@@ -466,6 +466,50 @@ test('Affirm incomplete offers Continue and Pay another way behind a dialog', as
   await waitForPayment(page, 'ready');
 });
 
+// Coming back to an Affirm checkout loads the page fresh. The page must offer the choice and wait for the buyer,
+// not send them to Affirm again.
+async function returnToIncompleteAffirm(page: any) {
+  await openCheckout(page, 'affirm');
+  await waitForPayment(page, 'affirm_incomplete');
+  await page.goto('about:blank');
+  await page.goBack();
+  await waitForPayment(page, 'affirm_incomplete');
+  await expect(page.getByTestId('sf-affirm-continue')).toBeVisible();
+  await expect(page.getByTestId('sf-pay-another-way')).toBeVisible();
+  expect((await stripeCalls(page)).filter((call: any) => call.name === 'handleNextAction')).toHaveLength(0);
+}
+
+test('going back to an incomplete Affirm payment offers Continue and does not relaunch Affirm', async ({ page, request }) => {
+  await returnToIncompleteAffirm(page);
+  await page.reload();
+  await waitForPayment(page, 'affirm_incomplete');
+  const { log } = await fixtureLog(request, 'chk_affirm');
+  expect(log.filter((entry) => ['pay', 'resume', 'attempt', 'cancel-attempt'].includes(entry.path))).toEqual([]);
+});
+
+test('Continue after coming back resumes the same Affirm attempt', async ({ page, request }) => {
+  await returnToIncompleteAffirm(page);
+  await page.getByTestId('sf-affirm-continue').click();
+  await expect.poll(async () => (await stripeCalls(page)).filter((call: any) => call.name === 'handleNextAction').length).toBeGreaterThan(0);
+  const { log, payCount } = await fixtureLog(request, 'chk_affirm');
+  expect(payCount).toBe(0);
+  expect(log.some((entry) => entry.path === 'attempt')).toBe(true);
+  expect(log.filter((entry) => entry.path === 'cancel-attempt')).toEqual([]);
+  for (const entry of log.filter((item) => item.path === 'resume')) expect(entry.body).toEqual({});
+});
+
+test('Pay another way after coming back cancels the attempt and returns to the payment form', async ({ page, request }) => {
+  await returnToIncompleteAffirm(page);
+  await page.getByTestId('sf-pay-another-way').click();
+  await page.getByTestId('sf-affirm-dialog-confirm').click();
+  await waitForPayment(page, 'ready');
+  const { log, payCount } = await fixtureLog(request, 'chk_affirm');
+  expect(payCount).toBe(0);
+  expect(log.filter((entry) => entry.path === 'cancel-attempt')).toHaveLength(1);
+  expect(log.filter((entry) => ['attempt', 'resume'].includes(entry.path))).toEqual([]);
+  expect((await stripeCalls(page)).filter((call: any) => call.name === 'handleNextAction')).toHaveLength(0);
+});
+
 test('recovery mode shows finishing payment, hides the editing sections, and resumes', async ({ page }) => {
   await openCheckout(page, 'recovery');
   await expect(page.getByTestId('sf-contact')).toHaveCount(0);

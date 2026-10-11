@@ -1,4 +1,4 @@
-import type {Client,MoneyValue,Order,OrderPaymentAttempt,PayOrderRequestInput,OrderGiftCardAllocationAcceptanceInput} from '@flintpay/node';
+import type {Client,ExpandedPaymentIntentSummary,MoneyValue,Order,OrderPaymentAttempt,PayOrderRequestInput,OrderGiftCardAllocationAcceptanceInput} from '@flintpay/node';
 import {SdkError} from '@flintpay/node';
 import {createHash} from 'node:crypto';
 import type {Auth} from '../flint/auth.ts';
@@ -11,9 +11,13 @@ import {nextStep,attemptOpen} from './next-step.ts';
 export type Credential={kind:'confirmation_token'|'payment_method_token'|'saved_payment_method';value:string};
 export type CollectionKind='processor'|'settlement'|'setup'|'unavailable';
 export type PayInput={credential?:Credential;approved_outstanding_money:MoneyValue;approved_order_revision?:string;approved_gift_card_money?:MoneyValue;approved_collection_kind:CollectionKind;buyer_contact?:{email:string;phone?:string};save_payment_method?:boolean;save_payment_method_phone?:string};
-export type PaymentResult={order:Order;attempt?:OrderPaymentAttempt;unknown:boolean;totalChanged?:boolean};
+// The session-scoped read lists a payment's intent IDs but not how each was paid. Only the
+// merchant read can expand that, and only these three fields are taken from it.
+export type PaymentSourceRow=Pick<ExpandedPaymentIntentSummary,'payment_intent_id'|'status'>&{payment_source?:{type:string}};
+export type SourcedOrder=Omit<Order,'payment_intents'>&{payment_intents?:PaymentSourceRow[]};
+export type PaymentResult={order:SourcedOrder;attempt?:OrderPaymentAttempt;unknown:boolean;totalChanged?:boolean};
 
-export function collectionKind(order:Order,kind:CheckoutRecord['kind']):CollectionKind{
+export function collectionKind(order:SourcedOrder,kind:CheckoutRecord['kind']):CollectionKind{
   if(kind==='subscription'&&BigInt(order.settlement_amounts.outstanding_money.amount)===0n)return order.setup_collection?.stripe?'setup':'unavailable';
   if(kind==='order'&&(BigInt(order.settlement_amounts.outstanding_money.amount)===0n||order.gift_cards?.length&&order.gift_card_estimate?.can_pay&&BigInt(order.gift_card_estimate.processor_money.amount)===0n))return 'settlement';
   return order.payment_collection?.stripe?'processor':'unavailable';
@@ -32,10 +36,10 @@ export function acceptedAllocation(order:Order):OrderGiftCardAllocationAcceptanc
 }
 // A zero-dollar trial is financially paid before its card is set up. The
 // subscription ID is the authoritative proof that signup finished.
-export function paymentComplete(order:Order):boolean{
+export function paymentComplete(order:SourcedOrder):boolean{
   return order.payment_status==='paid'&&(!order.subscription_plan_id||!!order.subscription_id);
 }
-export function resolvesJob(job:ActionRecord,order:Order,attempt:OrderPaymentAttempt|undefined):boolean{
+export function resolvesJob(job:ActionRecord,order:SourcedOrder,attempt:OrderPaymentAttempt|undefined):boolean{
   return paymentComplete(order)||job.kind==='pay'&&!!order.active_payment_attempt||job.kind!=='pay'&&attempt?.order_payment_attempt_id===job.attempt_id&&!attemptOpen(attempt);
 }
 
@@ -48,6 +52,26 @@ export class PaymentEngine {
     if(!record.checkout_auth_token)return this.client.orders.get(record.order_id!,undefined,this.auth.merchant());
     try{return await this.client.orders.get(record.order_id!,undefined,this.auth.checkout(record));}
     catch(error){const code=error&&typeof error==='object'&&'code'in error?String(error.code):'';if(!['INVALID_CHECKOUT_SESSION','CHECKOUT_SESSION_EXPIRED','CHECKOUT_SESSION_NOT_OPEN'].includes(code))throw error;return this.client.orders.get(record.order_id!,undefined,this.auth.merchant());}
+  }
+  // Fills in each payment intent's source type, which the page and next-step need to tell Affirm and ACH
+  // payments apart. A failed lookup leaves the order as the session read returned it.
+  async withPaymentSources(record:CheckoutRecord,order:Order):Promise<SourcedOrder>{
+    if(!record.order_id||!order.payment_intent_ids?.length)return order;
+    try{
+      const expanded=await this.client.orders.get(record.order_id,{expand:['payment_intents']},this.auth.merchant());
+      if(expanded.order_id!==record.order_id)return order;
+      const rows:PaymentSourceRow[]=[];
+      for(const intent of expanded.payment_intents??[]){
+        if(typeof intent.payment_intent_id!=='string'||typeof intent.status!=='string')continue;
+        const type=intent.payment_source?.type;
+        rows.push({payment_intent_id:intent.payment_intent_id,status:intent.status,...typeof type==='string'?{payment_source:{type}}:{}});
+      }
+      return {...order,payment_intents:rows};
+    }catch(error){
+      const code=error&&typeof error==='object'&&'code'in error?String(error.code):'';
+      console.warn(JSON.stringify({event:'payment_source_lookup_failed',code:/^[A-Z0-9_]{1,64}$/.test(code)?code:'UNKNOWN'}));
+      return order;
+    }
   }
   unresolved(record:CheckoutRecord):ActionRecord|undefined{return this.store.get<ActionRecord>("SELECT * FROM actions WHERE resource=? AND kind IN ('pay','resume','cancel') AND status IN ('pending','unknown')",this.resource(record));}
   job(record:CheckoutRecord,kind:'pay'|'resume'|'cancel',body:PayOrderRequestInput|{cancellation_reason:'abandoned'},fixedKey?:string):ActionRecord {
@@ -108,7 +132,7 @@ export class PaymentEngine {
     const order=await this.read(record);const attempt=await this.attempt(record,order);
     return this.observe(record,order,attempt);
   }
-  observe(record:CheckoutRecord,order:Order,attempt:OrderPaymentAttempt|undefined):PaymentResult{
+  observe(record:CheckoutRecord,order:SourcedOrder,attempt:OrderPaymentAttempt|undefined):PaymentResult{
     this.remember(record,attempt);
     const pending=this.unresolved(record);
     if(pending&&resolvesJob(pending,order,attempt))this.complete(pending,attempt);

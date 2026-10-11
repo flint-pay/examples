@@ -1,6 +1,7 @@
 import type {OrderPaymentAttempt,Order} from '@flintpay/node';
+import type {SourcedOrder} from './engine.ts';
 export type NextStep='done'|'pay_remaining'|'new_payment'|'capture'|'authenticate'|'resume'|'wait'|'bank_processing';
-export function nextStep(attempt:OrderPaymentAttempt|undefined,order?:Order):NextStep {
+export function nextStep(attempt:OrderPaymentAttempt|undefined,order?:SourcedOrder):NextStep {
   if(!attempt)return 'new_payment';
   if(attempt.status==='succeeded')return 'done';
   if(attempt.status==='partially_succeeded')return 'pay_remaining';
