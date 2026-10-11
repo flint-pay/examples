@@ -124,8 +124,9 @@ export async function createStripePayment(options) {
   let amountMinor = minorNumber(options.amount ?? guidance.amount_money);
   const types = guidance.payment_method_types.filter((type) => !(options.excludeAffirm && type === 'affirm'));
 
-  /** @param {boolean} withTypes */
-  const baseOptions = (withTypes) => {
+  // The Payment and Express Checkout Elements share one explicit method selection. Stripe rejects wallet
+  // tokens from Elements that use automatic methods when the backend lists its allowed methods.
+  const baseOptions = () => {
     /** @type {Record<string, any>} */
     const base = {
       mode: guidance.mode,
@@ -135,14 +136,12 @@ export async function createStripePayment(options) {
     };
     if (!setupMode) base.amount = amountMinor;
     if (subscription) base.setupFutureUsage = 'off_session';
-    if (withTypes) {
-      base.paymentMethodTypes = types;
-      if (guidance.payment_method_options) base.paymentMethodOptions = optionsForSaving(guidance.payment_method_options, false);
-    }
+    base.paymentMethodTypes = types;
+    if (guidance.payment_method_options) base.paymentMethodOptions = optionsForSaving(guidance.payment_method_options, false);
     return base;
   };
 
-  const paymentElements = stripe.elements(baseOptions(true));
+  const paymentElements = stripe.elements(baseOptions());
   const paymentElement = paymentElements.create('payment', {
     wallets: { applePay: 'never', googlePay: 'never' },
     ...(options.saveOffered ? { terms: { card: 'never' } } : {}),
@@ -166,7 +165,7 @@ export async function createStripePayment(options) {
   const wallets = (guidance.digital_wallets ?? []).filter(Boolean);
   if (wallets.length && options.mounts.wallets && options.mounts.walletsRegion) {
     try {
-      walletElements = stripe.elements({ ...baseOptions(false), ...(subscription ? {} : {}) });
+      walletElements = stripe.elements(baseOptions());
       walletElement = walletElements.create('expressCheckout', {
         paymentMethods: { applePay: 'auto', googlePay: 'auto', link: 'never', amazonPay: 'never', paypal: 'never' },
         buttonHeight: 44,
