@@ -7,6 +7,7 @@ import type {ContentfulStatusCode} from 'hono/utils/http-status';
 import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import type {IncomingMessage} from 'node:http';
+import {SdkError} from '@flintpay/node';
 import type {Client,DeliveryAddressRequestInput,MoneyValue,OrderTaxLocationFullAddressRequestInput,PostalAddress,UpdateCustomerRequestInput} from '@flintpay/node';
 import {SDK_VERSION} from './config.ts';
 import type {Config} from './config.ts';
@@ -30,7 +31,7 @@ import {securityHeaders} from './security/headers.ts';
 import {validProof} from './flint/gift-challenge.ts';
 import {logRequest,logLaunchInvalid} from './security/log.ts';
 import {returnPath} from './security/paths.ts';
-import {decimalMinor} from './security/money.ts';
+import {decimalMinor,moneyEqual} from './security/money.ts';
 import {buyerSafe} from './flint/projection.ts';
 import type {PageId,ViewContext} from './flint/view-data.ts';
 import {viewPath} from './flint/view-data.ts';
@@ -319,7 +320,29 @@ export function createApp(options:AppOptions){
     if(credential&&!['confirmation_token','payment_method_token','saved_payment_method'].includes(String(credential.kind)))throw new LocalError('PAYMENT_SOURCE_REQUIRED');
     if(!['processor','settlement','setup','unavailable'].includes(String(raw.approved_collection_kind)))throw new LocalError('INVALID_PAYMENT_APPROVAL');
     const input:PayInput={approved_outstanding_money:approvedMoney(raw.approved_outstanding_money),approved_collection_kind:raw.approved_collection_kind as PayInput['approved_collection_kind'],...(credential?{credential:{kind:credential.kind as NonNullable<PayInput['credential']>['kind'],value:text(credential.value,400)}}:{}),...(raw.approved_order_revision?{approved_order_revision:text(raw.approved_order_revision,20)}:{}),...(raw.approved_gift_card_money?{approved_gift_card_money:approvedMoney(raw.approved_gift_card_money)}:{}),...(raw.buyer_contact?{buyer_contact:{email:email(asRecord(raw.buyer_contact).email),...(asRecord(raw.buyer_contact).phone?{phone:phone(asRecord(raw.buyer_contact).phone)!}:{})}}:{}),save_payment_method:raw.save_payment_method===true,save_payment_method_phone:raw.save_payment_method_phone?phone(raw.save_payment_method_phone)??undefined:undefined};
-    const result=await payments.start(c.req.param('ref'),input);const current=await state(c,result);return paymentJson(c,current.read,result);
+    const ref=c.req.param('ref');
+    // Flint refuses tax older than its freshness window before it creates an attempt, so nothing was charged.
+    // Tax is worked out again at the order's saved location, and the buyer approves the result with a new press.
+    const refreshTax=()=>checkouts.mutate(ref,'tax_refresh',{},(record,key)=>client.orders.update(record.order_id!,{tax:{enabled:true}},auth.checkout(record,key)));
+    const refreshed=async()=>{
+      const current=await state(c);const same=moneyEqual(current.read.order.settlement_amounts.outstanding_money,input.approved_outstanding_money);
+      return c.json({state:current.state,next:payments.next(current.read.result),error:{kind:'conflict',code:'ORDER_CHANGED_REFRESH_REQUIRED',message_key:same?'tax_updated':'total_changed'}});
+    };
+    // A refresh whose outcome is unknown is replayed with its own key before anything else, or it blocks every later pay.
+    if(checkouts.pendingInput(ref,'tax_refresh')){
+      // No payment was sent on this press, so a failed replay gets the tax message; the journal keeps the refresh's own outcome.
+      try{await refreshTax();}catch(error){if(error instanceof SdkError)throw new LocalError('ORDER_TAX_NOT_READY',409);throw error;}
+      return refreshed();
+    }
+    let result:PaymentResult;
+    try{result=await payments.start(ref,input);}
+    catch(error){
+      if(!(error instanceof SdkError&&error.code==='ORDER_TAX_NOT_READY'))throw error;
+      // The refresh runs after the engine releases the order lock; the buyer sees the specific message if it fails.
+      try{await refreshTax();}catch{throw error;}
+      return refreshed();
+    }
+    const current=await state(c,result);return paymentJson(c,current.read,result);
   });
   app.post('/checkout/:ref/resume',async c=>{own(c);limited(c,'pay',10,60_000);const result=await payments.resume(c.req.param('ref'));const current=await state(c,result);return paymentJson(c,current.read,result);});
   app.get('/checkout/:ref/attempt',async c=>{own(c);const current=await state(c);return paymentJson(c,current.read);});

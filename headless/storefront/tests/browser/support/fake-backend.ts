@@ -722,6 +722,17 @@ export class FakeCheckout {
         this.totalBump += 100n;
         this.recalc();
         return this.paymentReply({ error: { kind: 'conflict', code: 'ORDER_CHANGED_REFRESH_REQUIRED', message_key: 'total_changed', request_id: 'req_fixture' } });
+      case 'taxstale':
+      case 'taxstalebump': {
+        // Stands in for the app: Flint refused stale tax, the app refreshed it, and the buyer must press Pay again.
+        if (behavior === 'taxstalebump') {
+          this.totalBump += 100n;
+          this.recalc();
+        }
+        return this.paymentReply({ error: { kind: 'conflict', code: 'ORDER_CHANGED_REFRESH_REQUIRED', message_key: behavior === 'taxstale' ? 'tax_updated' : 'total_changed', request_id: 'req_fixture' } });
+      }
+      case 'taxfail':
+        return fail(409, 'conflict', 'ORDER_TAX_NOT_READY', 'order_tax_not_ready', this.project());
       case 'decline':
         this.relayGeneration += 1;
         this.attempt = this.makeAttempt('failed', { failure_code: 'card_declined' });
