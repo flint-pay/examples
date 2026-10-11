@@ -725,6 +725,8 @@ export class FakeCheckout {
       case 'taxstale':
       case 'taxstalebump': {
         // Stands in for the app: Flint refused stale tax, the app refreshed it, and the buyer must press Pay again.
+        // The refresh creates a new payment collection, so the return relay rotates while the total can stay the same.
+        this.relayGeneration += 1;
         if (behavior === 'taxstalebump') {
           this.totalBump += 100n;
           this.recalc();

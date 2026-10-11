@@ -441,6 +441,25 @@ test('a wallet confirmed on stale tax fails the sheet and needs a second wallet 
   expect((await fixtureLog(request, 'chk_wallet')).payCount).toBe(2);
 });
 
+test('a wallet press after a tax refresh binds the rotated return relay at an unchanged total', async ({ page }) => {
+  await readyOrder(page, 'wallet');
+  await pickupSelected(page);
+  const before = await page.getByTestId('sf-pay-button').textContent();
+  await typeCard(page, 'taxstale');
+  await page.getByTestId('fake-wallet-button').click();
+  await waitForPayment(page, 'total_changed');
+  await expect(page.getByTestId('sf-pay-button')).toHaveText(before!);
+  await typeCard(page, 'ok');
+  await page.getByTestId('fake-wallet-button').click();
+  await expect.poll(async () => (await stripeCalls(page)).filter((call) => call.name === 'createConfirmationToken').length).toBe(2);
+  const tokens = (await stripeCalls(page)).filter((call) => call.name === 'createConfirmationToken');
+  expect(tokens.map((call) => call.params.return_url)).toEqual([
+    'https://relay.example.test/payment-returns/fixture',
+    'https://relay.example.test/payment-returns/fixture-1',
+  ]);
+  await expect(page).toHaveURL(/complete$/);
+});
+
 test('gift card: unavailable, challenge, partial, and full coverage use settlement', async ({ page, request }) => {
   await readyOrder(page);
   await shipAndSelect(page);
