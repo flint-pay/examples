@@ -43,6 +43,9 @@ export async function providerSteps(d: Driver, page: Page, recipe: string): Prom
 export async function bank(d: Driver, c: Checkout, caseName: 'success' | 'processing' | 'failure'): Promise<void> {
   await providerSteps(d, c.page, `ach-instant-${caseName}`);
   await c.page.getByTestId('sf-pay-button').click();
+  // A bank failure can reconcile before the processing page renders. SF-14
+  // checks its failed attempt and buyer decline state after the provider flow.
+  if (caseName === 'failure') return;
   await expect(c.page.getByTestId('sf-complete')).toHaveAttribute('data-state', 'bank_processing', { timeout: 60_000 });
   await expect(c.page.getByTestId('sf-pay-button')).toHaveCount(0);
   invariant(!await c.page.getByRole('button', { name: /retry|cancel/i }).count(), 'BANK_PROCESSING_ACTIONS');
