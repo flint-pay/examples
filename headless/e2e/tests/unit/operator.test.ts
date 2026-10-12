@@ -103,7 +103,10 @@ test('invoice fixtures use card by default and request only the explicit provide
       const path = new URL(String(input)).pathname, body = JSON.parse(String(init!.body));
       assert.equal(init!.method, 'POST');
       assert.ok(new Headers(init!.headers).get('Idempotency-Key'));
-      if (path === '/v1/orders') return Response.json({ data: order });
+      if (path === '/v1/orders') {
+        if (item.options?.includes('ach_debit')) assert.deepEqual(body.line_items, [{ variant_id: 'var_UNIT_SERVICE', quantity: 1 }]);
+        return Response.json({ data: order });
+      }
       if (path === '/v1/invoices') {
         policy = body.collection.payment_policy;
         assert.deepEqual(policy?.enabled_payment_options, item.expected);
@@ -114,7 +117,8 @@ test('invoice fixtures use card by default and request only the explicit provide
       return Response.json({ data: { invoice: { ...invoiceFixture, status: 'open', payment_policy: policy } } });
     } });
     const clients = { config, writable: async () => client } as unknown as VerifiedClients;
-    const invoice = await new Operator(clients, ledger, {} as Fixtures).issueInvoice('policy-invoice', 'cus_UNIT_FAKE', 'buyer@example.invalid', item.options);
+    const fixtures = { products: { 'brewing-class': { variantId: 'var_UNIT_SERVICE' } } } as unknown as Fixtures;
+    const invoice = await new Operator(clients, ledger, fixtures).issueInvoice('policy-invoice', 'cus_UNIT_FAKE', 'buyer@example.invalid', item.options);
     assert.deepEqual(invoice.payment_policy.enabled_payment_options, item.expected);
     assert.deepEqual(Object.values(ledger.state.actions).map(action => action.operation), ['orders.create', 'invoices.create', 'invoices.issue']);
   }));
