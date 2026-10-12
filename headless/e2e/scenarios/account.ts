@@ -36,6 +36,10 @@ async function accountPayment(d: Driver, id: string, method: 'card' | 'affirm' |
     await expect(page.getByTestId('ac-payment')).toHaveAttribute('data-state', 'declined', { timeout: 60_000 }); await d.auditKnownStates(page);
   }
   if (method === 'card') await d.card(page); else await providerSteps(d, page, method === 'affirm' ? 'affirm-select' : 'ach-account-instant');
+  if (method === 'affirm') {
+    await page.getByTestId('ac-affirm-country').selectOption('US');
+    await page.getByTestId('ac-affirm-postal').fill('10001');
+  }
   await expect(page.getByTestId('ac-pay-button')).toBeEnabled(); await page.getByTestId('ac-pay-button').click();
   if (method === 'affirm') await providerSteps(d, page, 'affirm-approve');
   await page.waitForURL(new RegExp(`/${surface}/${id}(?:\\?|$)`), { timeout: 60_000 });

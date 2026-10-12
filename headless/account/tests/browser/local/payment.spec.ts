@@ -299,6 +299,32 @@ test.describe('invoice payment', () => {
     await expect(page.getByTestId('ac-pay-button')).toBeDisabled();
   });
 
+  test('Affirm collects the buyer billing country and postal code before creating a token', async ({ page, request }) => {
+    await resetHarness(request, { scenario: 'slow_submit' });
+    await open(page, 'invoice', 'with_affirm');
+    await ready(page);
+    await expect(page.getByTestId('ac-affirm-country')).toBeHidden();
+    await page.evaluate(() => (window as any).__stripeStub.selectPaymentType('affirm'));
+    const country = page.getByTestId('ac-affirm-country'), postal = page.getByTestId('ac-affirm-postal'), pay = page.getByTestId('ac-pay-button');
+    await expect(country).toBeVisible();
+    await expect(pay).toBeDisabled();
+    await country.selectOption('other');
+    await expect(page.getByTestId('ac-pay-blocker')).toContainText('United States');
+    await expect(pay).toBeDisabled();
+    await country.selectOption('US');
+    await postal.fill('123');
+    await expect(pay).toBeDisabled();
+    expect((await stubCalls(page)).tokens).toHaveLength(0);
+    await postal.fill('10001');
+    await expect(pay).toBeEnabled();
+    await pay.click();
+    await expect(country).toBeDisabled();
+    await expect(postal).toBeDisabled();
+    expect((await stubCalls(page)).tokens[0]).toMatchObject({ payment_method_data: { billing_details: { address: { country: 'US', postal_code: '10001' } } } });
+    await expect(page).toHaveURL(new RegExp(`${COMPLETE_INVOICE}$`));
+    expect(await submitCalls(request)).toHaveLength(1);
+  });
+
   test('Affirm is removed for the page view after Affirm declines, and card still works', async ({ page, request }) => {
     await resetHarness(request, { scenario: 'decline_affirm' });
     await open(page, 'invoice', 'with_affirm');

@@ -7,6 +7,7 @@ import {
   button,
   fmtFor,
   field,
+  selectField,
   jsonBlock,
   linkButton,
   money,
@@ -240,6 +241,10 @@ function paymentRegion(data: PaymentPageData, ctx: RenderContext): Html {
       </div>
       <div class="payment-element-wrap" data-element-wrap${needsElements ? '' : ' hidden'}>
         <div id="payment-element" class="payment-element skeleton" data-testid="ac-payment-element" aria-label="${pay.loading}"></div>
+      </div>
+      <div data-affirm-billing hidden>
+        ${selectField({ name: 'billing_country', label: pay.billingCountry, placeholder: pay.billingCountryChoose, hint: pay.affirmCountryHint, required: true, testid: 'ac-affirm-country', options: [{ value: 'US', label: pay.billingCountryUs }, { value: 'other', label: pay.billingCountryOther }], attributes: { disabled: true, 'data-affirm-country': true } })}
+        ${field({ name: 'billing_postal_code', label: pay.billingPostalCode, required: true, testid: 'ac-affirm-postal', attributes: { disabled: true, 'data-affirm-postal': true, inputmode: 'numeric', autocomplete: 'billing postal-code', maxlength: '10' } })}
       </div>
       <div class="affirm-actions" data-affirm-actions hidden>
         ${button({ label: pay.continueAffirm, variant: 'primary', testid: 'ac-affirm-continue', attributes: { 'data-affirm-continue': 'true' } })}

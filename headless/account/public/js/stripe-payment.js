@@ -58,6 +58,9 @@ async function run(root, boot) {
   const affirmBox = find('[data-affirm-actions]');
   const affirmContinue = find('[data-affirm-continue]');
   const affirmOther = find('[data-pay-another-way]');
+  const affirmBilling = find('[data-affirm-billing]');
+  const affirmCountry = find('[data-affirm-country]');
+  const affirmPostal = find('[data-affirm-postal]');
   const payActions = find('[data-pay-actions]');
   const payButton = find('[data-pay-button]');
   const blockerText = find('[data-pay-blocker]');
@@ -68,6 +71,7 @@ async function run(root, boot) {
   /** @type {'idle' | 'submitting' | 'authenticating' | 'resuming' | 'waiting'} */
   let local = 'idle';
   let elementsComplete = false;
+  let selectedPaymentType = 'card';
   let usingSaved = false;
   /** @type {string | null} */
   let selectedSaved = null;
@@ -227,6 +231,11 @@ async function run(root, boot) {
   }
 
   function blockerMessage() {
+    if (affirmActive()) {
+      if (!(affirmCountry instanceof HTMLSelectElement) || !affirmCountry.value) return ui.blockerAffirmCountry;
+      if (affirmCountry.value !== 'US') return ui.blockerAffirmCountryUnsupported;
+      if (!(affirmPostal instanceof HTMLInputElement) || !/^\d{5}(-\d{4})?$/.test(affirmPostal.value.trim())) return ui.blockerAffirmPostal;
+    }
     const phase = currentPhase();
     const reason = payBlocker({
       phase: phase === 'loading' || phase === 'submitting' ? 'authenticating' : phase,
@@ -265,6 +274,10 @@ async function run(root, boot) {
     if (walletsBox instanceof HTMLElement && (!showForm || isSettlement(state))) walletsBox.hidden = true;
     if (payActions instanceof HTMLElement) payActions.hidden = !showForm;
     if (affirmBox instanceof HTMLElement) affirmBox.hidden = phase !== 'affirm_incomplete';
+    if (affirmBilling instanceof HTMLElement) affirmBilling.hidden = !showForm || !affirmActive();
+    for (const field of [affirmCountry, affirmPostal]) {
+      if (field instanceof HTMLInputElement || field instanceof HTMLSelectElement) field.disabled = !accepting || !affirmActive();
+    }
     if (savedBox instanceof HTMLElement && !showForm) savedBox.hidden = true;
 
     if (progress instanceof HTMLElement) {
@@ -335,11 +348,19 @@ async function run(root, boot) {
     return JSON.stringify([guidance.publishable_key, guidance.account_id, guidance.elements.payment_method_types, dropAffirm, guidance.elements.payment_method_options]);
   }
 
-  /** @returns {{ name?: string, email?: string }} */
+  function affirmActive() {
+    return selectedPaymentType === 'affirm' && !usingSaved && !isSettlement(state);
+  }
+
+  /** @returns {{ name?: string, email?: string, address?: { country: string, postal_code: string } }} */
   function billing() {
     const out = {};
     if (boot.buyer?.name) /** @type {any} */ (out).name = boot.buyer.name;
     if (boot.buyer?.email) /** @type {any} */ (out).email = boot.buyer.email;
+    if (affirmActive() && affirmCountry instanceof HTMLSelectElement && affirmCountry.value === 'US' && affirmPostal instanceof HTMLInputElement) {
+      // This is the buyer's billing choice, never the invoice tax or delivery location.
+      /** @type {any} */ (out).address = { country: 'US', postal_code: affirmPostal.value.trim() };
+    }
     return out;
   }
 
@@ -360,6 +381,7 @@ async function run(root, boot) {
     const types = guidance.elements.payment_method_types.filter(
       (/** @type {string} */ type) => !['apple_pay', 'google_pay'].includes(type) && !(dropAffirm && type === 'affirm'),
     );
+    selectedPaymentType = types[0] ?? 'card';
     const options = {
       mode: 'payment',
       amount,
@@ -383,6 +405,7 @@ async function run(root, boot) {
     });
     paymentElement.on('change', (/** @type {any} */ event) => {
       elementsComplete = Boolean(event.complete);
+      selectedPaymentType = event.value?.type ?? selectedPaymentType;
       render();
     });
     paymentElement.mount('#payment-element');
@@ -763,6 +786,10 @@ async function run(root, boot) {
 
   // ---- Wiring ------------------------------------------------------------
 
+  for (const field of [affirmCountry, affirmPostal]) {
+    field?.addEventListener('input', () => render());
+    field?.addEventListener('change', () => render());
+  }
   if (payButton instanceof HTMLButtonElement) {
     payButton.addEventListener('click', () => void pay('card'));
   }
