@@ -1,4 +1,5 @@
 import { html } from 'hono/html';
+import { randomUUID } from 'node:crypto';
 import { browserCopy, common, emailPreferences as ep, errorMessage, fill, identity, linkPurchases as lp, plural, privacy as pv } from '../../copy.ts';
 import {
   badge,
@@ -9,6 +10,7 @@ import {
   dialogTrigger,
   errorSummary,
   fmtFor,
+  hiddenInput,
   jsonBlock,
   linkButton,
   pageHeader,
@@ -117,7 +119,7 @@ export function linkPurchasesPage(ctx: RenderContext<LinkPurchasesData>): Html {
     const count = linked_order_count ?? 0;
     body = html`<div class="auth-card" data-state="done" data-testid="ac-link-purchases-done">
       <p role="status" data-testid="ac-link-result" data-count="${count}">${count > 0 ? fill(lp.doneSome, { count, orders: plural(count, 'order', 'orders') }) : fill(lp.doneNone, { email })}</p>
-      <p class="actions-row">${linkButton('/orders', lp.viewOrders, { variant: 'primary', testid: 'ac-link-view-orders' })}${postForm({ action: '/link-purchases/send', csrf: ctx.csrf, className: 'inline-form' }, button({ label: lp.searchAgain, type: 'submit', testid: 'ac-link-search-again' }))}</p>
+      <p class="actions-row">${linkButton('/orders', lp.viewOrders, { variant: 'primary', testid: 'ac-link-view-orders' })}${postForm({ action: '/link-purchases/send', csrf: ctx.csrf, className: 'inline-form' }, html`${hiddenInput('_action_id', randomUUID())}${button({ label: lp.searchAgain, type: 'submit', testid: 'ac-link-search-again' })}`)}</p>
     </div>`;
   } else {
     body = codeFlow({
