@@ -183,7 +183,8 @@ export const storefront: Record<string, Scenario> = {
   },
   'SF-14': async d => {
     const processing = await normal(d, 'ach-processing', 'brewing-class'); await bank(d, processing, 'processing');
-    const order = await d.trackOrder('A', processing.orderId); invariant(order.payment_status === 'unpaid' && order.active_payment_attempt?.status === 'processing' && !order.customer_id, 'ACH_PROCESSING_EXPECTATION'); d.created.set('guestAchOrder', order.order_id); d.created.set('guestAchUnlinkedObserved', '1');
+    const order = await d.trackOrder('A', processing.orderId), attempts = await d.operator.clients.clients.A.orders.listPaymentAttempts(processing.orderId);
+    invariant(order.payment_status === 'unpaid' && attempts.data.some(a => a.mode === 'payment' && a.status === 'processing') && !order.customer_id, 'ACH_PROCESSING_EXPECTATION'); d.created.set('guestAchOrder', order.order_id); d.created.set('guestAchUnlinkedObserved', '1');
     const fail = await normal(d, 'ach-failure', 'brewing-class'); await bank(d, fail, 'failure');
     await expect.poll(async () => (await d.operator.clients.clients.A.orders.listPaymentAttempts(fail.orderId)).data.some(a => a.status === 'failed' || a.status === 'requires_retry'), { timeout: 600_000, intervals: [5000] }).toBe(true);
     await d.goto(fail.page, d.sf(), `/checkout/${fail.ref}`); await expect(fail.page.getByTestId('sf-payment')).toHaveAttribute('data-state', 'declined'); await expect(fail.page.getByTestId('sf-payment-message')).toContainText('bank'); return ['ACH_PROCESSING_UNPAID_AND_LATER_DECLINE'];
