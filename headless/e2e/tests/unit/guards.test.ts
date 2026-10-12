@@ -471,3 +471,27 @@ test('BrowserGuard scans referrers independently of permitted Stripe transport',
     assert.throws(() => scanner.assertClean(), { code: 'CREDENTIAL_LEAK' });
   }
 });
+
+
+test('Account invoice and return submit jobs admit ephemeral provider authentication only', async () => {
+  for (const resource of ['invoices', 'returns']) {
+    const url = `${verificationOrigin}/${resource}/unit-ref/pay/submit`;
+    const secret = 'pi_PLACEHOLDER_secret_PLACEHOLDER';
+    const allowed = await verificationGuard({ url });
+    allowed.browserResponse(JSON.stringify({ state: { attempt: { status: 'requires_action' } }, client_action: { client_secret: secret } }));
+    await allowed.inspect(); allowed.scanner.assertClean();
+    for (const status of ['processing', 'succeeded', 'requires_payment_method']) {
+      const rejected = await verificationGuard({ url });
+      rejected.browserResponse(JSON.stringify({ state: { attempt: { status } }, client_action: { client_secret: secret } }));
+      await assert.rejects(rejected.inspect, { code: 'CREDENTIAL_LEAK' });
+    }
+    const authority = await verificationGuard({ url });
+    authority.browserResponse(JSON.stringify({ state: { attempt: { status: 'requires_action' } }, api_key: 'flint_test_PLACEHOLDER' }));
+    await assert.rejects(authority.inspect, { code: 'CREDENTIAL_LEAK' });
+  }
+  for (const path of ['/submit', '/orders/unit-ref/pay/submit', '/invoices/unit-ref/pay/submit/extra']) {
+    const rejected = await verificationGuard({ url: verificationOrigin + path });
+    rejected.browserResponse(JSON.stringify({ state: { attempt: { status: 'requires_action' } }, client_secret: 'pi_PLACEHOLDER_secret_PLACEHOLDER' }));
+    await assert.rejects(rejected.inspect, { code: 'CREDENTIAL_LEAK' });
+  }
+});

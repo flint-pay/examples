@@ -142,7 +142,7 @@ export class BrowserGuard {
       if (this.capturedResponseRequests.has(response.request())) return;
       const text = await response.text();
       let providerJob = false;
-      if (/json/.test(contentType) && (/\/(?:pay|resume|attempt)$/.test(u.pathname) || /\/payment-methods\/new\/(?:setup|confirm|state)$/.test(u.pathname))) {
+      if (/json/.test(contentType) && (/\/(?:pay|resume|attempt)$/.test(u.pathname) || u.origin === this.accountOrigin && /^\/(?:invoices|returns)\/[^/]+\/pay\/submit$/.test(u.pathname) || /\/payment-methods\/new\/(?:setup|confirm|state)$/.test(u.pathname))) {
         try {
           const b = JSON.parse(text);
           providerJob = b.state?.attempt?.status === 'requires_action' || b.state?.next === 'authenticate' || !!b.client_setup && b.payment_method?.status === 'pending';
