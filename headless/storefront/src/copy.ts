@@ -187,6 +187,8 @@ export const messages = {
   bank_debit_not_authorized: "Your bank couldn't complete this payment. Use another bank account or pay by card.",
   bank_account_restricted: "Your bank couldn't complete this payment. Use another bank account or pay by card.",
   bank_debit_limit_exceeded: "Your bank couldn't complete this payment. Use another bank account or pay by card.",
+  insufficient_funds: 'This payment was declined because there are not enough funds. Use another payment method.',
+  bank_insufficient_funds: 'Your bank declined this payment because there are not enough funds. Use another bank account or pay by card.',
   decline_default: 'Your payment was declined. Try another card or payment method.',
 
   // Partial payment
@@ -299,6 +301,8 @@ const declineKeys: Record<string, true> = {
   payment_not_completed: true,
   payment_action_expired: true,
   payment_method_declined: true,
+  insufficient_funds: true,
+  bank_insufficient_funds: true,
   bank_account_closed: true,
   bank_account_not_found: true,
   bank_debit_not_authorized: true,

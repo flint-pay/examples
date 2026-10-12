@@ -1751,7 +1751,7 @@ async function advance(next, clientAction) {
       // A page that opened straight into recovery has no card form yet. Mount it before offering a new payment.
       await mountPayment();
       messageNode()?.setAttribute('data-code', code ?? '');
-      setPaymentState('declined', { message: declineText(code) });
+      setPaymentState('declined', { message: declineText(logic.declineMessageCode(app.state)) });
       return;
     }
     default:
@@ -1766,7 +1766,7 @@ async function advance(next, clientAction) {
 function restoreDeclineMessage() {
   const code = logic.declineCode(app.state);
   messageNode()?.setAttribute('data-code', code ?? '');
-  setPaymentState('declined', { focus: false, message: declineText(code) });
+  setPaymentState('declined', { focus: false, message: declineText(logic.declineMessageCode(app.state)) });
 }
 
 /** @param {string | null} code */
@@ -1775,7 +1775,7 @@ function declineText(code) {
   const known = [
     'incorrect_cvc', 'expired_card', 'payment_method_unavailable', 'processing_error', 'payment_method_temporarily_unavailable',
     'authentication_required', 'payment_not_completed', 'payment_action_expired', 'payment_method_declined', 'bank_account_closed',
-    'bank_account_not_found', 'bank_debit_not_authorized', 'bank_account_restricted', 'bank_debit_limit_exceeded',
+    'bank_account_not_found', 'insufficient_funds', 'bank_insufficient_funds', 'bank_debit_not_authorized', 'bank_account_restricted', 'bank_debit_limit_exceeded',
   ];
   return msg(known.includes(key) ? key : 'decline_default');
 }
@@ -2001,7 +2001,7 @@ async function start() {
       if (!needsProcessor()) setPaymentState(resting);
       else if (resting === 'declined' && (app.paymentState === 'loading' || app.paymentState === 'declined')) restoreDeclineMessage();
       else if (app.paymentState === 'loading') setPaymentState(resting);
-      else if (resting !== 'ready' && app.paymentState === 'ready') setPaymentState(resting, { focus: false, message: resting === 'declined' ? declineText(logic.declineCode(app.state)) : $('#payment-message')?.textContent ?? '' });
+      else if (resting !== 'ready' && app.paymentState === 'ready') setPaymentState(resting, { focus: false, message: resting === 'declined' ? declineText(logic.declineMessageCode(app.state)) : $('#payment-message')?.textContent ?? '' });
       break;
     }
     case 'authenticating':

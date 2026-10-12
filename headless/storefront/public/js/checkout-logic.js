@@ -157,6 +157,16 @@ export function declineCode(state) {
   return null;
 }
 
+/** @param {CheckoutState} state */
+export function declineMessageCode(state) {
+  const code = declineCode(state);
+  if (code !== 'insufficient_funds') return code;
+  const failedLegs = (state.attempt?.payment_intents ?? []).filter((leg) => leg.status === 'requires_payment_method' || leg.status === 'failed');
+  return failedLegs.length > 0 && failedLegs.every((leg) => legSourceType(state, leg.payment_intent_id) === 'ach_debit')
+    ? 'bank_insufficient_funds'
+    : code;
+}
+
 /** @param {string | null | undefined} code */
 export function affirmShouldBeRemoved(code) {
   return code === 'payment_method_declined' || code === 'payment_method_temporarily_unavailable';
