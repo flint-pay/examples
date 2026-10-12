@@ -13,7 +13,8 @@ export async function billing(d: Driver, c: Checkout): Promise<void> {
   await c.page.getByTestId('sf-bill-line1').fill('11 Wall Street'); await c.page.getByTestId('sf-bill-city').fill('New York');
   await c.page.getByTestId('sf-bill-state').fill('NY'); await c.page.getByTestId('sf-bill-postal').fill('10005');
   await c.page.getByTestId('sf-billing-save').click();
-  await expect(c.page.getByTestId('sf-billing')).toHaveAttribute('data-state', 'set', { timeout: 30_000 });
+  // Contact saves share the UI queue, so wait for them and the address readback.
+  await expect(c.page.getByTestId('sf-billing')).toHaveAttribute('data-state', 'set', { timeout: 60_000 });
   await expect(c.page.getByTestId('sf-pay-form')).toBeVisible({ timeout: 30_000 });
   await expect(c.page.getByTestId('sf-payment')).toHaveAttribute('data-state', 'ready', { timeout: 30_000 });
   await d.state(c);
