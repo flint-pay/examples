@@ -304,8 +304,9 @@ export function createApp(deps:Dependencies){
   const launchPayment=async(c:C,type:'invoice'|'return',returned=false)=>{
     const resourceId=id(c.req.param(type==='invoice'?'invoiceId':'returnId')),root=type==='invoice'?'invoices':'returns',current=user(c);
     const resource=type==='invoice'?await ownedInvoice(c,resourceId):await ownedReturn(c,resourceId),action=type==='invoice'?'pay':'pay_balance';
+    const canPay=resource.buyer_actions?.some(item=>item.kind===action&&item.is_available)??false;
     let record=store.checkout(current.user_id,preflight.sandboxId,type,resourceId);
-    if(!resource.buyer_actions.some(item=>item.kind===action&&item.is_available)&&!record)return c.redirect(`/${root}/${resourceId}`,303);
+    if(!canPay&&!record)return c.redirect(`/${root}/${resourceId}`,303);
     let launch:'ready'|'surface_conflict'|'collection_in_progress'='ready';
     if(!record||!returned){
       try{
@@ -315,7 +316,7 @@ export function createApp(deps:Dependencies){
             try{const state=await engine.status(previous.checkout_ref);if(state.unknown||attemptOpen(state.attempt)||engine.unresolvedGift(previous))return previous;}
             catch(error){if(!['INVALID_CHECKOUT_SESSION','CHECKOUT_SESSION_NOT_OPEN','CHECKOUT_SESSION_EXPIRED'].includes(appError(error).code))throw error;if(engine.unresolved(previous))throw new LocalError('UNKNOWN_PAYMENT_OUTCOME',409);}
           }
-          if(!resource.buyer_actions.some(item=>item.kind===action&&item.is_available))return previous!;
+          if(!canPay)return previous!;
           const resolutionId=type==='return'?('completion_blockers'in resource?resource.completion_blockers.find(blocker=>(blocker.code==='resolution_requires_action'||blocker.code==='resolution_pending')&&blocker.return_resolution_id)?.return_resolution_id:undefined):undefined;
           if(type==='return'&&!resolutionId)throw new LocalError('RETURN_PAYMENT_NOT_AVAILABLE',409);
           const generation=(previous?.generation??0)+1,returnUrl=`${config.appOrigin}/${root}/${resourceId}/pay/return`,freshBody={surface:'embedded' as const,page_origin:config.appOrigin,redirects:{success_redirect_url:returnUrl}};

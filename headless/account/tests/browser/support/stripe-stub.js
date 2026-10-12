@@ -31,6 +31,7 @@
         stub.calls.mounted.push({ selector, type });
         if (!container) return;
         if (type === 'payment') {
+          stub.selectPaymentType = (type) => element.emit('change', { complete: true, value: { type } });
           container.innerHTML = '<label>Card number (local stub)<input data-testid="stub-card" autocomplete="off"></label>';
           const input = container.querySelector('input');
           input.addEventListener('input', () => element.emit('change', { complete: input.value.length >= 4 }));
