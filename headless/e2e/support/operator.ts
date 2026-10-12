@@ -112,8 +112,11 @@ export class Operator {
   async issueInvoice(name: string, customerId: string, email: string, enabledPaymentOptions: InvoicePaymentPolicyInput['enabled_payment_options'] = ['card']): Promise<any> {
     const date = this.runDate();
     const reviewAt = new Date(date + 30 * 86400_000).toISOString();
+    const ach = enabledPaymentOptions?.includes('ach_debit') === true;
+    const service = this.clients.fixtures.products['brewing-class'];
+    if (ach) invariant(service?.variantId, 'ACH_INVOICE_SERVICE_FIXTURE_REQUIRED');
     const orderInput: CreateOrderRequestInput = {
-      customer_id: customerId, line_items: [{ name: 'Acceptance service', quantity: '1', unit_price_money: { amount: '12000', currency: 'USD' }, fulfillment: { requirement: 'none' }, tax: { taxable: true } }],
+      customer_id: customerId, line_items: ach ? [{ variant_id: service.variantId, quantity: '1' }] : [{ name: 'Acceptance service', quantity: '1', unit_price_money: { amount: '12000', currency: 'USD' }, fulfillment: { requirement: 'none' }, tax: { taxable: true } }],
       tax: { enabled: true, location: { address_source: 'provided', address_type: 'billing_address', address: { line1: '11 Wall Street', city: 'New York', state: 'NY', postal_code: '10005', country: 'US' } } },
       metadata: { e2e_run: this.ledger.run },
     };
