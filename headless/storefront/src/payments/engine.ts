@@ -11,8 +11,8 @@ import {nextStep,attemptOpen} from './next-step.ts';
 export type Credential={kind:'confirmation_token'|'payment_method_token'|'saved_payment_method';value:string};
 export type CollectionKind='processor'|'settlement'|'setup'|'unavailable';
 export type PayInput={credential?:Credential;approved_outstanding_money:MoneyValue;approved_order_revision?:string;approved_gift_card_money?:MoneyValue;approved_collection_kind:CollectionKind;buyer_contact?:{email:string;phone?:string};save_payment_method?:boolean;save_payment_method_phone?:string};
-// The session-scoped read lists a payment's intent IDs but not how each was paid. Only the
-// merchant read can expand that, and only these three fields are taken from it.
+// The checkout read lists intent IDs. The public payment-intent read identifies
+// the selected option; project only its ID, status and option into the buyer state.
 export type PaymentSourceRow=Pick<ExpandedPaymentIntentSummary,'payment_intent_id'|'status'>&{payment_source?:{type:string}};
 export type SourcedOrder=Omit<Order,'payment_intents'>&{payment_intents?:PaymentSourceRow[]};
 export type PaymentResult={order:SourcedOrder;attempt?:OrderPaymentAttempt;unknown:boolean;totalChanged?:boolean};
@@ -58,13 +58,12 @@ export class PaymentEngine {
   async withPaymentSources(record:CheckoutRecord,order:Order):Promise<SourcedOrder>{
     if(!record.order_id||!order.payment_intent_ids?.length)return order;
     try{
-      const expanded=await this.client.orders.get(record.order_id,{expand:['payment_intents']},this.auth.merchant());
-      if(expanded.order_id!==record.order_id)return order;
       const rows:PaymentSourceRow[]=[];
-      for(const intent of expanded.payment_intents??[]){
-        if(typeof intent.payment_intent_id!=='string'||typeof intent.status!=='string')continue;
-        const type=intent.payment_source?.type;
-        rows.push({payment_intent_id:intent.payment_intent_id,status:intent.status,...typeof type==='string'?{payment_source:{type}}:{}});
+      for(const id of order.payment_intent_ids){
+        const intent=await this.client.paymentIntents.get(id,undefined,this.auth.merchant());
+        if(intent.payment_intent_id!==id||intent.order_id!==record.order_id)return order;
+        const type=intent.selected_payment_option;
+        rows.push({payment_intent_id:id,status:intent.status,...typeof type==='string'?{payment_source:{type}}:{}});
       }
       return {...order,payment_intents:rows};
     }catch(error){

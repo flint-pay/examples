@@ -17,8 +17,8 @@ const money={amount:'1800',currency:'USD'};
 const MERCHANT_KEY='flint_test_FIXTURE';
 type Call={id:string;expand?:string[];authMode:string;apiKey?:string};
 
-// Stands in for Flint's rule: the payment intents expansion is refused on a checkout credential and
-// absent unless requested. The expanded rows carry fields the buyer must never receive.
+// The public intent identifies its selected option. Order expansions omit it,
+// and neither read may expose merchant-only details to the buyer.
 function fixture(t:TestContext,type='affirm'){
   const store=new Store(':memory:'),identity=new IdentityStore(':memory:');
   const config=readConfig({FLINT_API_KEY:MERCHANT_KEY,FLINT_API_BASE_URL:'https://api.staging.withflintpay.com',APP_ORIGIN:'http://localhost:4100',PORT:'4100'});
@@ -27,15 +27,19 @@ function fixture(t:TestContext,type='affirm'){
   const session={checkout_session_id:'cs_fixture',order_id:order.order_id,status:'open',page_origin:config.appOrigin} as CheckoutSession;
   const calls:Call[]=[];
   const state:{expansion?:Record<string,unknown>;fail?:Error}={};
-  const expandedRow={payment_intent_id:'pi_leg',status:'requires_action',payment_source:{type,card:{last4:'4242'}},amount_money:money,customer_id:'cus_private',order_id:'ord_fixture',client_secret:'pi_leg_secret_PRIVATE'};
+  const expandedRow={payment_intent_id:'pi_leg',status:'requires_action',selected_payment_option:type,amount_money:money,customer_id:'cus_private',order_id:'ord_fixture',client_secret:'pi_leg_secret_PRIVATE'};
   const client={
     orders:{get:async(id:string,params:{expand?:string[]}|undefined,options:RequestOptions)=>{
       const authMode=options.authMode??'merchant';calls.push({id,expand:params?.expand,authMode,apiKey:(options as {apiKey?:string}).apiKey});
       if(!params?.expand)return order;
       if(authMode==='checkout')throw new SdkError('validation','Expansion refused','response',false,{status:400,headers:{},attempts:1,durationMs:1},'EXPANSION_NOT_ALLOWED');
-      if(state.fail)throw state.fail;
       return {...order,order_id:'ord_fixture',customer_id:'cus_private',metadata:{internal:'x'},payment_intents:[expandedRow],...state.expansion};
     },getPaymentAttempt:async()=>order.active_payment_attempt},
+    paymentIntents:{get:async(id:string,_params:unknown,options:RequestOptions)=>{
+      const authMode=options.authMode??'merchant';calls.push({id,authMode,apiKey:(options as {apiKey?:string}).apiKey});
+      if(state.fail)throw state.fail;
+      return {...expandedRow,...state.expansion};
+    }},
     checkoutSessions:{get:async()=>session,getCurrentDeliverySelection:async()=>({})},
   } as unknown as Client;
   const auth=createAuth(config.apiKey),carts=new Carts(store,{} as Catalog);
@@ -46,10 +50,10 @@ function fixture(t:TestContext,type='affirm'){
   return {order,calls,state,engine,app,warnings,record:():CheckoutRecord=>app.record('chk_fixture')};
 }
 
-test('the source lookup uses the merchant key, the expansion, and the stored order ID',async t=>{
+test('the source lookup uses the merchant key and the session order intent ID',async t=>{
   const f=fixture(t);
   await f.engine.withPaymentSources(f.record(),f.order);
-  assert.deepEqual(f.calls,[{id:'ord_fixture',expand:['payment_intents'],authMode:'merchant',apiKey:MERCHANT_KEY}]);
+  assert.deepEqual(f.calls,[{id:'pi_leg',authMode:'merchant',apiKey:MERCHANT_KEY}]);
 });
 
 test('only the intent ID, status, and source type are taken from the merchant read',async t=>{
@@ -63,6 +67,11 @@ test('only the intent ID, status, and source type are taken from the merchant re
 
 test('a response for a different order is ignored',async t=>{
   const f=fixture(t);f.state.expansion={order_id:'ord_other'};
+  assert.equal(await f.engine.withPaymentSources(f.record(),f.order),f.order);
+});
+
+test('a response for a different intent is ignored',async t=>{
+  const f=fixture(t);f.state.expansion={payment_intent_id:'pi_other'};
   assert.equal(await f.engine.withPaymentSources(f.record(),f.order),f.order);
 });
 
@@ -94,7 +103,7 @@ test('a fresh checkout read knows an Affirm leg is Affirm and projects only the 
   assert.equal(read.result.attempt?.order_payment_attempt_id,'opa_fixture');
   assert.deepEqual(read.order.payment_intents,[{payment_intent_id:'pi_leg',status:'requires_action',payment_source:{type:'affirm'}}]);
   assert.equal(f.record().status,'open');assert.equal(f.engine.next(read.result),'authenticate');
-  assert.deepEqual(f.calls.filter(call=>call.expand).map(call=>call.authMode),['merchant']);
+  assert.deepEqual(f.calls.filter(call=>call.id==='pi_leg').map(call=>call.authMode),['merchant']);
   const state=f.app.project(read) as {order:{payment_intents:unknown;customer_id?:unknown;metadata?:unknown}};
   assert.deepEqual(state.order.payment_intents,[{payment_intent_id:'pi_leg',status:'requires_action',payment_source:{type:'affirm'}}]);
   const json=JSON.stringify(state);
