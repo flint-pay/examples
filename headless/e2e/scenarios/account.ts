@@ -43,16 +43,18 @@ async function accountPayment(d: Driver, id: string, method: 'card' | 'affirm' |
 export const account: Record<string, Scenario> = {
   'AC-01': async d => {
     const card = await fixture(d, 'guestCardOrder'), ach = await fixture(d, 'guestAchOrder');
+    const failedAch = d.created.get('guestAchFailedOrder');
+    const guestAchOrders = [ach, ...(failedAch ? [failedAch] : [])];
     invariant(d.created.get('guestAchUnlinkedObserved') === '1', 'GUEST_ACH_MUST_BE_UNLINKED_BEFORE_VERIFICATION');
     const page = await d.page('b1');
     if (!d.fixtures.buyers.b1.verified) await d.signup(page, 'b1');
     else if ((await d.operator.clients.clients.A.orders.get(ach)).customer_id !== d.fixtures.buyers.b1.customerId) {
       await d.login(page, 'b1'); await d.goto(page, d.config.origins.accountA, '/link-purchases'); const after = new Date(); await d.form(page, '/link-purchases/send'); const mail = await d.email('b1', after, 'verification'); await d.form(page, '/link-purchases/confirm', { code: mail.codes[0] });
-      await expect(page.getByTestId('ac-link-result')).toHaveAttribute('data-count', '1');
+      await expect(page.getByTestId('ac-link-result')).toHaveAttribute('data-count', String(guestAchOrders.length));
     }
     else await d.login(page, 'b1');
     const customer = d.fixtures.buyers.b1.customerId; invariant(customer, 'BUYER_BINDING_REQUIRED');
-    for (const id of [card, ach]) {
+    for (const id of [card, ...guestAchOrders]) {
       invariant((await d.operator.clients.clients.A.orders.get(id)).customer_id === customer, 'GUEST_ORDER_NOT_LINKED'); await d.goto(page, d.config.origins.accountA, `/orders/${id}`); await expect(page.getByTestId('ac-order')).toBeVisible();
     }
     const other = await signed(d, 'b2'); await d.goto(other, d.config.origins.accountA, `/orders/${card}`); await expect(other.getByTestId('ac-notice')).toHaveAttribute('data-notice', 'not_in_account'); await expect(other.getByTestId('ac-notice')).toBeVisible();
