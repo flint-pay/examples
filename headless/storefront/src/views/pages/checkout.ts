@@ -3,6 +3,7 @@ import {
   attemptIsOpen,
   buttonKind,
   declineCode,
+  declineMessageCode,
   deliveryMode,
   deliveryModes,
   deliveryState,
@@ -554,7 +555,7 @@ function paymentSection(ctx: Ctx): Html {
   const messaging = (stripeGuidance?.elements?.payment_method_types ?? []).includes('affirm');
   const initialMessage =
     resting === 'declined'
-      ? declineMessage(code)
+      ? declineMessage(declineMessageCode(state))
       : resting === 'unavailable'
         ? state.next === 'capture'
           ? message('bug_checkout', { store: ctx.storeName })
