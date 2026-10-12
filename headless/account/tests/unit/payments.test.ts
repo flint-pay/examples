@@ -63,6 +63,35 @@ test('resume has no payment source and advances the same attempt with a durable 
     const engine=new PaymentEngine(client,createAuth('flint_test_PLACEHOLDER'),store,async()=>{});await engine.resume(record.checkout_ref);await engine.resume(record.checkout_ref);assert.equal(calls,1);
   }finally{store.close();}
 });
+for(const recovery of ['settled','unavailable','forbidden'] as const)test(`unknown resume retains its payment job while reconciliation is ${recovery}`,async()=>{
+  const store=new Store(':memory:');try{
+    const record=checkout(store),keys:string[]=[],delays:number[]=[];let charges=0,reads=0;
+    const settled={...order(),payment_status:'paid',active_payment_attempt:attempt('succeeded',false)} as Order;
+    const client={orders:{
+      get:async()=>{
+        if(charges===0)return {...order(),active_payment_attempt:attempt('requires_action',true)};
+        reads++;
+        if(recovery==='forbidden')throw new LocalError('FORBIDDEN',403);
+        if(recovery==='unavailable'||reads===1)throw new Error('invoice projection temporarily unreadable');
+        return settled;
+      },
+      pay:async(request:{body:PayOrderRequestInput},options:RequestOptions<'checkout'>)=>{
+        assert.equal(request.body.action,'resume');charges++;keys.push(options.idempotencyKey!);
+        throw new Error('settlement response lost');
+      },
+    }} as unknown as Client;
+    const engine=new PaymentEngine(client,createAuth('flint_test_PLACEHOLDER'),store,async ms=>{delays.push(ms);});
+    if(recovery==='settled'){
+      const result=await engine.resume(record.checkout_ref);
+      assert.equal(result.order.payment_status,'paid');assert.equal(result.unknown,false);assert.equal(engine.unresolved(record),undefined);assert.equal(reads,2);
+    }else{
+      await assert.rejects(engine.resume(record.checkout_ref),recovery==='forbidden'?{code:'FORBIDDEN'}:/invoice projection temporarily unreadable/);
+      assert.equal(engine.unresolved(record)?.status,'unknown');assert.equal(reads,recovery==='forbidden'?1:4);
+    }
+    assert.equal(charges,4);assert.equal(new Set(keys).size,1);
+    assert.deepEqual(delays,recovery==='settled'?[500,1000,2000,500]:recovery==='forbidden'?[500,1000,2000]:[500,1000,2000,500,1000,2000]);
+  }finally{store.close();}
+});
 test('a declined leg is explicitly selected using a new key after its known rejection',async()=>{
   const store=new Store(':memory:');try{
     const record=checkout(store);let calls=0;const keys:string[]=[];const current={...order(),payment_collection:{stripe:{elements:{mode:'payment',next_step:'create_confirmation_token',payment_method_creation:'manual',payment_method_types:['card'],selectable_payment_intents:[{payment_intent_id:'intent_example'}]}}}} as Order;

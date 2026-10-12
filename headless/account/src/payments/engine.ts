@@ -160,6 +160,17 @@ export class PaymentEngine {
     this.remember(record,attempt);
     return {order,attempt,unknown:!!this.unresolved(record)};
   }
+  async reconcileUnknown(record:CheckoutRecord):Promise<PaymentResult>{
+    // Settlement can precede the readable invoice projection. Retry only the
+    // read while retaining the original durable payment job.
+    for(let retry=0;;retry++){
+      try{return await this.reconcile(record);}
+      catch(error){
+        if(retry===3||!unknownOutcome(error))throw error;
+        await this.delay([500,1000,2000][retry]!);
+      }
+    }
+  }
   job(record:CheckoutRecord,kind:'pay'|'resume'|'cancel',body:unknown,nonce?:string){
     const pending=this.unresolved(record);if(pending)return pending;
     const job=this.store.action(this.resource(record),kind,body,nonce);
@@ -189,7 +200,7 @@ export class PaymentEngine {
         if(retry<3)await this.delay([500,1000,2000][retry]!);
       }
     }
-    return this.reconcile(record);
+    return this.reconcileUnknown(record);
   }
   async start(ref:string,input:PayInput,nonce?:string):Promise<PaymentResult>{
     const initial=this.record(ref);
