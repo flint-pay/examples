@@ -8,7 +8,7 @@ import {assertGiftChallengePersistence} from '../support/app-vault.ts';
 import type {Driver} from '../support/driver.ts';
 import type {Page} from '@playwright/test';
 import {createHash} from 'node:crypto';
-import { providerSteps } from './provider.ts';
+import { providerStep } from './provider.ts';
 
 export const settlement: Record<string, Scenario> = {
   'SF-05Z2': async d => {
@@ -87,14 +87,36 @@ export const settlement: Record<string, Scenario> = {
   },
   'SF-ACH-MICRODEP': async d => {
     const c = await d.checkout(await d.page('ach-microdeposit'), 'brewing-class');
-    await providerSteps(d, c.page, 'ach-microdeposit-attempt');
-    // Settled product support is instant verification only. Verify the real failure
-    // and recovery state rather than fabricate a microdeposit settlement.
-    await expect(c.page.getByRole('alert')).toBeVisible();
-    const order = await d.operator.clients.clients.A.orders.get(c.orderId);
-    invariant(order.payment_status === 'unpaid' && !order.active_payment_attempt?.payment_intents?.some(p => p.status === 'succeeded'), 'UNSUPPORTED_BANK_FLOW_MUST_NOT_SETTLE');
+    await billing(d, c);
+    const elements = c.state.payment_collection?.stripe?.elements;
+    invariant(elements?.payment_method_types?.includes('us_bank_account') && elements.payment_method_types.includes('card') &&
+      elements.payment_method_options?.us_bank_account?.verification_method === 'instant', 'INSTANT_ONLY_BANK_GUIDANCE_REQUIRED');
+    await providerStep(d, c.page, 'ach-instant-success', { frameOrigin: 'https://js.stripe.com', selector: '#us_bank_account-tab', action: 'click' });
+    let picker: import('@playwright/test').Frame | undefined;
+    await expect.poll(async () => {
+      const matches = [];
+      for (const frame of c.page.frames()) {
+        if (new URL(frame.url()).origin !== 'https://js.stripe.com') continue;
+        if (await frame.getByText('Test (Non-OAuth)', { exact: true }).isVisible()) matches.push(frame);
+      }
+      picker = matches.length === 1 ? matches[0] : undefined;
+      return matches.length;
+    }, { timeout: 60_000 }).toBe(1);
+    invariant(picker, 'INSTANT_BANK_PICKER_REQUIRED');
+    const manual = /manual(?:ly)?|micro.?deposit|enter.*(?:bank.*details|account.*numbers?)/i;
+    for (const frame of c.page.frames()) {
+      if (new URL(frame.url()).origin !== 'https://js.stripe.com') continue;
+      await expect(frame.getByRole('button', { name: manual }).or(frame.getByRole('link', { name: manual })).filter({ visible: true })).toHaveCount(0);
+    }
+    await picker.getByRole('button', { name: 'Close', exact: true }).click();
+    await providerStep(d, c.page, 'ach-instant-success', { frameOrigin: 'https://js.stripe.com', selector: '#card-tab', action: 'click' });
     await d.card(c.page); await expect(c.page.getByTestId('sf-pay-button')).toBeEnabled();
-    return ['MICRODEPOSIT_UNSUPPORTED_TRUTHFUL_RECOVERY'];
+    const order = await d.operator.clients.clients.A.orders.get(c.orderId);
+    const attempts = await d.operator.clients.clients.A.orders.listPaymentAttempts(c.orderId);
+    invariant(order.payment_status === 'unpaid' && money(order.settlement_amounts.paid_money).amount === '0' &&
+      BigInt(money(order.settlement_amounts.outstanding_money).amount) > 0n && attempts.data.length === 0 &&
+      !order.active_payment_attempt && !order.payment_intent_ids?.length, 'INSTANT_ONLY_BOUNDARY_MUST_NOT_CHARGE');
+    return ['INSTANT_ONLY_BANK_NO_MANUAL_ENTRY_NO_ATTEMPT_CARD_AVAILABLE'];
   },
 };
 

@@ -7,13 +7,14 @@ import manifest from '../../fixtures/manifest.example.json' with { type: 'json' 
 import { rows } from '../../scenarios/registry.ts';
 import { Results } from '../../support/results.ts';
 
-test('readiness inventories missing and present hyphenated provider recipes without aborting', () => {
+test('instant-only boundary needs ACH readiness rather than an unavailable microdeposit recipe', () => {
   for (const present of [false, true]) {
     const fixtures = structuredClone(manifest) as Fixtures;
     fixtures.values = { zeroBalancePromotion: 'promo_PLACEHOLDER', providerSteps: present ? { 'ach-microdeposit-attempt': [] } : {} };
     const results = new Results('/tmp/unused-unit-readiness.json', rows.map(row => row.id));
     inventoryReadiness({} as Config, fixtures, results);
-    assert.equal(results.roots.get('PRQ-FIXTURE-SF-ACH-MICRODEP')?.status, present ? 'RESOLVED' : 'PENDING');
+    assert.equal(results.roots.get('PRQ-FIXTURE-SF-ACH-MICRODEP'), undefined);
+    assert.equal(results.roots.get('PRQ-ACH')?.status, 'PENDING');
     assert.equal(results.roots.get('PRQ-FIXTURE-SF-05Z2')?.status, 'RESOLVED');
     assert.equal(results.roots.get('PRQ-INBOX')?.status, 'PENDING');
     assert.equal(results.roots.get('PRQ-PROVIDER-AC-05A')?.status, 'PENDING');
