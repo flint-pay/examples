@@ -42,7 +42,12 @@ export async function providerSteps(d: Driver, page: Page, recipe: string): Prom
 }
 export async function bank(d: Driver, c: Checkout, caseName: 'success' | 'processing' | 'failure'): Promise<void> {
   await providerSteps(d, c.page, `ach-instant-${caseName}`);
-  await c.page.getByTestId('sf-pay-button').click();
+  // Stripe's bank form shrinks after linking. Activate the button by keyboard so
+  // that layout change cannot move the pointer into the provider iframe.
+  const pay = c.page.getByTestId('sf-pay-button');
+  await expect(pay).toBeEnabled();
+  await pay.focus();
+  await pay.press('Enter');
   // A bank failure can reconcile before the processing page renders. SF-14
   // checks its failed attempt and buyer decline state after the provider flow.
   if (caseName === 'failure') return;
