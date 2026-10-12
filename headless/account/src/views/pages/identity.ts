@@ -1,4 +1,5 @@
 import { html } from 'hono/html';
+import { randomUUID } from 'node:crypto';
 import { common, errorPages, fill, identity } from '../../copy.ts';
 import {
   button,
@@ -81,13 +82,14 @@ export function codeFlow(options: CodeFlowOptions): Html {
   const errors = options.error?.field_errors;
   const sentAtMs = options.sentAt === undefined ? undefined : Number(options.sentAt);
   const hiddenNext = options.next ? hiddenInput('next', options.next) : '';
+  const sendAction = hiddenInput('_action_id', randomUUID());
   return html`<div class="auth-card" data-state="${options.state}" data-testid="${options.ids.root}" data-code-flow>
     ${
       options.state === 'idle'
         ? html`<p data-testid="${options.ids.root}-intro">${fill(options.idleText, { email: options.email })}</p>
           ${postForm(
             { action: `${options.base}/send`, csrf: options.csrf },
-            html`${hiddenNext}<div class="form-actions">${button({ label: options.sendLabel, type: 'submit', variant: 'primary', testid: options.ids.send })}</div>`,
+            html`${hiddenNext}${sendAction}<div class="form-actions">${button({ label: options.sendLabel, type: 'submit', variant: 'primary', testid: options.ids.send })}</div>`,
           )}`
         : html`<p role="status" data-testid="${options.ids.root}-sent">${fill(options.sentText, { email: options.email })}</p>
           ${postForm(
@@ -98,7 +100,7 @@ export function codeFlow(options: CodeFlowOptions): Html {
           )}
           ${postForm(
             { action: `${options.base}/send`, csrf: options.csrf, className: 'resend-form', attributes: { 'data-resend-form': 'true', 'data-sent-at': sentAtMs && Number.isFinite(sentAtMs) ? String(sentAtMs) : undefined, 'data-resend-wait': '30', 'data-resend-label': options.resendLabel, 'data-resend-wait-label': identity.verifyResendIn } },
-            html`${hiddenNext}<div class="form-actions">${button({ label: options.resendLabel, type: 'submit', variant: 'secondary', testid: options.ids.resend, attributes: { 'data-resend-button': 'true' } })}<span class="hint" data-resend-note aria-live="off"></span></div>`,
+            html`${hiddenNext}${sendAction}<div class="form-actions">${button({ label: options.resendLabel, type: 'submit', variant: 'secondary', testid: options.ids.resend, attributes: { 'data-resend-button': 'true' } })}<span class="hint" data-resend-note aria-live="off"></span></div>`,
           )}`
     }
     ${options.extra ?? ''}

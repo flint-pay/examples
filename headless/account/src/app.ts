@@ -207,7 +207,7 @@ export function createApp(deps:Dependencies){
     identity.bind(current.user_id,preflight.sandboxId,confirmed.customer_id,current.email);
     const linked=await client.customers.linkGuestPurchases(confirmed.customer_id,{customer_verification_id:confirmed.customer_verification_id},auth.merchant(identity.actionKey(`link:${preflight.sandboxId}:${confirmed.customer_verification_id}`)));
     identity.setPending(c.get('session'),null);flash(c,Number(linked.linked_order_count)>0?'email_confirmed_linked':'email_confirmed',{count:Number(linked.linked_order_count),orders:Number(linked.linked_order_count)===1?'order':'orders'});
-    const rotated=identity.rotate(c.get('session'),current.user_id);cookie(c,rotated.token);
+    const rotated=identity.rotate(c.get('session'),current.user_id);cookie(c,rotated.token);c.set('session',rotated.session);
     if(link)return page(c,'ac-link-purchases',{state:'done',email:current.email,linked_order_count:Number(linked.linked_order_count)});
     return c.redirect(next,303);
   };

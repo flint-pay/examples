@@ -8,12 +8,12 @@ import {Store} from '../../src/store/db.ts';
 import {readConfig} from '../../src/config.ts';
 import {LocalError} from '../../src/flint/errors.ts';
 const config=readConfig({FLINT_API_KEY:'flint_test_PLACEHOLDER',FLINT_API_BASE_URL:'https://api.staging.withflintpay.com',APP_ORIGIN:'http://localhost:4200',PORT:'4200'});
-async function harness(api:unknown,appConfig=config){
+async function harness(api:unknown,appConfig=config,realRendering=false){
   const identity=new IdentityStore(':memory:'),store=new Store(':memory:');
   const user=await identity.createUser('Example','buyer@example.invalid','example password');identity.bind(user.user_id,'sandbox_example','cus_example',user.email);
   identity.saveVault({user_id:user.user_id,sandbox_id:'sandbox_example',customer_session_id:'session_example',secret:'example customer authority',refresh_token:'example refresh authority',expires_at:Date.now()+3600000,refresh_expires_at:Date.now()+86400000});
   const session=identity.createSession(user.user_id);let rendered:unknown;
-  const {app}=createApp({config:appConfig,client:api as Client,identity,store,preflight:{sandboxId:'sandbox_example',merchantId:'mer_example',cards:'ready',setupNeeded:false,capabilities:null,support:{}},render:async(pageId,context)=>{rendered={pageId,...context};return '<!doctype html><title>Local renderer boundary</title>';},paymentDelay:async()=>{}});
+  const {app}=createApp({config:appConfig,client:api as Client,identity,store,preflight:{sandboxId:'sandbox_example',merchantId:'mer_example',cards:'ready',setupNeeded:false,capabilities:null,support:{}},render:realRendering?undefined:async(pageId,context)=>{rendered={pageId,...context};return '<!doctype html><title>Local renderer boundary</title>';},paymentDelay:async()=>{}});
   const headers={Cookie:`${config.cookieName}=${session.token}`,Origin:config.appOrigin,'X-CSRF-Token':session.session.csrf_token,'Content-Type':'application/json'};
   return {app,identity,store,user,session,headers,rendered:()=>rendered,close:()=>{store.close();identity.close();}};
 }
@@ -297,5 +297,28 @@ test('an unknown gift card code returns to the add form while foreign resources 
     const foreign=await h.app.request('/gift-cards/gfc_foreign/remove',{method:'POST',headers:form,body:new URLSearchParams({_csrf:h.session.session.csrf_token}).toString()});
     assert.equal(foreign.status,303);assert.equal(foreign.headers.get('Location'),'/');assert.equal(reads,1);
     assert.deepEqual(JSON.parse((h.identity.db.prepare('SELECT flash FROM sessions WHERE session_hash=?').get(h.session.session.session_hash) as {flash:string}).flash),{notices:['not_in_account']});
+  }finally{h.close();}
+});
+
+test('a fresh link-purchases form sends a new verification after confirmation, while duplicate submits do not send twice',async()=>{
+  const sent:string[]=[];
+  const h=await harness({customerVerifications:{
+    create:async(body:Record<string,string>,options:RequestOptions)=>{sent.push(options.idempotencyKey!);return {customer_verification_id:`verification_${sent.length}`,customer_id:body.customer_id,email:body.email,purpose:body.purpose};},
+    confirm:async(id:string)=>({customer_verification_id:id,customer_id:'cus_example',email:'buyer@example.invalid',purpose:'link_guest_purchases',status:'confirmed'}),
+  },customers:{linkGuestPurchases:async()=>({linked_order_count:'1'})}},config,true);
+  try{
+    const field=(html:string,name:string)=>{const match=html.match(new RegExp(`name="${name}" value="([^"\\s]+)"`));assert.ok(match);return match[1]!;};
+    const form=await h.app.request('/link-purchases',{headers:{Cookie:h.headers.Cookie}});assert.equal(form.status,200);
+    const first=field(await form.text(),'_action_id');
+    for(let i=0;i<2;i++){
+      const response=await h.app.request('/link-purchases/send',{method:'POST',headers:h.headers,body:JSON.stringify({_action_id:first})});assert.equal(response.status,i===0?200:429);
+    }
+    assert.equal(sent.length,1);
+    const confirmed=await h.app.request('/link-purchases/confirm',{method:'POST',headers:h.headers,body:JSON.stringify({code:'123456'})});assert.equal(confirmed.status,200);
+    const cookie=confirmed.headers.getSetCookie().filter(value=>value.startsWith(config.cookieName+'=')).at(-1)?.split(';')[0];assert.ok(cookie);
+    const html=await confirmed.text(),second=field(html,'_action_id'),csrf=field(html,'_csrf');assert.notEqual(second,first);
+    assert.equal(csrf,h.identity.session(cookie.slice(cookie.indexOf('=')+1))!.csrf_token);
+    const response=await h.app.request('/link-purchases/send',{method:'POST',headers:{...h.headers,Cookie:cookie,'X-CSRF-Token':csrf},body:JSON.stringify({_action_id:second})});assert.equal(response.status,200);
+    assert.equal(sent.length,2);assert.notEqual(sent[0],sent[1]);
   }finally{h.close();}
 });
