@@ -188,6 +188,9 @@ export const storefront: Record<string, Scenario> = {
     invariant(order.payment_status === 'unpaid' && attempts.data.some(a => a.mode === 'payment' && a.status === 'processing') && !order.customer_id, 'ACH_PROCESSING_EXPECTATION'); d.created.set('guestAchOrder', order.order_id); d.created.set('guestAchUnlinkedObserved', '1');
     const fail = await normal(d, 'ach-failure', 'brewing-class'); await bank(d, fail, 'failure');
     await expect.poll(async () => (await d.operator.clients.clients.A.orders.listPaymentAttempts(fail.orderId)).data.some(a => a.status === 'failed' || a.status === 'requires_retry'), { timeout: 600_000, intervals: [5000] }).toBe(true);
+    // Let the page's active recovery read finish before reload interrupts it.
+    // A slower failure may already have moved to the bank-processing page.
+    if (await fail.page.getByTestId('sf-payment').count()) await expect(fail.page.getByTestId('sf-payment')).toHaveAttribute('data-state', 'declined', { timeout: 60_000 });
     await d.goto(fail.page, d.sf(), `/checkout/${fail.ref}`); await expect(fail.page.getByTestId('sf-payment')).toHaveAttribute('data-state', 'declined'); await expect(fail.page.getByTestId('sf-payment-message')).toContainText('bank'); return ['ACH_PROCESSING_UNPAID_AND_LATER_DECLINE'];
   },
   'SF-15': async d => { const c = await normal(d, 'affirm-approve', 'burr-grinder'); await affirm(d, c, 'approve'); await d.settled(c, 1); d.created.set('affirmCheckout', c.ref); d.created.set('affirmOrder', c.orderId); return ['AFFIRM_APPROVAL_RELAY_AND_SETTLEMENT']; },
