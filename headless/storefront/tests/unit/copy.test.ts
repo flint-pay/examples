@@ -10,11 +10,10 @@ test('billing interval units follow the public billing_interval values and plura
   }
 });
 
-
 test('insufficient funds guidance uses bank copy only for the failed ACH legs', async()=>{
   const {declineMessageCode}=await import('../../public/js/checkout-logic.js');
   const state=(types:string[],failed:string[]=types.map((_,i)=>`pi_${i}`))=>({
-    attempt:{failure_code:'insufficient_funds',payment_intents:types.map((_,i)=>({payment_intent_id:`pi_${i}`,status:failed.includes(`pi_${i}`)?'failed':'succeeded'}))},
+    attempt:{failure_code:'insufficient_funds',payment_intents:types.map((_,i)=>({payment_intent_id:`pi_${i}`,status:failed.includes(`pi_${i}`)?'requires_payment_method':'succeeded'}))},
     order:{payment_intents:types.map((type,i)=>({payment_intent_id:`pi_${i}`,payment_source:{type}}))},
   }) as unknown as Parameters<typeof declineMessageCode>[0];
   assert.match(declineMessage(declineMessageCode(state(['ach_debit']))),/Your bank declined.*not enough funds/);
