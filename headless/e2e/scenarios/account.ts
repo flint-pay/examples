@@ -130,7 +130,9 @@ export const account: Record<string, Scenario> = {
     for (const method of ['affirm', 'ach'] as const) {
       const invoice = await d.operator.issueInvoice(`invoice-${method}`, d.fixtures.buyers.b1.customerId!, d.fixtures.buyers.b1.email, ['card', method === 'ach' ? 'ach_debit' : 'affirm']); await accountPayment(d, invoice.invoice_id, method);
       const actual = await d.operator.clients.clients.A.invoices.get(invoice.invoice_id); invariant(method === 'affirm' ? actual.status === 'paid' : actual.status !== 'paid', 'INVOICE_PROVIDER_OUTCOME');
-      const order = await d.trackOrder('A', actual.order_id); invariant(method === 'affirm' ? order.payment_status === 'paid' : order.active_payment_attempt?.status === 'processing', 'INVOICE_PROVIDER_ATTEMPT');
+      const order = await d.trackOrder('A', actual.order_id);
+      const attempts = await d.operator.clients.clients.A.orders.listPaymentAttempts(actual.order_id);
+      invariant(method === 'affirm' ? order.payment_status === 'paid' : order.payment_status === 'unpaid' && attempts.data.some(a => a.mode === 'payment' && a.status === 'processing'), 'INVOICE_PROVIDER_ATTEMPT');
     }
     return ['INVOICE_AFFIRM_PAID_ACH_PROCESSING'];
   },
