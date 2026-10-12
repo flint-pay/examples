@@ -14,7 +14,7 @@ export const rows = [...matrix, ...[
   { id: 'AC-15API', plan: 'public own-session family supplemental coverage', apps: 'harness', buyer: 'disposable', sandbox: 'A', tier: 'e2e', schedule: 'extended', prq: [], assert: 'Harness-created session refresh rotates authority; superseded-token replay revokes only that public session family. Does not satisfy application vault replay.' },
   { id: 'SF-GIFTCHALLENGE', plan: 'public challenge root fix', apps: 'storefront', buyer: 'guest', sandbox: 'A', tier: 'e2e', schedule: 'nightly', prq: ['PRQ-GIFT-CHALLENGE','PRQ-GIFT-FUNDING'], assert: 'Real public challenge completes without merchant-auth bypass.' },
   {id:'AC-GIFTCHALLENGE',plan:'public invoice gift challenge',apps:'account',buyer:'b1',sandbox:'A',tier:'e2e',schedule:'nightly',prq:['PRQ-GIFT-CHALLENGE','PRQ-GIFT-FUNDING'],assert:'Invoice gift card challenge completes and the remainder pays once.'},
-  { id: 'SF-ACH-MICRODEP', plan: 'settled instant-only support boundary', apps: 'storefront', buyer: 'guest', sandbox: 'A', tier: 'e2e', schedule: 'nightly', prq: ['PRQ-ACH'], assert: 'Unsupported microdeposit path shows truthful recovery and cannot settle.' },
+  { id: 'SF-ACH-MICRODEP', plan: 'settled instant-only support boundary', apps: 'storefront', buyer: 'guest', sandbox: 'A', tier: 'e2e', schedule: 'nightly', prq: ['PRQ-ACH'], assert: 'Instant-only bank picker offers no manual entry or microdeposit fallback; no attempt or charge occurs, and card remains available.' },
 ]];
 export const executionOrder = ['U-01', 'SF-01', 'SF-03', 'SF-04', 'SF-05', 'SF-06', 'SF-07', 'SF-08', 'SF-09', 'SF-10', 'SF-11', 'SF-13', 'SF-14', 'SF-02', 'AC-01', 'AC-02', 'AC-09', 'SF-12', 'SF-15', 'SF-16', 'SF-17', 'SF-18', 'SF-19', 'SF-20', 'SF-21', 'SF-22', 'SF-22M', 'SF-23', 'SF-24', 'SF-25', 'SF-26', 'SF-26X', 'AC-03', 'AC-05', 'AC-05A', 'AC-06', 'AC-07', 'AC-08', 'AC-10', 'AC-11', 'AC-12', 'AC-13', 'AC-15API', 'AC-14', 'AC-15', 'AC-16', 'AC-17', 'X-01', 'I-01', 'I-02', 'I-03', 'AC-04', 'SF-05Z2', 'SF-05Z1', 'SF-05Z3', 'SF-GIFTCHALLENGE','AC-GIFTCHALLENGE','SF-ACH-MICRODEP', 'B-01'];
 export const dependencies: Record<string, string[]> = {
@@ -31,7 +31,7 @@ export const fixturePrerequisites: Record<string, string[]> = {
   'AC-07': ['alternateOffSessionMethod', 'secondSubscription'], 'AC-08': ['pastDueSubscription', 'plans.makePastDue'],
   'AC-10': ['b2NewEmail'], 'AC-14': ['plans.prepareDeletion'], 'I-03': ['sameEmailCustomerB', 'sameEmailVerificationB'],
   'SF-21': ['checkoutMinimumTtlSeconds'], 'SF-24': ['sandboxSmsPhone'], 'SF-26': ['signedWebhookEnvelope', 'webhookCheckoutRef'], 'SF-26X': ['realWebhookForwarding'],
-  'SF-05Z2': ['zeroBalancePromotion'], 'SF-ACH-MICRODEP': ['providerSteps.ach-microdeposit-attempt'],
+  'SF-05Z2': ['zeroBalancePromotion'],
 };
 export function validateRegistry(): void {
   invariant(matrix.length === 52 && new Set(rows.map(r => r.id)).size === rows.length, 'SETTLED_MATRIX_REQUIRED');
