@@ -11,7 +11,7 @@ const merchant = 'https://merchant.example.test';
 const stripe = 'https://js.stripe.com';
 
 // These local documents exercise the acceptance boundary; they never contact a provider.
-async function boundary(browser: Browser, options: { manual?: boolean; verification?: string; attempts?: unknown[]; paid?: string } = {}) {
+async function boundary(browser: Browser, options: { manual?: boolean; manualMenuitem?: boolean; verification?: string; attempts?: unknown[]; paid?: string } = {}) {
   const context = await browser.newContext({ serviceWorkers: 'block' });
   let payments = 0;
   try {
@@ -20,10 +20,11 @@ async function boundary(browser: Browser, options: { manual?: boolean; verificat
         `<iframe src="${stripe}/element"></iframe><button data-testid="sf-pay-button">Pay</button>` });
       else if (route.request().url() === `${stripe}/element`) await route.fulfill({ contentType: 'text/html', body: `
         <button id="us_bank_account-tab" onclick="document.querySelector('#picker').hidden=false;document.querySelector('#card').hidden=true">US bank account</button>
-        <button id="card-tab" onclick="document.querySelector('#card').hidden=false">Card</button>
-        <div id="picker" hidden><button onclick="window.linked=true">Test (Non-OAuth)</button>
+        <button id="card-tab" onclick="document.querySelector('#card').hidden=false;document.querySelector('#picker').hidden=true">Card</button>
+        <div id="picker" hidden><div role="menuitem" onclick="window.linked=true">Test (Non-OAuth)</div>
           ${options.manual ? '<a href="#manual">Enter bank details manually</a>' : ''}
-          <button aria-label="Close" onclick="document.querySelector('#picker').hidden=true">Close</button></div>
+          ${options.manualMenuitem ? '<div role="menuitem">Enter bank details manually</div>' : ''}
+        </div>
         <div id="card"><input id="payment-numberInput"><input id="payment-expiryInput"><input id="payment-cvcInput"></div>` });
       else { payments++; await route.abort(); }
     });
@@ -45,6 +46,7 @@ async function boundary(browser: Browser, options: { manual?: boolean; verificat
     assert.equal(payments, 0);
     const frame = page.frames().find(frame => frame.url() === `${stripe}/element`)!;
     assert.equal(await frame.evaluate(() => (window as any).linked), undefined);
+    assert.equal(await frame.locator('#picker').isVisible(), false);
     assert.equal(await frame.locator('#payment-numberInput').inputValue(), '4242424242424242');
     return result;
   } finally { await context.close(); }
@@ -53,11 +55,14 @@ async function boundary(browser: Browser, options: { manual?: boolean; verificat
 test('instant-only bank acceptance proves absence and card availability without submitting payment', async t => {
   const browser = await chromium.launch({ headless: true, env: browserEnvironment() });
   t.after(() => browser.close());
-  await t.test('real picker controls can close and return to a ready card form without linking a bank', async () => {
+  await t.test('embedded picker without a close button can return directly to card without linking a bank', async () => {
     assert.deepEqual(await boundary(browser), ['INSTANT_ONLY_BANK_NO_MANUAL_ENTRY_NO_ATTEMPT_CARD_AVAILABLE']);
   });
   await t.test('a visible manual-entry option fails the boundary', async () => {
     await assert.rejects(() => boundary(browser, { manual: true }), /toHaveCount/);
+  });
+  await t.test('a manual-entry menuitem fails the boundary used by the embedded picker', async () => {
+    await assert.rejects(() => boundary(browser, { manualMenuitem: true }), /toHaveCount/);
   });
   await t.test('automatic verification does not satisfy the instant-only contract', async () => {
     await assert.rejects(() => boundary(browser, { verification: 'automatic' }), { code: 'INSTANT_ONLY_BANK_GUIDANCE_REQUIRED' });
