@@ -763,7 +763,7 @@ export class CheckoutController {
               this.setPaymentState('ready', { message: made.error?.message || this.msg('stripe_error_generic') });
               return;
             }
-            const ok = await this.payWith(made.credential);
+            const ok = await this.payWith(made.credential, this.approvalOf(), 'wallet');
             if (!ok) event.paymentFailed?.({ reason: 'fail' });
           } catch {
             event.paymentFailed?.({ reason: 'fail' });
@@ -838,9 +838,10 @@ export class CheckoutController {
     } as { approved_outstanding_money: Money | null; approved_collection_kind: string; approved_order_revision?: string; approved_gift_card_money?: Money | null };
   }
 
-  private async payWith(credential: { kind: string; value: string } | Credential | null, approval = this.approvalOf()): Promise<boolean> {
+  /** `source` is where the credential came from. Only a card typed into the form can be saved. */
+  private async payWith(credential: { kind: string; value: string } | Credential | null, approval = this.approvalOf(), source: 'form' | 'wallet' = 'form'): Promise<boolean> {
     const c = this.snap.contact;
-    const saving = this.snap.saveCard && this.saveAllowed() && this.saveOffered();
+    const saving = source === 'form' && this.snap.saveCard && this.saveAllowed() && this.saveOffered();
     const body = {
       ...(credential ? { credential } : {}),
       ...approval,

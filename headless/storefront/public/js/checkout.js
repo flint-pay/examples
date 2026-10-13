@@ -1482,7 +1482,7 @@ async function mountOnce(options) {
             setPaymentState('ready', { message: made.error?.message || msg('stripe_error_generic') });
             return;
           }
-          const ok = await payWith(made.credential);
+          const ok = await payWith(made.credential, approvalOf(), 'wallet');
           if (!ok) event.paymentFailed?.({ reason: 'fail' });
         } catch {
           event.paymentFailed?.({ reason: 'fail' });
@@ -1551,15 +1551,16 @@ function approvalOf() {
 /**
  * @param {{ kind: string, value: string } | null} credential
  * @param {ReturnType<typeof approvalOf>} [approval] taken when the buyer pressed Pay
+ * @param {'form' | 'wallet'} [source] where the credential came from. Only a card typed into the form can be saved.
  * @returns {Promise<boolean>} true when the job was accepted
  */
-async function payWith(credential, approval = approvalOf()) {
+async function payWith(credential, approval = approvalOf(), source = 'form') {
   const c = contact();
   const body = {
     ...(credential ? { credential } : {}),
     ...approval,
     buyer_contact: { email: c.email, ...(c.phone ? { phone: c.phone } : {}) },
-    ...(($('#save-card') instanceof HTMLInputElement && /** @type {HTMLInputElement} */ ($('#save-card')).checked && !/** @type {HTMLInputElement} */ ($('#save-card')).disabled)
+    ...(source === 'form' && ($('#save-card') instanceof HTMLInputElement && /** @type {HTMLInputElement} */ ($('#save-card')).checked && !/** @type {HTMLInputElement} */ ($('#save-card')).disabled)
       ? { save_payment_method: true, ...(value('save-phone') ? { save_payment_method_phone: value('save-phone') } : {}) }
       : {}),
   };

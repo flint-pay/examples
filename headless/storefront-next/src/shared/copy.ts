@@ -165,7 +165,7 @@ export const messages = {
   ach_billing_details_required: 'Enter your full name and email to pay from a bank account.',
   payment_option_unavailable: "That payment method isn't available for this order. Choose another.",
   payment_option_not_allowed: "That payment method isn't available for this order. Choose another.",
-  save_payment_method_failed: "We couldn't save this card. Your payment wasn't affected.",
+  save_payment_method_failed: "We couldn't save this payment method, so nothing was charged. Pay again to finish without saving it.",
   payment_processing_unavailable: 'Payments are briefly unavailable. Try again in a minute.',
   checkout_recovery_restricted: "We're finishing your payment. Don't close this page.",
   payment_attempt_still_processing: 'Your payment is still being confirmed. Check again in a moment.',
