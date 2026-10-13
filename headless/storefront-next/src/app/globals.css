@@ -47,6 +47,8 @@ body {
   line-height: 1.55;
   overflow-wrap: break-word;
   -webkit-font-smoothing: antialiased;
+  /* Inter runs wide at body sizes; its recommended tracking at 15 to 17px is about -0.011em. */
+  letter-spacing: -0.011em;
 }
 
 [hidden] { display: none !important; }
@@ -460,4 +462,22 @@ dialog::backdrop { background: rgba(29, 27, 22, 0.45); backdrop-filter: blur(2px
   .hero .actions .button { width: 100%; }
   .step { padding: 18px 16px; border-radius: var(--radius); }
   .mode-tab { padding: 12px; font-size: 0.9rem; }
+}
+
+/* ---------- Text wrapping and narrow-screen layout ---------- */
+h1, h2, h3, .card-title, .choice-title, .added-title { text-wrap: balance; }
+p, .hint, .lead { text-wrap: pretty; }
+/* The add-to-cart confirmation: text keeps a readable width, and the buttons move to their own row when space runs out. */
+.added { flex-wrap: wrap; }
+.added-body { flex: 1 1 200px; min-width: 0; }
+.added > .row { flex: 0 0 auto; }
+@media (max-width: 560px) {
+  .added > .row { flex: 1 1 100%; }
+  .added > .row > * { flex: 1; }
+  .added > .row .button { width: 100%; }
+  /* Fact lists stack the label above the value instead of squeezing both onto one line. */
+  .facts > div { flex-direction: column; gap: 2px; }
+  .facts dd { text-align: left; }
+  /* The stepper keeps its own row so the Add to cart label and price never clip. */
+  .buy-row .button { flex: 1 1 100%; min-width: 0; }
 }
