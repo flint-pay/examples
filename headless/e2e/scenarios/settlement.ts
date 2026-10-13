@@ -106,9 +106,8 @@ export const settlement: Record<string, Scenario> = {
     const manual = /manual(?:ly)?|micro.?deposit|enter.*(?:bank.*details|account.*numbers?)/i;
     for (const frame of c.page.frames()) {
       if (new URL(frame.url()).origin !== 'https://js.stripe.com') continue;
-      await expect(frame.getByRole('button', { name: manual }).or(frame.getByRole('link', { name: manual })).filter({ visible: true })).toHaveCount(0);
+      await expect(frame.getByRole('button', { name: manual }).or(frame.getByRole('link', { name: manual })).or(frame.getByRole('menuitem', { name: manual })).filter({ visible: true })).toHaveCount(0);
     }
-    await picker.getByRole('button', { name: 'Close', exact: true }).click();
     await providerStep(d, c.page, 'ach-instant-success', { frameOrigin: 'https://js.stripe.com', selector: '#card-tab', action: 'click' });
     await d.card(c.page); await expect(c.page.getByTestId('sf-pay-button')).toBeEnabled();
     const order = await d.operator.clients.clients.A.orders.get(c.orderId);
