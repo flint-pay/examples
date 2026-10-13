@@ -83,7 +83,7 @@ test('SF-06 tax is pending until delivery, then comes from the order (needs the 
   test.info().annotations.push({ type: 'sf06-tax-minor', description: taxMinor! });
 });
 
-test('SF-07 a declined card shows the default copy and a retry with 4242 succeeds', async ({ page }) => {
+test('SF-07 a declined card (insufficient funds) shows its copy and a retry with 4242 succeeds', async ({ page }) => {
   await addToCart(page, 'stoneware-mug');
   await startCheckout(page);
   await fillContact(page);
@@ -91,7 +91,7 @@ test('SF-07 a declined card shows the default copy and a retry with 4242 succeed
   await enterCard(page, CARDS.decline);
   await payNow(page);
   await expect(page.getByTestId('sf-payment')).toHaveAttribute('data-state', 'declined', { timeout: 60_000 });
-  await expect(page.getByTestId('sf-payment-message')).toHaveText('Your payment was declined. Try another card or payment method.');
+  await expect(page.getByTestId('sf-payment-message')).toHaveText('This payment was declined because there are not enough funds. Use another payment method.');
   await enterCard(page, CARDS.success);
   await payNow(page);
   await expect(page.getByTestId('sf-complete-status')).toHaveAttribute('data-status', 'paid', { timeout: 60_000 });
