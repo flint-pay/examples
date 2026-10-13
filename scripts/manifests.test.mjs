@@ -90,12 +90,15 @@ test('generates a deterministic index, preserves prose, and rejects malformed ma
 test('rejects identity divergence instead of importing runtime helpers across examples', (t) => {
   const root = mkdtempSync(join(tmpdir(), 'flint-identity-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  for (const id of ['storefront', 'account']) {
-    const folder = join(root, 'headless', id, 'src/identity');
+  for (const path of ['storefront/src/identity', 'account/src/identity', 'storefront-next/src/server/identity']) {
+    const folder = join(root, 'headless', path);
     mkdirSync(folder, { recursive: true });
     writeFileSync(join(folder, 'auth.ts'), 'export const auth = true;\n');
   }
   assert.equal(checkIdentityCopies(root), 1);
+  writeFileSync(join(root, 'headless/storefront-next/src/server/identity/auth.ts'), 'export const auth = false;\n');
+  assert.throws(() => checkIdentityCopies(root), /byte for byte/);
+  writeFileSync(join(root, 'headless/storefront-next/src/server/identity/auth.ts'), 'export const auth = true;\n');
   writeFileSync(join(root, 'headless/account/src/identity/auth.ts'), 'export const auth = false;\n');
   assert.throws(() => checkIdentityCopies(root), /byte for byte/);
 });
