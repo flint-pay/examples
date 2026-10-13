@@ -79,6 +79,8 @@ async function probe<T>(store:Store,name:string,create:(key:string)=>Promise<T>,
   }
 }
 export function affirmReady(capabilities:readonly {capability:string;status:string}[]):boolean{return capabilities.some(capability=>capability.capability==='accept_affirm_payments'&&capability.status==='ready');}
+/** A new sandbox requests ACH debit only once checkout settings enable it, so setup enables it to start the request. */
+export function achNotRequested(capabilities:readonly {capability:string;blocked_reasons?:readonly {code:string}[]}[]):boolean{return capabilities.some(capability=>capability.capability==='accept_ach_debit_payments'&&!!capability.blocked_reasons?.some(reason=>reason.code==='CAPABILITY_NOT_REQUESTED'));}
 export async function setup(args:string[]=process.argv.slice(2)){
   if(args.some(arg=>!['--apply','--check'].includes(arg)))throw new Error('Use --apply to create the sample store or --check to run readiness probes.');
   const apply=args.includes('--apply');const check=args.includes('--check');const config=readConfig();
@@ -91,12 +93,14 @@ export async function setup(args:string[]=process.argv.slice(2)){
     const existingPromotion=owned(existing.promotions,'welcome10');
     validateWelcomeCodes(await collect(client.promotions.listCodesItems({code:'WELCOME10',page_size:100},auth.merchant())),existingPromotion?.promotion_id);
     const affirm=affirmReady((await client.capabilities.list({capability:'accept_affirm_payments'},auth.merchant())).data);
+    // The SDK's capability filter doesn't list ACH debit yet, so read every payments capability.
+    const achRequest=apply&&achNotRequested((await client.capabilities.list({domain:'payments'},auth.merchant())).data);
     let ach=false;let tax=false;
     const last=store.get<{ach:number;affirm:number;tax:number;checked_at:number}>('SELECT * FROM setup_readiness WHERE sandbox_id=?',ready.sandboxId);
     if(last&&last.checked_at>Date.now()-24*60*60_000){ach=!!last.ach;tax=!!last.tax;}
     if(check){
       console.info('Readiness probes create a $2.00 ACH payment intent and a service order, then cancel or close them.');
-      ach=await probe(store,'ach',key=>client.paymentIntents.create({amount_money:{amount:'200',currency:'USD'},payment_options:['ach_debit'],transaction_purpose:'goods',metadata:{example_probe:'true'}},auth.merchant(key)),response=>response.payment_intent.payment_intent_id,(id,key)=>client.paymentIntents.cancel(id,{cancellation_reason:'abandoned'},auth.merchant(key)),['PAYMENT_OPTION_UNAVAILABLE']);
+      ach=await probe(store,'ach',key=>client.paymentIntents.create({amount_money:{amount:'200',currency:'USD'},payment_options:['ach_debit'],transaction_purpose:'goods',metadata:{example_probe:'true'}},auth.merchant(key)),response=>response.payment_intent.payment_intent_id,(id,key)=>client.paymentIntents.cancel(id,{cancellation_reason:'abandoned'},auth.merchant(key)),['PAYMENT_OPTION_UNAVAILABLE','CAPABILITY_NOT_REQUESTED']);
       tax=await probe(store,'tax',key=>client.orders.create({line_items:[{name:'Automatic tax readiness probe',tax:{line_item_tax_category:'services'},fulfillment:{requirement:'none'},unit_price_money:{amount:'200',currency:'USD'},quantity:'1'}],tax:{enabled:true},metadata:{example_probe:'true'}},auth.merchant(key)),response=>response.order_id,(id,key)=>client.orders.closeSession(id,{},auth.merchant(key)),['AUTOMATIC_TAX_CONNECTION_REQUIRED']);
       store.run('INSERT OR REPLACE INTO setup_readiness VALUES(?,?,?,?,?)',ready.sandboxId,Number(ach),Number(affirm),Number(tax),Date.now());
     }
@@ -122,7 +126,7 @@ export async function setup(args:string[]=process.argv.slice(2)){
       if(apply&&promotion)await client.promotions.createCode(promotion.promotion_id,{code:'WELCOME10',metadata:metadata('welcome10')},auth.merchant(key('welcome10-code')));
     }
     const checkedAffirm=affirm&&(check||!!last?.affirm&&last.checked_at>Date.now()-24*60*60_000);
-    const enabled=[...new Set([...(settings.checkout?.enabled_payment_options??[]).filter(option=>!['ach_debit','affirm'].includes(option)),'card','apple_pay','google_pay',...(ach?['ach_debit']:[]),...(checkedAffirm?['affirm']:[])])];
+    const enabled=[...new Set([...(settings.checkout?.enabled_payment_options??[]).filter(option=>!['ach_debit','affirm'].includes(option)),'card','apple_pay','google_pay',...(ach||achRequest?['ach_debit']:[]),...(checkedAffirm?['affirm']:[])])];
     const checkout={default_delivery_method_ids:apply?methodIds:['<standard shipping>','<roastery pickup>'],enabled_payment_options:enabled};
     console.info(`Previous checkout settings: ${JSON.stringify({default_delivery_method_ids:settings.checkout?.default_delivery_method_ids??[],enabled_payment_options:settings.checkout?.enabled_payment_options??[]})}`);
     console.info(`${apply?'Set':'Would set'} checkout defaults: ${JSON.stringify(checkout)}`);
@@ -134,7 +138,7 @@ export async function setup(args:string[]=process.argv.slice(2)){
       console.info(`Previous checkout settings saved to ${snapshotPath}.`);
     }
     const domains=await collect(client.paymentMethodDomains.listItems({page_size:100},auth.merchant()));
-    console.table({cards:{ready:ready.cards},Affirm:{ready:affirm?'enabled':'unavailable'},ACH:{ready:ach?'probe passed':check?'unavailable':'run --check'},automatic_tax:{ready:tax?'probe passed':check?'connection required':'run --check'},delivery_methods:{ready:methodIds.length===2?'configured':apply?'created':'run --apply'},catalog:{ready:existing.products.filter(row=>row.metadata?.example_catalog===catalog).length===catalogProducts.length?'configured':apply?'created':'run --apply'},payment_method_domain:{ready:domains.some(domain=>domain.domain_name===new URL(config.appOrigin).hostname)?'registered':'register an HTTPS domain for wallets'}});
+    console.table({cards:{ready:ready.cards},Affirm:{ready:affirm?'enabled':'unavailable'},ACH:{ready:ach?'probe passed':achRequest?'requested; run --check once ready':check?'unavailable':'run --check'},automatic_tax:{ready:tax?'probe passed':check?'connection required':'run --check'},delivery_methods:{ready:methodIds.length===2?'configured':apply?'created':'run --apply'},catalog:{ready:existing.products.filter(row=>row.metadata?.example_catalog===catalog).length===catalogProducts.length?'configured':apply?'created':'run --apply'},payment_method_domain:{ready:domains.some(domain=>domain.domain_name===new URL(config.appOrigin).hostname)?'registered':'register an HTTPS domain for wallets'}});
     if(!apply)console.info('Dry run complete. Use npm run setup -- --apply to create resources and update sandbox checkout settings.');
   });}finally{store.close();}
 }

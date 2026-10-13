@@ -5,7 +5,7 @@ import {join,relative,resolve} from 'node:path';
 import ts from 'typescript';
 import {makeCreatePromotionRequest} from '@flintpay/node';
 import {readConfig} from '../../src/server/config.ts';
-import {affirmReady,catalogProducts,deterministicKey,deliveryInputs,owned,productInput,validateWelcomeCodes,welcomePromotionInput} from '../../scripts/setup.ts';
+import {achNotRequested,affirmReady,catalogProducts,deterministicKey,deliveryInputs,owned,productInput,validateWelcomeCodes,welcomePromotionInput} from '../../scripts/setup.ts';
 function files(root:string):string[]{return readdirSync(root,{withFileTypes:true}).flatMap(entry=>entry.isDirectory()?files(join(root,entry.name)):/\.tsx?$/.test(entry.name)?[join(root,entry.name)]:[]);}
 const sourceRoot=resolve('src');
 const merchantAllowed=new Set(['capabilities.listWithResponse','products.listItems','products.listVariantsItems','subscriptionPlans.listItems','customers.list','customers.get','customers.create','customers.update','customerVerifications.create','customerVerifications.confirm','customers.linkGuestPurchases','customerSessions.revoke','checkoutSessions.create','checkoutSessions.get','checkoutSessions.closeSession','orders.create','orders.get','orders.update','orders.deleteLineItem','orders.updateLineItem','orders.addLineItems','orders.getPaymentAttempt','paymentIntents.get','orders.sendReceipt','subscriptions.get']);
@@ -32,6 +32,7 @@ test('setup keys and catalog metadata are stable while variant inventory remains
   assert.equal(owned([{metadata:{example_catalog:'other',example_slug:'house-blend'}}],'house-blend'),undefined);assert.throws(()=>owned([{metadata:{example_catalog:'cedar-and-stone',example_slug:'duplicate'}},{metadata:{example_catalog:'cedar-and-stone',example_slug:'duplicate'}}],'duplicate'));
 });
 
+test('setup requests ACH debit only when Flint says it was never requested',()=>{assert.equal(achNotRequested([{capability:'accept_ach_debit_payments',blocked_reasons:[{code:'CAPABILITY_NOT_REQUESTED'}]}]),true);assert.equal(achNotRequested([{capability:'accept_ach_debit_payments',blocked_reasons:[{code:'REQUIREMENTS_DUE'}]}]),false);assert.equal(achNotRequested([{capability:'accept_ach_debit_payments'}]),false);assert.equal(achNotRequested([{capability:'accept_card_payments',blocked_reasons:[{code:'CAPABILITY_NOT_REQUESTED'}]}]),false);});
 test('Affirm readiness uses the published capability ready state',()=>{assert.equal(affirmReady([{capability:'accept_affirm_payments',status:'ready'}]),true);for(const status of ['enabled','pending','disabled'])assert.equal(affirmReady([{capability:'accept_affirm_payments',status}]),false);assert.equal(affirmReady([{capability:'accept_card_payments',status:'ready'}]),false);});
 
 test('welcome promotion creation serializes its required redeemable code',()=>{
