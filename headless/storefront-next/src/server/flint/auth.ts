@@ -3,7 +3,7 @@ import type {CheckoutRecord} from '../store/db.ts';
 type ReadOptions<M extends 'merchant'|'customer'|'checkout'>=Omit<RequestOptions<M>,'idempotencyKey'>&{idempotencyKey?:never};
 
 // Writes send one attempt: the action journal replays them with their saved key and body.
-// Reads follow the SDK's per-operation retry policy, so a brief Flint error doesn't fail a page.
+// Reads retry in the client's transport (client.ts), because the SDK makes one attempt per call.
 export function createAuth(apiKey:string) {
   function merchant():ReadOptions<'merchant'>;
   function merchant(idempotencyKey:string):RequestOptions<'merchant'>;
