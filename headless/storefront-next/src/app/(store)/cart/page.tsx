@@ -7,7 +7,7 @@ import { pageVisitor } from '@/server/session.ts';
 import { noticesFrom } from '@/server/page-notices.ts';
 import { CartLineRow } from '@/components/CartLineRow.tsx';
 import { CheckoutButton } from '@/components/CheckoutButton.tsx';
-import { ErrorNotice, Notice, Notices, productImage } from '@/components/ui.tsx';
+import { Notice, Notices, productImage } from '@/components/ui.tsx';
 import { BagIcon, LockIcon, TruckIcon } from '@/components/icons.tsx';
 
 export const metadata = { title: copy.cart.title };
@@ -19,15 +19,23 @@ export default async function CartPage({ searchParams }: Props) {
   const notices = noticesFrom(await searchParams, ['email_confirmed', 'email_confirmed_linked']);
   const cart = rt.carts.current(session, user);
   let data: CartData | null = null;
-  let failed: { code: string; message_key: string } | undefined;
   try {
     const locked = await rt.checkouts.cartLock(cart, session, user);
     data = { cart: plain(await rt.carts.view(cart)), locked: !!locked, checkoutRef: locked?.checkout_ref ?? null };
   } catch (error) {
     console.error(error);
-    failed = { code: 'CART_UNAVAILABLE', message_key: 'generic_error' };
   }
-  if (!data) return <div data-testid="sf-cart" data-state="error"><h1>{copy.cart.title}</h1><ErrorNotice error={failed} /></div>;
+  if (!data) {
+    return (
+      <div data-testid="sf-cart" data-state="error">
+        <h1>{copy.cart.title}</h1>
+        <section className="state-panel">
+          <p role="alert">{copy.cart.loadFailed}</p>
+          <Link className="button button-primary" href="/cart">{copy.home.tryAgain}</Link>
+        </section>
+      </div>
+    );
+  }
   const { lines, subtotal_money } = data.cart;
   const empty = lines.length === 0;
   const count = lines.reduce((sum, line) => sum + line.quantity, 0);

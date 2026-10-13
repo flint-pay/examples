@@ -407,6 +407,7 @@ export const copy = {
     shop: 'Shop',
     summary: 'Cart summary',
     lockedBody: 'Quantities and items are locked until your payment is confirmed.',
+    loadFailed: "We couldn't load your cart. Your items are saved, so try again.",
     decrease: 'Decrease quantity, {name}',
     increase: 'Increase quantity, {name}',
     itemCount: '{count} items',
