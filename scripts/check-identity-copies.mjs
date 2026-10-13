@@ -13,10 +13,13 @@ export function identityFiles(directory, prefix = '') {
 
 export function checkIdentityCopies(root = process.cwd()) {
   const storefront = identityFiles(join(root, 'headless/storefront/src/identity'));
-  const account = identityFiles(join(root, 'headless/account/src/identity'));
-  if (!storefront.length || storefront.length !== account.length || storefront.some((file, index) =>
-    file.path !== account[index].path || !file.bytes.equals(account[index].bytes))) {
-    throw new Error('Storefront and account identity modules must match byte for byte.');
+  const copies = [
+    identityFiles(join(root, 'headless/account/src/identity')),
+    identityFiles(join(root, 'headless/storefront-next/src/server/identity')),
+  ];
+  if (!storefront.length || copies.some((copy) => storefront.length !== copy.length || storefront.some((file, index) =>
+    file.path !== copy[index].path || !file.bytes.equals(copy[index].bytes)))) {
+    throw new Error('Storefront, account, and Next.js storefront identity modules must match byte for byte.');
   }
   return storefront.length;
 }

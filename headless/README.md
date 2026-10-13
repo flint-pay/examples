@@ -5,6 +5,7 @@ Two apps that show a merchant running checkout and the buyer account on its own 
 | App | What it is | Default URL |
 | --- | --- | --- |
 | [`storefront`](storefront/) | Catalog, cart, and embedded checkout for a fictional coffee roaster, Cedar & Stone | http://localhost:4100 |
+| [`storefront-next`](storefront-next/) | The same storefront built with the Next.js App Router | http://localhost:4300 |
 | [`account`](account/) | Orders, invoices, return balances, subscriptions, saved cards, and profile for the same buyers | http://localhost:4200 |
 | [`e2e`](e2e/) | Browser journeys across both apps against Flint staging | not an app |
 
