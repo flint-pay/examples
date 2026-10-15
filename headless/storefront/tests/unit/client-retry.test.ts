@@ -54,9 +54,9 @@ test('the SDK client retries reads through the transport and sends writes once',
   let calls=0;
   t.mock.method(globalThis,'fetch',async()=>{calls++;return failing(503)();});
   const client=createClient('https://api.example.invalid');
-  await assert.rejects(client.orders.get('ord_01J0000000000000000000000A',undefined,{apiKey:'sk_test_example'}));
+  await assert.rejects(client.orders.get('ord_example',undefined,{apiKey:'sk_test_example'}));
   assert.equal(calls,3);
   calls=0;
-  await assert.rejects(client.orders.pay({order_id:'ord_01J0000000000000000000000A',body:{action:'pay',expected_outstanding_money:{amount:'100',currency:'USD'}}},{apiKey:'sk_test_example',idempotencyKey:'pay-example'}));
+  await assert.rejects(client.orders.pay({order_id:'ord_example',body:{action:'pay',expected_outstanding_money:{amount:'100',currency:'USD'}}},{apiKey:'sk_test_example',idempotencyKey:'pay-example'}));
   assert.equal(calls,1);
 });
