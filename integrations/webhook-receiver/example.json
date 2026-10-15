@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "kind": "example",
+  "id": "integrations/webhook-receiver",
+  "area": "integrations",
+  "title": "Webhook receiver",
+  "summary": "A small server that verifies Flint webhooks, records each event once before acknowledging it, processes order.paid in the background with retries, catches up on events it missed, and inspects and resends failed deliveries.",
+  "language": "typescript",
+  "runtime": {
+    "node": ">=24"
+  },
+  "status": "beta",
+  "status_note": "Uses the @flintpay/node 3.0.0 beta.",
+  "guides": [
+    {
+      "title": "Webhooks",
+      "url": "https://developers.withflintpay.com/docs/guides/webhooks"
+    }
+  ],
+  "requires": {
+    "flint_sdk": {
+      "package": "@flintpay/node",
+      "version": "3.0.0-beta.20261012044000"
+    },
+    "stripe_js": false,
+    "stripe_test_mode": true,
+    "sandbox": "any",
+    "second_sandbox": false,
+    "customer_account_mode": "any",
+    "webhooks": "required",
+    "inbox": "none",
+    "capabilities": [],
+    "sandbox_setup": [
+      {
+        "id": "public_webhook_url",
+        "required": false,
+        "how": "Expose the app over public HTTPS, for example with a tunnel, and run npm run setup -- --apply. Without one, forward events with flint listen."
+      }
+    ]
+  },
+  "commands": {
+    "install": "npm ci",
+    "setup": "npm run setup -- --apply",
+    "dev": "npm run dev",
+    "check": "npm run check",
+    "test": "npm test",
+    "test_integration": "npm run test:integration"
+  },
+  "ports": [
+    4500
+  ],
+  "env": {
+    "file": ".env.example",
+    "required": [
+      "FLINT_API_KEY",
+      "FLINT_API_BASE_URL",
+      "PORT",
+      "FLINT_WEBHOOK_SECRET"
+    ],
+    "optional": [
+      "FLINT_WEBHOOK_PREVIOUS_SECRET",
+      "FLINT_WEBHOOK_ENDPOINT_ID",
+      "WEBHOOK_URL",
+      "FLINT_SANDBOX_ID",
+      "DATABASE_PATH",
+      "CATCH_UP_INTERVAL_SECONDS",
+      "CATCH_UP_LOOKBACK_HOURS"
+    ]
+  },
+  "ci": {
+    "check": true,
+    "integration": "none",
+    "browser": "none",
+    "e2e": "none"
+  }
+}
