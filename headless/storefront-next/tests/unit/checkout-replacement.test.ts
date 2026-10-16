@@ -67,6 +67,13 @@ test('cart edits create a fresh session after the merchant mutation invalidates 
   assert.equal(read.record.needs_replacement,0);assert.equal(read.record.cart_dirty,0);assert.equal(read.order.line_items.length,2);
 }));
 
+test('a cart edit that changes nothing keeps the open session',async()=>use(async f=>{
+  await f.app.editCart(f.cart,async()=>f.store.run('UPDATE cart_lines SET quantity=1 WHERE line_id=?','line_initial'));
+  assert.equal(f.record().needs_replacement,0);assert.equal(f.record().cart_dirty,0);
+  const read=await f.app.read('chk_fixture');
+  assert.equal(f.launches.length,0);assert.equal(read.record.checkout_session_id,'cs_initial');
+}));
+
 test('a definitely rejected stale replacement gets a fresh creation key after verified invalidation',async()=>use(async f=>{
   f.endSession();await assert.rejects(()=>f.app.launch(f.record()),{code:'ORDER_COLLECTION_IN_PROGRESS'});
   const rejected=f.store.get<ActionRecord>("SELECT * FROM actions WHERE kind='session_create'")!;

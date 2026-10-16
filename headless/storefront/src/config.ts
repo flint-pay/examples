@@ -48,7 +48,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const accountOrigin = env.ACCOUNT_APP_ORIGIN ? origin(env.ACCOUNT_APP_ORIGIN, 'ACCOUNT_APP_ORIGIN', errors) : undefined;
   const port = Number(env.PORT);
   if (!Number.isInteger(port) || port < 1 || port > 65535) errors.push('PORT: an integer from 1 to 65535 is required');
-  const checkoutTtl = Number(env.CHECKOUT_SESSION_TTL_SECONDS || 3600);
+  const checkoutTtl = Number(env.CHECKOUT_SESSION_TTL_SECONDS || 86400);
   if (!Number.isInteger(checkoutTtl) || checkoutTtl < 60 || checkoutTtl > 86400) errors.push('CHECKOUT_SESSION_TTL_SECONDS: use 60 to 86400');
   const cookieName = env.SESSION_COOKIE_NAME || 'storefront_session';
   if (!/^[A-Za-z0-9_]{1,80}$/.test(cookieName)) errors.push('SESSION_COOKIE_NAME: letters, digits, and underscores only');

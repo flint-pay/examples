@@ -6,6 +6,9 @@ export class LocalError extends Error {
 }
 export function errorStatus(error:unknown):number{return error instanceof SdkError ? error.kind==='validation'&&error.outcome==='not_sent'?400:error.status??503 : error instanceof LocalError ? error.status : 500;}
 export function unknownOutcome(error:unknown):boolean{return error instanceof SdkError&&(error.outcome==='unknown'||(error.status??0)>=500||['IDEMPOTENCY_KEY_IN_PROGRESS','GIFT_CARDS_UNAVAILABLE'].includes(error.code??''));}
+const endedSessionCodes=new Set(['INVALID_CHECKOUT_SESSION','CHECKOUT_SESSION_EXPIRED','CHECKOUT_SESSION_NOT_OPEN']);
+/** True when Flint refused the checkout credential because its session has ended. */
+export function sessionEnded(error:unknown):boolean{return !!error&&typeof error==='object'&&'code'in error&&endedSessionCodes.has(String(error.code));}
 export function appError(error:unknown):AppError {
   const status=errorStatus(error);
   const code=error instanceof SdkError||error instanceof LocalError ? error.code||'UNKNOWN_ERROR' : 'UNKNOWN_ERROR';

@@ -2,7 +2,7 @@ import type {Client,ExpandedPaymentIntentSummary,MoneyValue,Order,OrderPaymentAt
 import {SdkError} from '@flintpay/node';
 import {createHash} from 'node:crypto';
 import type {Auth} from '../flint/auth.ts';
-import {LocalError,unknownOutcome} from '../flint/errors.ts';
+import {LocalError,unknownOutcome,sessionEnded} from '../flint/errors.ts';
 import {Store} from '../store/db.ts';
 import type {CheckoutRecord,ActionRecord} from '../store/db.ts';
 import {moneyEqual} from '../security/money.ts';
@@ -51,7 +51,7 @@ export class PaymentEngine {
   async read(record:CheckoutRecord):Promise<Order>{
     if(!record.checkout_auth_token)return this.client.orders.get(record.order_id!,undefined,this.auth.merchant());
     try{return await this.client.orders.get(record.order_id!,undefined,this.auth.checkout(record));}
-    catch(error){const code=error&&typeof error==='object'&&'code'in error?String(error.code):'';if(!['INVALID_CHECKOUT_SESSION','CHECKOUT_SESSION_EXPIRED','CHECKOUT_SESSION_NOT_OPEN'].includes(code))throw error;return this.client.orders.get(record.order_id!,undefined,this.auth.merchant());}
+    catch(error){if(!sessionEnded(error))throw error;return this.client.orders.get(record.order_id!,undefined,this.auth.merchant());}
   }
   // Fills in each payment intent's source type, which the page and next-step need to tell Affirm and ACH
   // payments apart. A failed lookup leaves the order as the session read returned it.
@@ -97,7 +97,7 @@ export class PaymentEngine {
     if(!record.last_attempt_id)return undefined;
     if(!record.checkout_auth_token||managedRead)return this.client.orders.getPaymentAttempt(record.order_id!,record.last_attempt_id,undefined,this.auth.merchant());
     try{return await this.client.orders.getPaymentAttempt(record.order_id!,record.last_attempt_id,undefined,this.auth.checkout(record));}
-    catch(error){const code=error&&typeof error==='object'&&'code'in error?String(error.code):'';if(!['INVALID_CHECKOUT_SESSION','CHECKOUT_SESSION_EXPIRED','CHECKOUT_SESSION_NOT_OPEN'].includes(code))throw error;return this.client.orders.getPaymentAttempt(record.order_id!,record.last_attempt_id,undefined,this.auth.merchant());}
+    catch(error){if(!sessionEnded(error))throw error;return this.client.orders.getPaymentAttempt(record.order_id!,record.last_attempt_id,undefined,this.auth.merchant());}
   }
   remember(record:CheckoutRecord,attempt:OrderPaymentAttempt|undefined){
     if(attempt)this.store.run('UPDATE checkouts SET last_attempt_id=?,updated_at=? WHERE checkout_ref=?',attempt.order_payment_attempt_id,Date.now(),record.checkout_ref);
