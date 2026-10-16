@@ -1,7 +1,7 @@
 import type {Client,Order,CheckoutSession,BuyerDeliveryQuoteChoiceGroupResource,DeliveryAddressResource,DeliveryPickupAvailabilityLocationResource,DeliveryAddressRequestInput,DeliveryBuyerLocationRequestInput,OrderTaxLocationFullAddressRequestInput,Subscription} from '@flintpay/node';
 import {createHash} from 'node:crypto';
 import type {Auth} from './auth.ts';
-import {LocalError,unknownOutcome,appError} from './errors.ts';
+import {LocalError,unknownOutcome,appError,sessionEnded} from './errors.ts';
 import {SdkError} from '@flintpay/node';
 import {challengeFromError,confirmWithSession,newChallengeId,sessionTag,applyWithProof} from './gift-challenge.ts';
 import type {GiftChallengeView} from '../../shared/types.ts';
@@ -27,7 +27,6 @@ export type MutationContext={order_revision?:string;delivery_selection_id:string
 const displayNotices=new Set(['checkout_refreshed','delivery_released','total_changed','gift_card_changed','affirm_incomplete','trial_not_started','signed_in_mid_checkout','delivery_requoted']);
 
 const bodyHash=(body:unknown)=>createHash('sha256').update(JSON.stringify(body)).digest('hex');
-const endedSession=new Set(['INVALID_CHECKOUT_SESSION','CHECKOUT_SESSION_EXPIRED','CHECKOUT_SESSION_NOT_OPEN']);
 
 export function pickupLocations(preview?:PickupPreview){
   return preview?.locations.map((location,index)=>({delivery_option_id:location.location_id,delivery_method_id:location.delivery_method_ids[0]!,name:location.name,type:'pickup',amount_money:null,delivery_choice_group_id:'pickup_locations',availability_status:'ready',display_position:index,distance_meters:location.distance_meters,pickup:{location:{location_id:location.location_id,name:location.name,address:location.address}}}));
@@ -93,7 +92,7 @@ export class Checkouts {
     try{await this.action(record,'contact_restore',body,key=>this.client.checkoutSessions.update(record.checkout_session_id!,body,this.auth.checkout(record,key)),row.idempotency_key);return true;}
     catch(error){
       // An ended session is replaced by the read that follows, and that launch journals a fresh restoration.
-      if(error&&typeof error==='object'&&'code'in error&&endedSession.has(String(error.code)))return false;
+      if(sessionEnded(error))return false;
       throw error;
     }
   }
@@ -129,8 +128,7 @@ export class Checkouts {
       if(record.cart_dirty){await this.syncRecord(record);record=this.record(ref);}
       try{session=await this.client.checkoutSessions.get(record.checkout_session_id!,undefined,record.checkout_auth_token?this.auth.checkout(record):this.auth.merchant());}
       catch(error){
-        const code=error&&typeof error==='object'&&'code'in error?error.code:undefined;
-        if(!['INVALID_CHECKOUT_SESSION','CHECKOUT_SESSION_EXPIRED','CHECKOUT_SESSION_NOT_OPEN'].includes(String(code)))throw error;
+        if(!sessionEnded(error))throw error;
         credentialsStale=true;
         session=await this.client.checkoutSessions.get(record.checkout_session_id!,undefined,this.auth.merchant());
       }
@@ -348,6 +346,8 @@ export class Checkouts {
   async syncRecord(record:CheckoutRecord){
     if(!record.cart_id||!record.order_id)return;
     if(this.payments.unresolved(record))return;
+    // Only an applied edit can have ended the session; a sync that changes nothing keeps it.
+    let applied=false;
     const cart=this.store.get<Cart>('SELECT * FROM carts WHERE cart_id=?',record.cart_id)!;
     for(let count=0;count<64;count++){
       const order=await this.client.orders.get(record.order_id,undefined,this.auth.merchant());
@@ -355,6 +355,7 @@ export class Checkouts {
       if(order.payment_status==='paid'||order.status!=='open'){this.store.run('UPDATE checkouts SET cart_dirty=0 WHERE checkout_ref=?',record.checkout_ref);return;}
       const pending=this.store.get<ActionRecord>("SELECT * FROM actions WHERE resource=? AND status IN ('pending','unknown')",`order:${record.order_id}`);
       if(pending&&pending.kind!=='cart_sync')throw new LocalError('ACTION_RECONCILIATION_REQUIRED',409);
+      if(pending)applied=true;
       type Change={type:'add'|'update'|'delete';variant_id:string;line_id?:string;quantity?:number};
       let change=pending?.body?JSON.parse(pending.body) as Change:undefined;
       if(!change){
@@ -364,34 +365,22 @@ export class Checkouts {
         if(extra)change={type:'delete',variant_id:extra.variant_id!,line_id:extra.order_line_item_id};
         else if(different){const remote=order.line_items.find(item=>item.variant_id===different.variant_id);change={type:remote?'update':'add',variant_id:different.variant_id,line_id:remote?.order_line_item_id,quantity:different.quantity};}
       }
-      if(!change){this.store.run('UPDATE checkouts SET cart_dirty=0,needs_replacement=1 WHERE checkout_ref=?',record.checkout_ref);return;}
+      if(!change){this.store.run('UPDATE checkouts SET cart_dirty=0,needs_replacement=MAX(needs_replacement,?) WHERE checkout_ref=?',applied?1:0,record.checkout_ref);return;}
       const input=change;
       await this.action(record,'cart_sync',input,key=>input.type==='delete'
         ?this.client.orders.deleteLineItem(record.order_id!,input.line_id!,undefined,this.auth.merchant(key))
         :input.type==='update'?this.client.orders.updateLineItem(record.order_id!,input.line_id!,{quantity:String(input.quantity)},this.auth.merchant(key))
         :this.client.orders.addLineItems(record.order_id!,{line_items:[{variant_id:input.variant_id,quantity:String(input.quantity)}]},this.auth.merchant(key)));
+      applied=true;
     }
     throw new LocalError('CART_RECONCILIATION_REQUIRED',409);
-  }
-  async cartChange(cart:Cart,line:CartLine|undefined,variantId:string,quantity:number|null){
-    const record=this.store.get<CheckoutRecord>("SELECT * FROM checkouts WHERE cart_id=? AND status='open' ORDER BY created_at DESC LIMIT 1",cart.cart_id);
-    if(!record?.order_id)return;
-    await this.mutate(record.checkout_ref,'cart_change',{variant_id:variantId,quantity},async(record,key)=>{
-      const order=await this.client.orders.get(record.order_id!,undefined,this.auth.merchant());
-      const remote=order.line_items.find(item=>item.variant_id===variantId);
-      if(quantity===null&&remote)await this.client.orders.deleteLineItem(record.order_id!,remote.order_line_item_id,undefined,this.auth.merchant(key));
-      else if(remote)await this.client.orders.updateLineItem(record.order_id!,remote.order_line_item_id,{quantity:String(quantity)},this.auth.merchant(key));
-      else if(quantity!==null)await this.client.orders.addLineItems(record.order_id!,{line_items:[{variant_id:variantId,quantity:String(quantity)}]},this.auth.merchant(key));
-      this.store.run('UPDATE checkouts SET needs_replacement=1 WHERE checkout_ref=?',record.checkout_ref);
-    });
   }
   async subscription(read:ReadCheckout):Promise<Subscription|undefined>{
     if(read.record.kind!=='subscription'||!read.order.subscription_id)return undefined;
     if(!read.record.checkout_auth_token)return this.client.subscriptions.get(read.order.subscription_id,undefined,this.auth.merchant());
     try{return await this.client.subscriptions.get(read.order.subscription_id,undefined,this.auth.checkout(read.record));}
     catch(error){
-      const code=error&&typeof error==='object'&&'code'in error?String(error.code):'';
-      if(read.order.payment_status==='paid'&&['INVALID_CHECKOUT_SESSION','CHECKOUT_SESSION_EXPIRED','CHECKOUT_SESSION_NOT_OPEN'].includes(code))return this.client.subscriptions.get(read.order.subscription_id,undefined,this.auth.merchant());
+      if(read.order.payment_status==='paid'&&sessionEnded(error))return this.client.subscriptions.get(read.order.subscription_id,undefined,this.auth.merchant());
       throw error;
     }
   }
