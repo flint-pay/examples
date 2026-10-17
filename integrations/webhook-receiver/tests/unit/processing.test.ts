@@ -16,7 +16,7 @@ function ordersClient(read: (orderId: string) => Promise<Partial<Order>>) {
 }
 
 function recordOrderPaid(inbox: Inbox, id: string, orderId: string, now = Date.now()) {
-  const event = envelope({ webhook_event_id: id, data: { order_id: orderId } });
+  const event = envelope({ webhook_event_id: id, data: { object: { order_id: orderId } } });
   inbox.record({ webhookEventId: id, eventType: 'order.paid', source: 'delivery', test: false, payload: JSON.stringify(event), process: true }, now);
 }
 
@@ -105,7 +105,7 @@ test('an event without an order ID fails without calling Flint', async () => {
   const inbox = new Inbox(':memory:');
   try {
     const { client, reads } = ordersClient(async () => ({}));
-    const event = envelope({ data: {} });
+    const event = envelope({ data: { object: {} } });
     inbox.record({ webhookEventId: 'whev_example_one', eventType: 'order.paid', source: 'delivery', test: false, payload: JSON.stringify(event), process: true });
     await processNext(inbox, { client, auth });
     assert.equal(inbox.event('whev_example_one')?.status, 'failed');
@@ -128,6 +128,20 @@ test('two workers never process the same event at the same time', async () => {
     release();
     await first;
     assert.equal(reads.length, 1);
+  } finally {
+    inbox.close();
+  }
+});
+
+test('an event queued before payload_version 2 still reads its order from the flat data', async () => {
+  const inbox = new Inbox(':memory:');
+  try {
+    const { client, reads } = ordersClient(async (orderId) => ({ order_id: orderId, payment_status: 'paid' }));
+    const event = envelope({ payload_version: 1, data: { order_id: 'ord_example_legacy' } });
+    inbox.record({ webhookEventId: 'whev_example_one', eventType: 'order.paid', source: 'delivery', test: false, payload: JSON.stringify(event), process: true });
+    await processNext(inbox, { client, auth });
+    assert.deepEqual(reads, ['ord_example_legacy']);
+    assert.equal(inbox.event('whev_example_one')?.outcome, 'fulfillment recorded');
   } finally {
     inbox.close();
   }

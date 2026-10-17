@@ -11,7 +11,10 @@ export type Envelope = {
   mode: string;
   test: boolean;
   created_at?: string;
+  payload_version: number;
   data: Record<string, unknown>;
+  /** The affected resource: data.object from payload_version 2, or data itself on older events. */
+  resource: Record<string, unknown>;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -23,13 +26,20 @@ export function parseEnvelope(value: unknown): Envelope | undefined {
   const { webhook_event_id: id, event_type: type, mode, test, created_at: createdAt } = value;
   if (typeof id !== 'string' || !id || typeof type !== 'string' || !type || typeof mode !== 'string') return undefined;
   if (test !== undefined && typeof test !== 'boolean') return undefined;
+  // payload_version 2 carries the resource, as its GET returns it, in data.object. Events Flint queued before
+  // that change still arrive as version 1, with the fields directly in data.
+  const version = typeof value.payload_version === 'number' ? value.payload_version : 1;
+  const resource = version >= 2 ? value.data.object : value.data;
+  if (!isRecord(resource)) return undefined;
   return {
     webhook_event_id: id,
     event_type: type,
     mode,
     test: test === true,
     created_at: typeof createdAt === 'string' ? createdAt : undefined,
+    payload_version: version,
     data: value.data,
+    resource,
   };
 }
 
@@ -50,7 +60,7 @@ export type Handler = (event: Envelope, context: HandlerContext) => Promise<(inb
  */
 export const handlers = {
   'order.paid': async (event, { client, auth }) => {
-    const orderId = event.data.order_id;
+    const orderId = event.resource.order_id;
     if (typeof orderId !== 'string' || !orderId) throw new PermanentError('order.paid without an order_id');
     const order = await client.orders.get(orderId, {}, auth.merchant());
     return (inbox) => {
