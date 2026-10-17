@@ -123,7 +123,8 @@ export function createApp(options:AppOptions){
     try{event=asRecord(client.verifyWebhook(raw,c.req.raw.headers,config.webhookSecret).event);}catch{return c.json({error:'invalid_signature'},400);}
     if(event.mode!=='test')return c.json({error:'invalid_mode'},400);
     const eventId=c.req.header('webhook-id');if(!eventId||typeof event.event_type!=='string')return c.json({error:'invalid_event'},400);
-    const data=asRecord(event.data);const objectId=data[`${event.event_type.split('.')[0]}_id`];
+    // payload_version 2 carries the resource in data.object; events queued before it still put the fields in data.
+    const data=event.payload_version===undefined||event.payload_version===1?asRecord(event.data):asRecord(asRecord(event.data).object);const objectId=data[`${event.event_type.split('.')[0]}_id`];
     store.transaction(()=>{
       const inserted=store.run('INSERT OR IGNORE INTO webhook_events VALUES(?,?,?,?)',eventId,event.event_type as string,typeof objectId==='string'?objectId:null,Date.now());
       if(inserted.changes!==1)return;

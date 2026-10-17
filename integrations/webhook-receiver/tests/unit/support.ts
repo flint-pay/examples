@@ -13,12 +13,12 @@ export function envelope(overrides: Partial<Envelope> & Record<string, unknown> 
     api_version: '2026-10-01',
     webhook_event_id: 'whev_example_one',
     event_type: 'order.paid',
-    payload_version: 1,
+    payload_version: 2,
     mode: 'test',
     merchant_id: 'mer_example',
     created_at: '2026-10-15T12:00:00Z',
     request: null,
-    data: { order_id: 'ord_example_one' },
+    data: { object: { order_id: 'ord_example_one', payment_status: 'paid' } },
     ...overrides,
   };
 }

@@ -20,7 +20,8 @@ export async function POST(request: Request) {
   const eventId = request.headers.get('webhook-id');
   if (!eventId || typeof event.event_type !== 'string') return Response.json({ error: 'invalid_event' }, { status: 400 });
   const type = event.event_type;
-  const data = record(event.data);
+  // payload_version 2 carries the resource in data.object; events queued before it still put the fields in data.
+  const data = event.payload_version === undefined || event.payload_version === 1 ? record(event.data) : record(record(event.data).object);
   const objectId = data[`${type.split('.')[0]}_id`];
   store.transaction(() => {
     const inserted = store.run('INSERT OR IGNORE INTO webhook_events VALUES(?,?,?,?)', eventId, type, typeof objectId === 'string' ? objectId : null, Date.now());

@@ -46,6 +46,18 @@ test('signed test webhooks deduplicate and cannot turn an unverified browser ord
     assert.equal(app.store.get<{object_id:string}>('SELECT object_id FROM webhook_events')?.object_id,'local-order');
   }finally{app.store.close();app.identity.close();}
 });
+test('payload_version 2 events read the resource from data.object',async()=>{
+  const key=randomBytes(32);const app=runtime('whsec_'+key.toString('base64')),now=Date.now();
+  const envelope={api_version:'2026-09-07',payload_version:2,mode:'test',merchant_id:'merchant-unit',created_at:new Date().toISOString(),request:null};
+  try{
+    app.store.run('INSERT INTO checkouts(checkout_ref,session_hash,kind,checkout_session_id,order_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?)','owned-checkout','unit-session','order','local-checkout-session','local-order',now,now);
+    assert.equal((await deliverWebhook(app,key,{...envelope,webhook_event_id:'local-paid-v2',event_type:'order.paid',data:{object:{order_id:'local-order',payment_status:'paid'}}} as never)).status,200);
+    assert.ok(app.store.get('SELECT * FROM order_signals WHERE order_id=?','local-order'));
+    assert.equal((await deliverWebhook(app,key,{...envelope,webhook_event_id:'local-invalidation-v2',event_type:'checkout_session.invalidated',data:{object:{checkout_session_id:'local-checkout-session',status:'invalidated'}}} as never)).status,200);
+    assert.equal(app.store.get<{needs_replacement:number}>('SELECT needs_replacement FROM checkouts WHERE checkout_ref=?','owned-checkout')?.needs_replacement,1);
+    assert.deepEqual(app.store.all<{object_id:string}>('SELECT object_id FROM webhook_events ORDER BY object_id').map(row=>row.object_id),['local-checkout-session','local-order']);
+  }finally{app.store.close();app.identity.close();}
+});
 test('published checkout invalidation data targets its session and deduplicates delivery',async()=>{
   const key=randomBytes(32);const app=runtime('whsec_'+key.toString('base64')),now=Date.now();
   const event={api_version:'2026-07-22',webhook_event_id:'local-invalidation',event_type:'checkout_session.invalidated',payload_version:1,mode:'test',merchant_id:'merchant-unit',created_at:new Date().toISOString(),request:null,data:{checkout_session_id:'local-checkout-session',order_id:'local-order',reason:'order_mutated',resource_updated_at:new Date().toISOString(),status:'invalidated'}} satisfies Webhook_checkout_session_invalidated_merchant;

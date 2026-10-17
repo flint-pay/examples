@@ -113,6 +113,8 @@ Event types without a handler, and test events, are recorded as `ignored` and st
 
 ### Processing
 
+Events carry the affected resource in `data.object` (`payload_version` 2). Events Flint queued before that format still arrive as version 1, with the fields directly in `data`. `parseEnvelope` in `src/events.ts` gives handlers the resource either way.
+
 The worker takes due events from the inbox one at a time with a one-minute lease, so the server and a command like `catch-up` never process the same event at once. The `order.paid` handler reads the order from Flint. If it is paid, it inserts a fulfillment keyed by `order_id`, in the same transaction that marks the event processed. A second event for the same order finds the fulfillment and records `already fulfilled`.
 
 A failed read is retried after 30 seconds, then with doubling delays up to an hour, for up to 10 attempts. An order that doesn't exist, or an event without an order ID, fails at once. Failed events wait for `npm run webhooks -- requeue <webhook_event_id>`.
