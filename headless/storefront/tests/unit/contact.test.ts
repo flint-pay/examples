@@ -13,8 +13,8 @@ const origin='http://localhost:4100';
 function fixture(){
   const money={amount:'2400',currency:'USD'};
   const remote={contact:{} as Contact,patches:[] as Contact[],quotes:0,error:undefined as SdkError|undefined};
-  const order={order_id:'fixture-order',status:'open',payment_status:'unpaid',order_revision:'1',settlement_amounts:{outstanding_money:money},payment_collection:{stripe:{}}} as unknown as Order;
-  const session={checkout_session_id:'fixture-session',status:'open',customer_collection:{require_email:true}} as unknown as CheckoutSession;
+  const order={order_id:'fixture-order',status:'open',payment_status:'unpaid',version:'1',settlement_amounts:{outstanding_money:money},payment_collection:{stripe:{}}} as unknown as Order;
+  const session={checkout_session_id:'fixture-session',status:'open',buyer_fields:{require_email:true}} as unknown as CheckoutSession;
   const client={
     orders:{get:async()=>order},
     checkoutSessions:{

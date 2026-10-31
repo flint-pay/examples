@@ -526,7 +526,7 @@ test('gift card: unavailable, challenge, partial, and full coverage use settleme
   const body = (await fixtureLog(request, 'chk_card')).log.find((entry) => entry.path === 'pay')!.body;
   expect(body.approved_collection_kind).toBe('settlement');
   expect(body.credential).toBeUndefined();
-  expect(body.approved_order_revision).toBe('3');
+  expect(body.approved_order_version).toBe('3');
   expect(body.approved_gift_card_money).toEqual({ amount: '7469', currency: 'USD' });
   const logText = JSON.stringify((await fixtureLog(request, 'chk_card')).log);
   expect(logText).not.toContain('FULLCARD');

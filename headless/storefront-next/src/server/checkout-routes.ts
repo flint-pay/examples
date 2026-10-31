@@ -1,7 +1,7 @@
 import 'server-only';
 import {SdkError} from '@flintpay/node';
-import type {DeliveryAddressRequestInput,OrderTaxLocationFullAddressRequestInput,UpdateCustomerRequestInput} from '@flintpay/node';
-import {LocalError} from './flint/errors.ts';
+import type {CreateCheckoutSessionCustomerVerificationRequestInput,CreateCustomerAddressRequestInput,DeliveryAddressRequestInput,OrderTaxLocationFullAddressRequestInput,UpdateCustomerAddressRequestInput} from '@flintpay/node';
+import {LocalError,condition,facts} from './flint/errors.ts';
 import type {Quote,Details} from './flint/checkouts.ts';
 import {validProof} from './flint/gift-challenge.ts';
 import {buyerSafe} from './flint/projection.ts';
@@ -44,7 +44,7 @@ export const postContact=job(async ctx=>{
 export const postTimezone=job(async ctx=>{
   const {client,auth,checkouts}=ctx.rt;const timezone=text((await ctx.body()).timezone,100);
   try{await checkouts.mutate(ref(ctx),'timezone',{timezone},(record,key)=>client.checkoutSessions.update(record.checkout_session_id!,{timezone},auth.checkout(record,key)));}
-  catch(error){if(!(error&&typeof error==='object'&&'code'in error&&error.code==='INVALID_TIMEZONE'))throw error;}
+  catch(error){if(condition(error)!=='INVALID_TIMEZONE')throw error;}
 });
 
 export const postVerification=job(async ctx=>{
@@ -56,19 +56,31 @@ export const postVerification=job(async ctx=>{
   // Codes before payment keep their own allowance, and Flint allows 3 per channel to confirm a card.
   if(confirming)await rate(ctx,'verification_confirm',6,15*60_000);else await rate(ctx,'verification',3,15*60_000);
   const address=confirming||!input.email?undefined:email(input.email);
-  await checkouts.mutate(ref(ctx),'checkout_verification',{purpose,channel,email:address},async(record,key)=>{
-    const verified=await client.checkoutSessions.createCustomerVerification(record.checkout_session_id!,{purpose:purpose as 'use_saved_payment_methods',channel:channel as 'auto',...(address?{email:address}:{}),...auth.checkoutHeaders(record)},auth.checkout(record,key));
-    const details=checkouts.details(record);details.verification={customer_verification_id:verified.customer_verification_id,status:'code_sent',purpose,channel:verified.channel,email:verified.email,phone_last_digits:verified.phone_last_digits};checkouts.saveDetails(record,details);
-  });
+  try{
+    await checkouts.mutate(ref(ctx),'checkout_verification',{purpose,channel,email:address},async(record,key)=>{
+      const verified=await client.checkoutSessions.createCustomerVerification({checkout_session_id:record.checkout_session_id!,body:{purpose,channel,...(address?{email:address}:{})} as CreateCheckoutSessionCustomerVerificationRequestInput},auth.checkout(record,key));
+      const details=checkouts.details(record);details.verification={customer_verification_id:verified.checkout_session_customer_verification_id,status:'code_sent',purpose,channel:verified.channel,email:verified.email,phone_last_digits:verified.phone_last_digits};checkouts.saveDetails(record,details);
+    });
+  }catch(error){throw verificationRefusal(error,{confirming,channel});}
 });
+
+/** Flint refuses a code request or a saved-card confirmation with shared codes; the channel and purpose tell the cases apart. */
+function verificationRefusal(error:unknown,{confirming,channel}:{confirming:boolean;channel:string}){
+  if(condition(error)!=='ACTION_NOT_ALLOWED')return error;
+  const reason=facts(error).reason;
+  if(reason==='not_offered')return new LocalError(channel==='sms'?'CUSTOMER_VERIFICATION_TEXT_UNAVAILABLE':'PAYMENT_METHOD_SAVE_EMAIL_UNAVAILABLE',409);
+  if(confirming&&reason==='unsupported_state')return new LocalError('PAYMENT_METHOD_SAVE_NOT_PENDING',409);
+  if(confirming&&reason==='status_not_reached')return new LocalError('PAYMENT_METHOD_SAVE_NOT_READY',409);
+  return error;
+}
 
 export const postVerificationConfirm=job(async ctx=>{
   const {client,auth,checkouts,store}=ctx.rt;
   const code=text((await ctx.body()).code,6);if(!/^\d{6}$/.test(code))throw new LocalError('CUSTOMER_VERIFICATION_CODE_INVALID');
   await checkouts.mutate(ref(ctx),'checkout_verification_confirm',{code_hash:digest(code)},async(record,key,context)=>{
     const details=checkouts.details(record);if(!details.verification)throw new LocalError('INVALID_CUSTOMER_ACCOUNT_REQUEST');
-    const verified=await client.checkoutSessions.confirmCustomerVerification(record.checkout_session_id!,context.customer_verification_id!,{code,...auth.checkoutHeaders(record)},auth.checkout(record,key));
-    if(verified.checkout_access)store.run('UPDATE checkouts SET checkout_auth_token=? WHERE checkout_ref=?',verified.checkout_access.checkout_auth_token,record.checkout_ref);
+    const verified=await client.checkoutSessions.confirmCustomerVerification(record.checkout_session_id!,context.customer_verification_id!,{code},auth.checkout(record,key));
+    if(verified.checkout_auth_token)store.run('UPDATE checkouts SET checkout_auth_token=? WHERE checkout_ref=?',verified.checkout_auth_token,record.checkout_ref);
     delete details.verification;checkouts.saveDetails(record,details);
   });
 });
@@ -86,7 +98,7 @@ export const postDiscountRemove=job(async ctx=>{
   const {client,auth,checkouts,payments}=ctx.rt;
   const values=(await ctx.body()).order_discount_ids;if(!Array.isArray(values)||!values.length||!values.every(value=>typeof value==='string'))throw new LocalError('INVALID_INPUT');
   await checkouts.mutate(ref(ctx),'discount_remove',{order_discount_ids:values},async(record,key)=>{
-    const order=await payments.read(record);if(values.some(value=>!order.applied_discounts?.some(discount=>discount.order_discount_id===value)))throw new LocalError('NOT_FOUND',404);
+    const order=await payments.read(record);if(values.some(value=>!order.discounts?.some(discount=>discount.order_discount_id===value)))throw new LocalError('NOT_FOUND',404);
     await client.orders.removeDiscounts(record.order_id!,{order_discount_ids:values as string[]},auth.checkout(record,key));
     const details=checkouts.details(record);delete details.delivery_selection;delete details.delivery_quote;checkouts.notice(record,'delivery_released');checkouts.saveDetails(record,details);
   });
@@ -184,10 +196,21 @@ export const postBillingAddress=job(async ctx=>{
       const previous=store.get<ActionRecord>('SELECT * FROM actions WHERE idempotency_key=?',customerKey);
       const ownedBilling=details.customer_billing_address&&sameBillingAddress(customer.billing_address,details.customer_billing_address);
       if(previous||!sameBillingAddress(customer.billing_address,address)&&(!customer.billing_address&&!customer.shipping_address||ownedBilling)){
+        // The customer's billing address is a copy of its default saved address: the first one is created as that default, and a correction replaces the saved address this checkout made.
         // Keep the original target and version when recovering a lost response.
-        const update=previous?.body?JSON.parse(previous.body) as {customer_id:string;request:UpdateCustomerRequestInput}:{customer_id:customer.customer_id,request:{billing_address:address,expected_version:customer.version}};
+        type Saved={customer_id:string}&({create:CreateCustomerAddressRequestInput}|{customer_address_id:string;update:UpdateCustomerAddressRequestInput});
+        let update:Saved;
+        if(previous?.body)update=JSON.parse(previous.body) as Saved;
+        else if(ownedBilling){
+          const saved=(await client.customers.listAddresses(customer.customer_id,{page_size:100},auth.merchant())).data.find(item=>item.is_default_billing);
+          if(!saved)throw new LocalError('ACTION_RECONCILIATION_REQUIRED',409);
+          update={customer_id:customer.customer_id,customer_address_id:saved.customer_address_id,update:{address,expected_version:saved.version}};
+        }else update={customer_id:customer.customer_id,create:{address,recipient_name:user.name,is_default_billing:true}};
         if(update.customer_id!==user.flint_customer_id)throw new LocalError('ACTION_RECONCILIATION_REQUIRED',409);
-        await checkouts.action(record,'tax_location_customer',update,customerKey=>sameBillingAddress(customer.billing_address,address)?Promise.resolve(customer):client.customers.update(update.customer_id,update.request,auth.merchant(customerKey)),customerKey,undefined,`action:${key}`);
+        await checkouts.action(record,'tax_location_customer',update,async customerKey=>{
+          if(sameBillingAddress(customer.billing_address,address))return customer;
+          return 'create'in update?client.customers.createAddress(update.customer_id,update.create,auth.merchant(customerKey)):client.customers.updateAddress(update.customer_id,update.customer_address_id,update.update,auth.merchant(customerKey));
+        },customerKey,undefined,`action:${key}`);
         details.customer_billing_address=address;checkouts.saveDetails(record,details);
       }
     }
@@ -214,21 +237,21 @@ export const postGiftChallenge=route(async ctx=>{
 export function postGiftCardRemove(giftCardId:(ctx:RouteContext)=>Promise<string>){
   return job(async ctx=>{
     const {client,auth,checkouts}=ctx.rt;const id=await giftCardId(ctx);
-    await checkouts.mutate(ref(ctx),'gift_remove',{gift_card_id:id},async(record,key,context)=>{if(!context.order_revision)throw new LocalError('NOT_FOUND',404);return client.orders.removeGiftCard(record.order_id!,id,{order_revision:context.order_revision},auth.checkout(record,key));});
+    await checkouts.mutate(ref(ctx),'gift_remove',{gift_card_id:id},async(record,key,context)=>{if(!context.order_version)throw new LocalError('NOT_FOUND',404);return client.orders.removeGiftCard(record.order_id!,id,{expected_version:context.order_version},auth.checkout(record,key));});
   });
 }
 
 export const postTip=job(async ctx=>{
   const {client,auth,checkouts}=ctx.rt;
-  const input=await ctx.body();let requested_tip:{percent:number}|{amount_money:{amount:string;currency:string}}|null;
+  const input=await ctx.body();let requested_tip:{calculation_type:'percent';percent:number}|{calculation_type:'amount';amount_money:{amount:`${bigint}`;currency:string}}|null;
   if(input.clear===true)requested_tip=null;
-  else if(input.percent!==undefined){const percent=Number(input.percent);if(!Number.isFinite(percent)||percent<0||percent>100)throw new LocalError('INVALID_TIP');requested_tip={percent};}
-  else{let amount:string;try{amount=decimalMinor(text(input.amount,20));}catch{throw new LocalError('INVALID_TIP');}requested_tip={amount_money:{amount,currency:'USD'}};}
+  else if(input.percent!==undefined){const percent=Number(input.percent);if(!Number.isFinite(percent)||percent<1||percent>100)throw new LocalError('INVALID_TIP');requested_tip={calculation_type:'percent',percent};}
+  else{let amount:string;try{amount=decimalMinor(text(input.amount,20));}catch{throw new LocalError('INVALID_TIP');}requested_tip={calculation_type:'amount',amount_money:{amount:amount as `${bigint}`,currency:'USD'}};}
   await checkouts.mutate(ref(ctx),'tip',{requested_tip},(record,key)=>client.orders.update(record.order_id!,{requested_tip},auth.checkout(record,key)));
 });
 
 export const getSavedMethods=route(async ctx=>{
-  own(ctx);const current=await state(ctx);const methods=await ctx.rt.client.paymentMethods.list(undefined,ctx.rt.auth.checkout(current.read.record));
+  own(ctx);const current=await state(ctx);const methods=await ctx.rt.client.paymentMethods.list({status:['active']},ctx.rt.auth.checkout(current.read.record));
   return json({state:{...current.state,saved_methods:buyerSafe(methods.data)}});
 });
 
@@ -241,7 +264,7 @@ export const postPay=route(async ctx=>{
   const contact=raw.buyer_contact?asRecord(raw.buyer_contact):undefined;
   const input:PayInput={approved_outstanding_money:approvedMoney(raw.approved_outstanding_money),approved_collection_kind:raw.approved_collection_kind as PayInput['approved_collection_kind'],
     ...(credential?{credential:{kind:credential.kind as NonNullable<PayInput['credential']>['kind'],value:text(credential.value,400)}}:{}),
-    ...(raw.approved_order_revision?{approved_order_revision:text(raw.approved_order_revision,20)}:{}),
+    ...(raw.approved_order_version?{approved_order_version:text(raw.approved_order_version,20)}:{}),
     ...(raw.approved_gift_card_money?{approved_gift_card_money:approvedMoney(raw.approved_gift_card_money)}:{}),
     ...(contact?{buyer_contact:{email:email(contact.email),...(contact.phone?{phone:phone(contact.phone)!}:{})}}:{}),
     save_payment_method:raw.save_payment_method===true,save_payment_method_phone:raw.save_payment_method_phone?phone(raw.save_payment_method_phone)??undefined:undefined};
@@ -262,7 +285,7 @@ export const postPay=route(async ctx=>{
   let result:PaymentResult;
   try{result=await payments.start(id,input);}
   catch(error){
-    if(!(error instanceof SdkError&&error.code==='ORDER_TAX_NOT_READY'))throw error;
+    if(condition(error,'payment')!=='ORDER_TAX_NOT_READY')throw error;
     // The refresh runs after the engine releases the order lock; the buyer sees the specific message if it fails.
     try{await refreshTax();}catch{throw error;}
     return refreshed();

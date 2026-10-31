@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import type {Client,CheckoutSession,Order,RequestOptions} from '@flintpay/node';
 import {SdkError} from '@flintpay/node';
+import {flintError} from './support/flint-error.ts';
 import {Checkouts} from '../../src/server/flint/checkouts.ts';
 import {createAuth} from '../../src/server/flint/auth.ts';
 import {readConfig} from '../../src/server/config.ts';
@@ -13,36 +14,38 @@ import type {Catalog} from '../../src/server/flint/catalog.ts';
 import {IdentityStore} from '../../src/server/identity/index.ts';
 import {PaymentEngine} from '../../src/server/payments/engine.ts';
 
-function conflict(code:string){return new SdkError('conflict','Fixture lifecycle conflict','response',false,{status:409,headers:{},attempts:1,durationMs:1},code);}
-function restricted(){return new SdkError('authentication','Fixture recovery restriction','response',false,{status:403,headers:{},attempts:1,durationMs:1},'CHECKOUT_RECOVERY_RESTRICTED');}
+// Flint publishes shared codes and tells the refusals apart by reason and resource.
+const ended=()=>flintError(409,'ACTION_NOT_ALLOWED',{reason:'terminal_status',resource_type:'checkout_session'});
+const inUse=()=>flintError(409,'RESOURCE_IN_USE');
+const restricted=()=>flintError(403,'FORBIDDEN',{reason:'checkout_recovery_restricted'});
 function fixture(){
   const store=new Store(':memory:'),identity=new IdentityStore(':memory:');
   const config=readConfig({FLINT_API_KEY:'flint_test_FIXTURE',FLINT_API_BASE_URL:'https://api.staging.withflintpay.com',APP_ORIGIN:'http://localhost:4100',PORT:'4100'});
   const money={amount:'1000',currency:'USD'};
-  const order={order_id:'ord_fixture',status:'open',payment_status:'unpaid',order_revision:'1',line_items:[{order_line_item_id:'line_initial',variant_id:'variant_initial',quantity:'1'}],settlement_amounts:{outstanding_money:money,paid_money:{amount:'0',currency:'USD'}}} as unknown as Order;
+  const order={order_id:'ord_fixture',status:'open',payment_status:'unpaid',version:'1',line_items:[{order_line_item_id:'line_initial',variant_id:'variant_initial',quantity:'1'}],settlement_amounts:{outstanding_money:money,paid_money:{amount:'0',currency:'USD'}}} as unknown as Order;
   let session={checkout_session_id:'cs_initial',order_id:order.order_id,status:'open',page_origin:config.appOrigin} as CheckoutSession;
   const launches:{body:Record<string,unknown>;key:string|undefined}[]=[],reads:string[]=[],blocked:string[]=[],updates:{id:string;body:Record<string,unknown>;key:string|undefined;authMode:string|undefined}[]=[];
   let failUpdate:Error|undefined;
   const client={
-    orders:{get:async()=>order,addLineItems:async(_id:string,body:{line_items:{variant_id:string;quantity:string}[]})=>{
-      order.line_items.push(...body.line_items.map(line=>({order_line_item_id:'line_added',...line}) as Order['line_items'][number]));
-      order.order_revision='2';session={...session,status:'invalidated',terminal_reason:'order_mutated'};return order;
+    orders:{get:async()=>order,addLineItems:async(_id:string,body:{line_items:{type:'variant';variant_id:string;quantity:string}[]})=>{
+      order.line_items.push(...body.line_items.map(line=>({order_line_item_id:'line_added',...line}) as unknown as Order['line_items'][number]));
+      order.version='2';session={...session,status:'invalidated',terminal_reason:'order_mutated'};return order;
     }},
     checkoutSessions:{get:async(_id:string,_params:unknown,options:RequestOptions)=>{
-      reads.push(options.authMode??'merchant');
-      if(options.authMode==='checkout'&&session.status!=='open')throw conflict('CHECKOUT_SESSION_NOT_OPEN');
+      reads.push(options.checkoutToken?'checkout':'merchant');
+      if(options.checkoutToken&&session.status!=='open')throw ended();
       return session;
     },update:async(id:string,body:{buyer_contact:{email?:string|null;phone?:string|null}},options:RequestOptions)=>{
-      if(session.recovery_mode){blocked.push('update');throw restricted();}
-      updates.push({id,body,key:options.idempotencyKey,authMode:options.authMode});
+      if(session.is_in_recovery){blocked.push('update');throw restricted();}
+      updates.push({id,body,key:options.idempotencyKey,authMode:options.checkoutToken?'checkout':undefined});
       if(failUpdate){const error=failUpdate;failUpdate=undefined;throw error;}
       session={...session,buyer_contact:{...session.buyer_contact,...body.buyer_contact}} as CheckoutSession;return session;
-    },getCurrentDeliverySelection:async()=>{if(session.recovery_mode){blocked.push('delivery_selection');throw restricted();}return {};},createDeliveryQuote:async()=>{blocked.push('delivery_quote');throw restricted();},create:async(body:Record<string,unknown>,options:RequestOptions)=>{
+    },getCurrentDeliverySelection:async()=>{if(session.is_in_recovery){blocked.push('delivery_selection');throw restricted();}return {};},createDeliveryQuote:async()=>{blocked.push('delivery_quote');throw restricted();},create:async(body:Record<string,unknown>,options:RequestOptions)=>{
       launches.push({body,key:options.idempotencyKey});
-      if(body.replace_checkout_session_id&&session.status!=='open')throw conflict('ORDER_COLLECTION_IN_PROGRESS');
+      if(body.replace_checkout_session_id&&session.status!=='open')throw inUse();
       if(session.status==='open')assert.equal(body.replace_checkout_session_id,session.checkout_session_id);
       session={...session,checkout_session_id:'cs_fresh',status:'open',page_origin:body.page_origin as string};
-      return {checkout_session:session,checkout_access:{checkout_auth_token:'fixture checkout credential'}};
+      return {...session,checkout_auth_token:'fixture checkout credential'};
     }},
   } as unknown as Client;
   const auth=createAuth(config.apiKey),carts=new Carts(store,{} as Catalog),cart=carts.current(identity.createSession().session);
@@ -53,7 +56,7 @@ function fixture(){
   const endSession=(status:CheckoutSession['status']='invalidated')=>{session={...session,status};store.run('UPDATE checkouts SET needs_replacement=1 WHERE checkout_ref=?','chk_fixture');};
   const saveContact=(contact:unknown)=>{const details=app.details(record());details.contact=contact as typeof details.contact;details.delivery_quote={delivery_quote_id:'quote_old'} as typeof details.delivery_quote;app.saveDetails(record(),details);};
   // The backend keeps an expired session open in recovery mode while a 3DS attempt is active, and allows only reads there.
-  const enterRecovery=()=>{session={...session,status:'open',recovery_mode:true} as CheckoutSession;order.active_payment_attempt={order_payment_attempt_id:'attempt_fixture',status:'requires_action',is_resumable:true,pending_actions:[]} as unknown as Order['active_payment_attempt'];};
+  const enterRecovery=()=>{session={...session,status:'open',is_in_recovery:true} as CheckoutSession;order.active_payment_attempt={order_payment_attempt_id:'attempt_fixture',status:'requires_action',is_resumable:true,pending_actions:[]} as unknown as Order['active_payment_attempt'];};
   return {store,identity,app,cart,order,launches,reads,blocked,updates,enterRecovery,record,endSession,saveContact,failNextUpdate(error:Error){failUpdate=error;},client,close(){store.close();identity.close();}};
 }
 async function use(fn:(f:ReturnType<typeof fixture>)=>Promise<void>){const f=fixture();try{await fn(f);}finally{f.close();}}
@@ -75,7 +78,7 @@ test('a cart edit that changes nothing keeps the open session',async()=>use(asyn
 }));
 
 test('a definitely rejected stale replacement gets a fresh creation key after verified invalidation',async()=>use(async f=>{
-  f.endSession();await assert.rejects(()=>f.app.launch(f.record()),{code:'ORDER_COLLECTION_IN_PROGRESS'});
+  f.endSession();await assert.rejects(()=>f.app.launch(f.record()),{code:'RESOURCE_IN_USE'});
   const rejected=f.store.get<ActionRecord>("SELECT * FROM actions WHERE kind='session_create'")!;
   assert.equal(rejected.status,'rejected');
   await f.app.read('chk_fixture');
@@ -91,9 +94,9 @@ test('a still-open checkout keeps exact current-session replacement',async()=>us
 }));
 
 for(const status of ['pending','unknown'])test(`a ${status} replacement replays its body and key after invalidation`,async()=>use(async f=>{
-  f.endSession();await assert.rejects(()=>f.app.launch(f.record()),{code:'ORDER_COLLECTION_IN_PROGRESS'});
+  f.endSession();await assert.rejects(()=>f.app.launch(f.record()),{code:'RESOURCE_IN_USE'});
   const original=f.launches[0]!;f.store.run('UPDATE actions SET status=? WHERE idempotency_key=?',status,original.key!);
-  await assert.rejects(()=>f.app.read('chk_fixture'),{code:'ORDER_COLLECTION_IN_PROGRESS'});
+  await assert.rejects(()=>f.app.read('chk_fixture'),{code:'RESOURCE_IN_USE'});
   assert.equal(f.launches.length,2);assert.deepEqual(f.launches[1],original);assert.equal(f.record().checkout_session_id,'cs_initial');
 }));
 
@@ -115,7 +118,7 @@ for(const status of ['pending','unknown'])test(`an unresolved ${status} payment 
 
 test('a failed authoritative session read cannot turn replacement into creation',async()=>use(async f=>{
   f.endSession();Object.assign(f.client.checkoutSessions,{get:async(_id:string,_params:unknown,options:RequestOptions)=>{
-    if(options.authMode==='checkout')throw conflict('CHECKOUT_SESSION_NOT_OPEN');throw new Error('Fixture merchant read unavailable');
+    if(options.checkoutToken)throw ended();throw new Error('Fixture merchant read unavailable');
   }});
   await assert.rejects(()=>f.app.read('chk_fixture'),/Fixture merchant read unavailable/);assert.equal(f.launches.length,0);
 }));
@@ -176,7 +179,7 @@ const journalContact=(f:ReturnType<typeof fixture>,contact:{email:string|null;ph
 const recoveryRead=async(f:ReturnType<typeof fixture>)=>{
   const read=await f.app.read('chk_fixture');
   assert.deepEqual(f.blocked,[]);assert.equal(f.updates.length,0);assert.equal(f.launches.length,0);
-  assert.equal(read.session.status,'open');assert.equal(read.session.recovery_mode,true);
+  assert.equal(read.session.status,'open');assert.equal(read.session.is_in_recovery,true);
   assert.equal(read.record.checkout_session_id,'cs_initial');assert.equal(read.record.generation,f.record().generation);assert.equal(read.record.needs_replacement,0);
   assert.equal(read.order.active_payment_attempt?.order_payment_attempt_id,'attempt_fixture');assert.equal(read.result.attempt?.status,'requires_action');assert.equal(read.result.attempt?.is_resumable,true);
   assert.equal(f.record().last_attempt_id,'attempt_fixture');

@@ -33,7 +33,7 @@ test('storefront public SDK sandbox journeys',{timeout:180_000},async t=>{
     const contact=await request(`/checkout/${ref}/contact`,{name:'Integration buyer',email:`storefront-${runId}@example.test`});assert.equal(contact.status,200);return state(ref);
   }
   async function pay(current:State,token:string):Promise<{status:number;result:Result}>{
-    const response=await request(`/checkout/${current.checkout_ref}/pay`,{credential:{kind:'payment_method_token',value:token},approved_outstanding_money:current.approved_outstanding_money,approved_collection_kind:current.collection_kind,approved_order_revision:current.order.order_revision,...(current.order.gift_card_estimate?{approved_gift_card_money:current.order.gift_card_estimate.gift_card_money}:{})});
+    const response=await request(`/checkout/${current.checkout_ref}/pay`,{credential:{kind:'payment_method_token',value:token},approved_outstanding_money:current.approved_outstanding_money,approved_collection_kind:current.collection_kind,approved_order_version:current.order.version,...(current.order.gift_card_estimate?{approved_gift_card_money:current.order.gift_card_estimate.gift_card_money}:{})});
     return {status:response.status,result:await response.json() as Result};
   }
   try{
@@ -72,7 +72,7 @@ test('storefront public SDK sandbox journeys',{timeout:180_000},async t=>{
         record=runtime.checkouts.record(createdCheckout.ref);const order=await client.orders.get(record.order_id!,undefined,auth.merchant());
         if(order.active_payment_attempt)await runtime.payments.cancel(record.checkout_ref);
         if(createdCheckout.subscription_id||order.subscription_id)await client.subscriptions.cancel(createdCheckout.subscription_id??order.subscription_id!,{cancel_immediately:true},auth.merchant(`integration-${runId}-${record.checkout_ref}-cancel`));
-        if(order.payment_status==='paid'&&BigInt(order.settlement_amounts.paid_money.amount)>0n)await client.refunds.create({order_id:order.order_id,reason:'other',metadata:{example_test_run:runId}},auth.merchant(`integration-${runId}-${record.checkout_ref}-refund`));
+        if(order.payment_status==='paid'&&BigInt(order.settlement_amounts.paid_money.amount)>0n)await client.refunds.create({refund_type:'full',order_id:order.order_id,reason:'other',metadata:{example_test_run:runId}},auth.merchant(`integration-${runId}-${record.checkout_ref}-refund`));
         if(record.checkout_session_id){const session=await client.checkoutSessions.get(record.checkout_session_id,undefined,auth.merchant());if(session.status==='open')await client.checkoutSessions.closeSession(record.checkout_session_id,{},auth.merchant(`integration-${runId}-${record.checkout_ref}-close-checkout`));}
         if(order.status==='open')await client.orders.closeSession(order.order_id,{},auth.merchant(`integration-${runId}-${record.checkout_ref}-close-order`));
       }catch(error){incomplete.push({checkout_ref:createdCheckout.ref,order_id:record?.order_id,subscription_id:createdCheckout.subscription_id,error_code:error&&typeof error==='object'&&'code'in error?error.code:'cleanup_failed'});}

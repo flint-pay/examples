@@ -2,7 +2,7 @@
 
 A merchant-owned store for a fictional coffee roaster, Cedar & Stone. It shows a catalog, a cart, and an embedded checkout that runs on your domain, with delivery or pickup, discount codes, gift cards, tips, saved cards, digital wallets, ACH debit, Affirm, and subscription signup. Flint hosts no part of the checkout.
 
-This example uses the `@flintpay/node` 3.0.0 beta, so names and shapes can still change. It runs in test mode only.
+This example uses `@flintpay/node` 7.0.0 and runs in test mode only.
 
 ## What it shows
 

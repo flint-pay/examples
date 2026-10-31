@@ -1543,7 +1543,7 @@ function approvalOf() {
   return {
     approved_outstanding_money: app.approved,
     approved_collection_kind: logic.collectionKindOf(app.state),
-    ...(giftCards && order.order_revision !== undefined ? { approved_order_revision: String(order.order_revision) } : {}),
+    ...(giftCards && order.version !== undefined ? { approved_order_version: order.version } : {}),
     ...(giftCards && order.gift_card_estimate?.gift_card_money ? { approved_gift_card_money: order.gift_card_estimate.gift_card_money } : {}),
   };
 }
@@ -1571,7 +1571,7 @@ async function payWith(credential, approval = approvalOf(), source = 'form') {
     // One of them changed what the buyer approved. Ask for a fresh press instead of paying a different amount.
     const now = approvalOf();
     if (!sameMoney(now.approved_outstanding_money, approval.approved_outstanding_money) || now.approved_collection_kind !== approval.approved_collection_kind) return 'total_changed';
-    if (now.approved_order_revision !== approval.approved_order_revision || !sameMoney(now.approved_gift_card_money ?? null, approval.approved_gift_card_money ?? null)) return 'gift_changed';
+    if (now.approved_order_version !== approval.approved_order_version || !sameMoney(now.approved_gift_card_money ?? null, approval.approved_gift_card_money ?? null)) return 'gift_changed';
     app.paysSent += 1;
     return request('POST', '/pay', body);
   });

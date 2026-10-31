@@ -13,7 +13,7 @@ test('billing interval units follow the public billing_interval values and plura
 test('insufficient funds guidance uses bank copy only for the failed ACH legs', async()=>{
   const {declineMessageCode}=await import('../../public/js/checkout-logic.js');
   const state=(types:string[],failed:string[]=types.map((_,i)=>`pi_${i}`))=>({
-    attempt:{failure_code:'insufficient_funds',payment_intents:types.map((_,i)=>({payment_intent_id:`pi_${i}`,status:failed.includes(`pi_${i}`)?'requires_payment_method':'succeeded'}))},
+    attempt:{last_payment_error:{code:'insufficient_funds'},payment_intents:types.map((_,i)=>({payment_intent_id:`pi_${i}`,status:failed.includes(`pi_${i}`)?'requires_payment_method':'succeeded'}))},
     order:{payment_intents:types.map((type,i)=>({payment_intent_id:`pi_${i}`,payment_source:{type}}))},
   }) as unknown as Parameters<typeof declineMessageCode>[0];
   assert.match(declineMessage(declineMessageCode(state(['ach_debit']))),/Your bank declined.*not enough funds/);
@@ -22,6 +22,6 @@ test('insufficient funds guidance uses bank copy only for the failed ACH legs', 
   assert.equal(declineMessageCode(state(['card','ach_debit'],['pi_1'])), 'bank_insufficient_funds');
   assert.equal(declineMessageCode(state(['unknown'])), 'insufficient_funds');
   assert.equal(declineMessageCode(state(['ach_debit'],[])), 'insufficient_funds');
-  const other=state(['ach_debit']);other.attempt!.failure_code='bank_account_closed';
+  const other=state(['ach_debit']);other.attempt!.last_payment_error={code:'bank_account_closed'};
   assert.equal(declineMessageCode(other),'bank_account_closed');
 });

@@ -35,7 +35,7 @@ test('completed orders subtract purchased quantities from a merged cart once',()
     store.run('INSERT INTO carts(cart_id,session_hash,created_at,updated_at) VALUES(?,?,?,?)','target','session',now,now);
     store.run('INSERT INTO cart_lines VALUES(?,?,?,?,?)','line','target','product','variant',5);
     store.run('INSERT INTO checkouts(checkout_ref,session_hash,cart_id,kind,created_at,updated_at) VALUES(?,?,?,?,?,?)','checkout','session','source','order',now,now);
-    const order={line_items:[{variant_id:'variant',quantity:'2'}]} as Order;
+    const order={line_items:[{variant_id:'variant',quantity:'2'}]} as unknown as Order;
     carts.complete('checkout',order);const target=store.get<Cart>('SELECT * FROM carts WHERE cart_id=?','target')!;assert.equal(carts.lines(target)[0]?.quantity,3);carts.complete('checkout',order);assert.equal(carts.lines(target)[0]?.quantity,3);assert.equal(target.status,'open');
   }finally{store.close();}
 });

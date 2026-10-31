@@ -1,7 +1,7 @@
 import 'server-only';
 import {randomUUID} from 'node:crypto';
 import {headers} from 'next/headers';
-import {LocalError,appError,errorStatus,unknownOutcome} from './flint/errors.ts';
+import {LocalError,appError,errorStatus,scopeOfPath,unknownOutcome} from './flint/errors.ts';
 import type {AppError} from './flint/errors.ts';
 import {logLaunchInvalid,logRequest} from './security/log.ts';
 import {equalSecret,digest} from './identity/index.ts';
@@ -74,7 +74,7 @@ export function route(handler:(ctx:RouteContext)=>Promise<Response>){
 }
 
 async function failure(error:unknown,found:Visitor|undefined,path:string,ref:string|undefined):Promise<Response>{
-  const mapped:AppError=appError(error);const status=errorStatus(error);
+  const mapped:AppError=appError(error,scopeOfPath(path));const status=errorStatus(error);
   if(!(error instanceof LocalError)&&!(error&&typeof error==='object'&&'kind'in error))console.error(error);
   // Flint failures are logged by code and request ID only, so the log never holds buyer or credential data.
   else if(status>=500)console.warn(JSON.stringify({event:'flint_error',route:path,code:mapped.code,kind:mapped.kind,flint_request_id:mapped.request_id,...(error instanceof Error&&mapped.code==='UNKNOWN_ERROR'?{name:error.name,message:error.message.slice(0,200)}:{})}));
