@@ -7,7 +7,7 @@ import ts from 'typescript';
 const allowed = new Map<string, Set<string>>([
   ['app.ts', new Set(['customers.list', 'customers.create', 'customerVerifications.create', 'customerVerifications.confirm', 'customers.linkGuestPurchases', 'returnReasons.list', 'settings.getEffective', 'customers.revokeSessions', 'emailPreferenceLinks.lookup', 'emailPreferenceLinks.unsubscribe'])],
   ['flint/customer-sessions.ts', new Set(['customerSessions.create', 'customerSessions.revoke', 'customers.revokeSessions', 'customerDeletionRequests.list'])],
-  ['flint/preflight.ts', new Set(['capabilities.listWithResponse', 'merchants.get', 'settings.get'])],
+  ['flint/preflight.ts', new Set(['merchants.getWithResponse', 'settings.get'])],
 ]);
 function walk(node: ts.Node, visit: (node: ts.Node) => void): void { visit(node); ts.forEachChild(node, child => walk(child, visit)); }
 function files(root: string): string[] { return readdirSync(root, { withFileTypes: true }).flatMap(e => e.isDirectory() ? files(join(root, e.name)) : e.name.endsWith('.ts') ? [join(root, e.name)] : []); }
@@ -29,7 +29,7 @@ export function credentialViolations(text: string, file: string): string[] {
     return found;
   };
   walk(source, node => {
-    if (ts.isPropertyAssignment(node) && file !== 'flint/auth.ts' && ['apiKey', 'customerToken', 'CheckoutSessionIDHeader', 'CheckoutSessionSecretHeader', 'X-Checkout-Session-ID', 'X-Checkout-Session-Secret'].includes(node.name.getText(source).replace(/^['"]|['"]$/g, ''))) failures.push('CREDENTIAL_BUILDER_OUTSIDE_AUTH');
+    if (ts.isPropertyAssignment(node) && file !== 'flint/auth.ts' && ['apiKey', 'customerToken', 'checkoutToken', 'CheckoutSessionIDHeader', 'CheckoutSessionSecretHeader', 'X-Checkout-Session-ID', 'X-Checkout-Session-Secret'].includes(node.name.getText(source).replace(/^['"]|['"]$/g, ''))) failures.push('CREDENTIAL_BUILDER_OUTSIDE_AUTH');
     if (!ts.isCallExpression(node) || !node.arguments.some(arg => hasMerchant(arg))) return;
     const match = /(?:^|\.)client\.(\w+)\.(\w+)$/.exec(node.expression.getText(source));
     if (!match) return;

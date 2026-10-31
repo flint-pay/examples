@@ -294,7 +294,7 @@ export function returnStartPage(ctx: RenderContext<ReturnStartData>): Html {
   const lines = eligibility.line_items;
   const backHref = path('/orders', order.order_id);
   const isEligible = (line: ReturnStartData['eligibility']['line_items'][number]) =>
-    line.is_self_service_enabled && line.eligibility.status === 'eligible' && countOf(line.eligibility.eligible_quantity) > 0;
+    line.can_buyer_request && line.eligibility.status === 'eligible' && countOf(line.eligibility.eligible_quantity) > 0;
   const eligibleCount = lines.filter(isEligible).length;
 
   const reasonOptions = (line: (typeof lines)[number]) => {
@@ -308,7 +308,7 @@ export function returnStartPage(ctx: RenderContext<ReturnStartData>): Html {
   const ineligibleReason = (line: (typeof lines)[number]): string => {
     const reason = line.eligibility.reason;
     const map = returnStart.ineligibleReasons as Record<string, string>;
-    if (!line.is_self_service_enabled) return map.selfService ?? returnStart.ineligibleReasons.fallback;
+    if (!line.can_buyer_request && line.eligibility.status === 'eligible') return map.selfService ?? returnStart.ineligibleReasons.fallback;
     return map[reason] ?? returnStart.ineligibleReasons.fallback;
   };
 

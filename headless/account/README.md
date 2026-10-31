@@ -182,7 +182,7 @@ Browser tests keep traces, screenshots, and videos off, because they capture sig
 
 ## Limitations
 
-- It uses the `@flintpay/node` 3.0.0 beta.
+- It uses `@flintpay/node` 7.0.0.
 - Gift card emails that Flint sends open Flint's own gift card page in every customer account mode. That is an intentional part of Flint's hosted design, not a missing API. On a live store with a checkout custom domain, the page uses your checkout hostname. This example doesn't link to it. Buyers can paste the link from that email into this account's Gift cards page to save the card and see its balance. The page reads the link in the browser without opening it, ignores its query, and sends only the grant ID and token to this app. It accepts https links on any host, and http only on localhost.
 - This example doesn't sell gift cards. Cards you issue with `POST /v1/gift-cards` return their code once, so you can deliver those yourself.
 - Saving a gift card on the Gift cards pages doesn't go through Flint's gift card challenge. The check runs when a buyer applies a code to an invoice or an exchange payment. A saved gift card isn't applied to a payment automatically: the buyer enters the code on the pay page.

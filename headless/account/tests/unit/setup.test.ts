@@ -12,24 +12,24 @@ type Write={customer_account:CustomerAccountSettings|null;expected_version:strin
 function localApi(initial:CustomerAccountSettings|null={mode:'flint_hosted'}){
   let account=initial??undefined,version=1,writes=0,lose:'before'|'after'|undefined,loseRead=false,normalize=false,beforeUpdate:((body:Write,key:string)=>void)|undefined;
   const attempts:{body:Write;key:string}[]=[],cache=new Map<string,{body:string;response:string}>();
-  const headers={'Content-Type':'application/json','Flint-Mode':'test','Flint-Sandbox-ID':'sandbox_example'};
-  const resource=()=>({settings_id:'settings_example',settings_scope:'merchant',version:String(version),...(account?{customer_account:account}:{})});
+  const request_id='req_01KWM6WAHG3N9Q8T2V5XRZ7C4D',headers={'Content-Type':'application/json','Flint-Mode':'test','Flint-Sandbox-ID':'sandbox_example'};
+  const resource=()=>({settings_id:'settings_example',settings_scope:'merchant',tax_identity:null,version:String(version),...(account?{customer_account:account}:{})});
   const client=new Client({baseUrl:config.apiBaseUrl,maxAttempts:1,transport:async(input,init)=>{
     const path=new URL(String(input)).pathname;
     assert.equal(new Headers(init?.headers).get('Authorization'),'Bearer flint_test_PLACEHOLDER');
-    if(path==='/v1/capabilities')return new Response(JSON.stringify({data:[{capability:'accept_card_payments',domain:'payments',status:'ready',requirements:{}}]}),{headers});
-    if(path==='/v1/merchant')return new Response(JSON.stringify({data:{merchant_id:'mer_example',email:'merchant@example.invalid',has_past_due:false,observed_at:'2026-01-01T00:00:00Z',onboarding_status:'completed',payments:{status:'ready',next_actions:[]},payouts:{status:'ready',next_actions:[]},requirements:{currently_due:[],eventually_due:[],past_due:[],pending_verification:[]},status:'active',version:'1'}}),{headers});
+    const requirements={currently_due:[],eventually_due:[],past_due:[],pending_verification:[]};
+    if(path==='/v1/merchant')return new Response(JSON.stringify({data:{merchant_id:'mer_example',organization_id:'org_example',email:'merchant@example.invalid',status:'active',version:'1',readiness:{capabilities:[{capability:'accept_card_payments',domain:'payments',status:'ready',next_actions:[],requirements}],payments:{status:'ready',next_actions:[]},payouts:{status:'ready',next_actions:[]},requirements,observed_at:'2026-01-01T00:00:00Z'}},request_id}),{headers});
     assert.equal(path,'/v1/settings');
-    if(init?.method==='GET'){if(loseRead){loseRead=false;throw new Error('Synthetic readback loss');}return new Response(JSON.stringify({data:resource()}),{headers});}
+    if(init?.method==='GET'){if(loseRead){loseRead=false;throw new Error('Synthetic readback loss');}return new Response(JSON.stringify({data:resource(),request_id}),{headers});}
     const body=JSON.parse(String(init?.body)) as Write,key=new Headers(init?.headers).get('Idempotency-Key')!;
     assert.ok(key);attempts.push({body,key});beforeUpdate?.(body,key);
     const replay=cache.get(key);
     if(replay){assert.equal(JSON.stringify(body),replay.body,'Idempotency retries must keep the exact request');return new Response(replay.response,{headers});}
     if(lose==='before'){lose=undefined;throw new Error('Synthetic transport loss before commit');}
-    if(String(body.expected_version)!==String(version))return new Response(JSON.stringify({error:{code:'VERSION_CONFLICT',message:'Synthetic version conflict'}}),{status:409,headers});
+    if(String(body.expected_version)!==String(version))return new Response(JSON.stringify({error:{type:'conflict_error',code:'VERSION_CONFLICT',message:'Synthetic version conflict',doc_url:'https://developers.withflintpay.com/docs/errors#version_conflict',error_source:'integration',remediation:null,request_id}}),{status:409,headers});
     writes++;version++;account=body.customer_account??undefined;
     if(normalize&&account)account={buyer_capabilities:{cancellation_timing:'end_of_period'},...account};
-    const response=JSON.stringify({data:resource()});cache.set(key,{body:JSON.stringify(body),response});
+    const response=JSON.stringify({data:resource(),request_id});cache.set(key,{body:JSON.stringify(body),response});
     if(lose==='after'){lose=undefined;throw new Error('Synthetic transport loss after commit');}
     return new Response(response,{headers});
   }});
@@ -63,7 +63,7 @@ test('published SDK sends explicit null clearing and serializes expected_version
     calls++;assert.equal(new URL(String(input)).pathname,'/v1/settings');assert.equal(init?.method,'PATCH');
     assert.deepEqual(JSON.parse(String(init?.body)),{expected_version:1,customer_account:null});
     assert.equal(new Headers(init?.headers).get('Idempotency-Key'),'example-clear-key');
-    return new Response(JSON.stringify({data:{settings_id:'settings_example',settings_scope:'merchant',version:'2'}}),{headers:{'Content-Type':'application/json','Flint-Mode':'test','Flint-Sandbox-ID':'sandbox_example'}});
+    return new Response(JSON.stringify({data:{settings_id:'settings_example',settings_scope:'merchant',tax_identity:null,version:'2'},request_id:'req_01KWM6WAHG3N9Q8T2V5XRZ7C4D'}),{headers:{'Content-Type':'application/json','Flint-Mode':'test','Flint-Sandbox-ID':'sandbox_example'}});
   }});
   try{
     const restored=await client.settings.update({expected_version:'1',customer_account:null},{apiKey:'flint_test_PLACEHOLDER',idempotencyKey:'example-clear-key'});

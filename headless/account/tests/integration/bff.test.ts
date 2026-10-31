@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {Client,SdkError} from '@flintpay/node';
-import type {RequestOptions,Order,BuyerGiftCard,BuyerGiftCardTransaction,PaymentIntent,PaymentSourceSummary,PickupFulfillmentDetails} from '@flintpay/node';
+import type {RequestOptions,Order,BuyerOrder,BuyerGiftCard,BuyerGiftCardTransaction,PaymentIntent,PaymentSourceSummary,PickupFulfillmentDetails} from '@flintpay/node';
 import {createApp} from '../../src/app.ts';
 import {IdentityStore} from '../../src/identity/index.ts';
 import {Store} from '../../src/store/db.ts';
@@ -17,6 +17,7 @@ async function harness(api:unknown,appConfig=config,realRendering=false){
   const headers={Cookie:`${config.cookieName}=${session.token}`,Origin:config.appOrigin,'X-CSRF-Token':session.session.csrf_token,'Content-Type':'application/json'};
   return {app,identity,store,user,session,headers,rendered:()=>rendered,close:()=>{store.close();identity.close();}};
 }
+const credentialRejected=()=>new SdkError('authentication','Session rejected','response',false,{status:401,headers:{},attempts:1,durationMs:0},'INVALID_CREDENTIAL',{type:'authentication_error',code:'INVALID_CREDENTIAL',message:'Session rejected',doc_url:'https://developers.withflintpay.com/docs/errors#invalid_credential',error_source:'integration',remediation:null,request_id:'req_01KWM6WAHG3N9Q8T2V5XRZ7C4D',details:[{code:'INVALID_CREDENTIAL',message:'Session rejected',reason:'unknown'}]});
 test('health exposes configured source identity and process start without inventing a build',async()=>{
   const sha='a'.repeat(40),build=readConfig({FLINT_API_KEY:'flint_test_PLACEHOLDER',FLINT_API_BASE_URL:config.apiBaseUrl,APP_ORIGIN:config.appOrigin,PORT:'4200',BUILD_SHA:sha,BUILD_ARTIFACT_ID:sha+':headless/account'});
   for(const configured of [config,build]){
@@ -123,19 +124,19 @@ test('sign-in accepts only session-ended query notices and preserves existing fl
   }finally{h.close();}
 });
 test('published buyer SDK data reaches gift history and order summaries through customer-only transports',async()=>{
-  const money={amount:'2000',currency:'USD'},zero={amount:'0',currency:'USD'},postedAt='2026-01-02T12:00:00Z';
+  const money={amount:'2000' as const,currency:'USD'},zero={amount:'0' as const,currency:'USD'},postedAt='2026-01-02T12:00:00Z';
   const transaction={gift_card_id:'gfc_example',gift_card_transaction_id:'gct_example',transaction_type:'redeem',posted_at:'2026-01-02T12:00:00Z',sequence:'2',amount_money:{amount:'-500',currency:'USD'},balance_before_money:{amount:'2500',currency:'USD'},balance_after_money:money} satisfies BuyerGiftCardTransaction;
   const source={type:'card',card:{brand:'visa',last4:'4242'}} satisfies PaymentSourceSummary;
   const pickup={location_name:'Example Store',address:{line1:'123 Example Street',city:'Example City',state:'NY',postal_code:'10001',country:'US'},instructions:'Collect at the counter.',ready_at:'2026-01-02T12:00:00Z',window_start_at:'2026-01-02T12:00:00Z',window_end_at:'2026-01-02T13:00:00Z',timezone:'America/New_York'} satisfies PickupFulfillmentDetails;
-  const giftCard={gift_card_id:'gfc_example',merchant_id:'mer_example',status:'active',currency:'USD',last_characters:'EXAMPLE',balance_money:money,available_money:money,reserved_money:zero,created_at:postedAt,updated_at:postedAt,last_loaded_at:postedAt,last_redeemed_at:postedAt,version:'1'} satisfies BuyerGiftCard;
-  const paidOrder={order_id:'ord_example',status:'closed',payment_status:'paid',refund_status:'none',buyer_actions:[],line_items:[],pricing_amounts:{total_money:money,subtotal_money:money,charge_money:zero,discount_money:zero,requested_tip_money:zero,tax_money:zero},settlement_amounts:{balance_money:zero,credit_money:zero,net_collected_money:money,outstanding_money:zero,paid_money:money,refunded_money:zero,settled_tip_money:zero},tax:{enabled:false,mode:'external',status:'not_required',taxability_reason:'tax_disabled'}} satisfies Order;
-  const payment={payment_intent_id:'intent_example',status:'succeeded',amount_money:money,payment_source:source,payment_flow:'checkout',payment_options:['card'],last_payment_error:null,risk:null,support_reference:'EXAMPLE'} satisfies PaymentIntent;
+  const giftCard={gift_card_id:'gfc_example',merchant_id:'mer_example',status:'active',currency:'USD',last4:'MPLE',balance_money:money,available_money:money,reserved_money:zero,created_at:postedAt,updated_at:postedAt,last_loaded_at:postedAt,last_redeemed_at:postedAt,version:'1'} satisfies BuyerGiftCard;
+  const paidOrder={order_id:'ord_example',status:'closed',payment_status:'paid',refund_status:'none',buyer_actions:[],line_items:[],charges:[],checkout_session_ids:[],discounts:[],fulfillments:[],gift_card_settlements:[],gift_card_tender_enabled:false,gift_cards:[],governing_delivery_selection_id:null,payment_intent_ids:[],refund_ids:[],return_credit_settlements:[],tips:[],version:'1',pricing_amounts:{total_money:money,subtotal_money:money,charge_money:zero,discount_money:zero,requested_tip_money:zero,tax_money:zero,additive_tax_money:zero,inclusive_tax_money:zero},settlement_amounts:{written_off_money:zero,balance_money:zero,credit_money:zero,net_collected_money:money,outstanding_money:zero,paid_money:money,refunded_money:zero,settled_tip_money:zero},tax:{enabled:false,mode:'external',status:'not_required'}} satisfies BuyerOrder;
+  const payment={payment_intent_id:'intent_example',status:'succeeded',amount_money:money,payment_source:source,payment_flow:'checkout',payment_options:['card'],last_payment_error:null,risk:null,support_reference:'EXAMPLE',metadata:{},supported_actions:[],version:'1'} satisfies PaymentIntent;
   const replies:Record<string,unknown>={
     '/v1/me/gift-cards/gfc_example':{data:giftCard},
     '/v1/me/gift-cards/gfc_example/transactions':{data:[{...transaction,metadata:{private:'private'}}]},
     '/v1/me/orders/ord_example':{data:paidOrder},
-    '/v1/me/payments':{data:[{...payment,payment_source:{...source,card:{...source.card,fingerprint:'private'}}}]},
-    '/v1/me/fulfillments':{data:[{fulfillment_id:'ful_example',order_id:'ord_example',type:'pickup',status:'ready',line_items:[],request_status:'accepted',supported_actions:[],version:'1',pickup_details:{...pickup,metadata:{private:'private'}}}]},
+    '/v1/me/payment-intents':{data:[{...payment,payment_source:{...source,card:{...source.card,fingerprint:'private'}}}]},
+    '/v1/me/fulfillments':{data:[{fulfillment_id:'ful_example',order_id:'ord_example',type:'pickup',status:'ready',line_items:[],request_status:'accepted',scheduled_start_at:null,supported_actions:[],version:'1',pickup_details:{...pickup,metadata:{private:'private'}}}]},
     '/v1/me/refunds':{data:[]},'/v1/me/shipments':{data:[]},'/v1/me/packages':{data:[]},'/v1/me/fulfillment-events':{data:[]}
   };
   const requests:URL[]=[];
@@ -143,7 +144,7 @@ test('published buyer SDK data reaches gift history and order summaries through 
     const url=new URL(String(input)),headers=new Headers(init?.headers);requests.push(url);
     assert.equal(headers.get('Authorization'),'Bearer example customer authority');assert.equal(headers.get('X-API-Key'),null);assert.equal(headers.get('X-Checkout-Session-ID'),null);assert.equal(headers.get('X-Checkout-Session-Secret'),null);
     assert.ok(Object.hasOwn(replies,url.pathname),url.pathname);
-    return new Response(JSON.stringify(replies[url.pathname]),{headers:{'Content-Type':'application/json','Flint-Mode':'test','Flint-Sandbox-ID':'sandbox_example'}});
+    return new Response(JSON.stringify({...(replies[url.pathname] as object),request_id:'req_01KWM6WAHG3N9Q8T2V5XRZ7C4D'}),{headers:{'Content-Type':'application/json','Flint-Mode':'test','Flint-Sandbox-ID':'sandbox_example'}});
   }});
   const h=await harness(client);try{
     assert.equal((await h.app.request('/gift-cards/gfc_example',{headers:{Cookie:h.headers.Cookie}})).status,200);
@@ -197,7 +198,7 @@ test('pending email changes reserve the new email in the shared canonical identi
   }finally{h.close();}
 });
 test('a revoked customer-session 404 sends the buyer to sign-in instead of redirecting account home to itself',async()=>{
-  const h=await harness({me:{get:async()=>{throw new SdkError('not_found','Session not found','response',false,{status:404,headers:{},attempts:1,durationMs:0},'CUSTOMER_SESSION_NOT_FOUND');}}});try{
+  const h=await harness({me:{get:async()=>{throw credentialRejected();}}});try{
     const response=await h.app.request('/',{headers:{Cookie:h.headers.Cookie}});assert.equal(response.status,303);
     const location=response.headers.get('Location')!,url=new URL(location,config.appOrigin);assert.equal(url.pathname,'/sign-in');assert.equal(url.searchParams.get('notice'),'session_ended');
     assert.equal(h.identity.session(h.session.token),undefined);assert.equal(h.identity.vault(h.user.user_id,'sandbox_example'),undefined);assert.equal((await h.app.request(location)).status,200);
@@ -213,7 +214,7 @@ test('confirmed email changes replace revoked authority, rotate the proving brow
       get:async(_body:unknown,options:RequestOptions)=>{assert.ok(revoked);assert.equal(options.customerToken,newAuthority);assert.equal(options.apiKey,undefined);return {customer_id:'cus_example',email:newEmail,name:'Example'};}
     },
     customerSessions:{
-      create:async(body:unknown,options:RequestOptions)=>{assert.ok(revoked);assert.deepEqual(body,{customer_id:'cus_example',expires_in_seconds:String(config.sessionTtl)});assert.ok(options.idempotencyKey);keys.push(options.idempotencyKey!);return {customer_id:'cus_example',customer_session_id:'new_session_example',secret:newAuthority,refresh_token:'new example refresh',expires_at:new Date(Date.now()+3600000).toISOString(),refresh_token_expires_at:new Date(Date.now()+86400000).toISOString()};},
+      create:async(body:unknown,options:RequestOptions)=>{assert.ok(revoked);assert.deepEqual(body,{customer_id:'cus_example',expires_in_seconds:BigInt(config.sessionTtl)});assert.ok(options.idempotencyKey);keys.push(options.idempotencyKey!);return {customer_id:'cus_example',customer_session_id:'new_session_example',secret:newAuthority,refresh_token:'new example refresh',expires_at:new Date(Date.now()+3600000).toISOString(),refresh_token_expires_at:new Date(Date.now()+86400000).toISOString()};},
       revoke:async()=>({})
     }
   });try{
@@ -239,7 +240,7 @@ test('an old profile 404 waits for email-confirmation replacement creation witho
   const emailRequest={email_change_request_id:'email_change_example',customer_id:'cus_example',new_email:newEmail,confirmed:false,current_email_confirmation_required:true,created_at:new Date().toISOString(),expires_at:new Date(Date.now()+3600000).toISOString()};
   const h=await harness({
     me:{createEmailChangeRequest:async()=>emailRequest,confirmEmailChangeRequest:async()=>({...emailRequest,confirmed:true}),get:async(_body:unknown,options:RequestOptions)=>{
-      if(options.customerToken==='example customer authority'){startOld();await oldReleased;throw new LocalError('CUSTOMER_SESSION_NOT_FOUND',404);}
+      if(options.customerToken==='example customer authority'){startOld();await oldReleased;throw credentialRejected();}
       assert.equal(options.customerToken,newAuthority);return {customer_id:'cus_example',email:newEmail};
     }},
     customerSessions:{create:async()=>{startCreate();await createReleased;return {customer_id:'cus_example',customer_session_id:'replacement_session_example',secret:newAuthority,refresh_token:'replacement example refresh',expires_at:new Date(Date.now()+3600000).toISOString(),refresh_token_expires_at:new Date(Date.now()+86400000).toISOString()};}}
@@ -303,7 +304,7 @@ test('an unknown gift card code returns to the add form while foreign resources 
 test('a fresh link-purchases form sends a new verification after confirmation, while duplicate submits do not send twice',async()=>{
   const sent:string[]=[];
   const h=await harness({customerVerifications:{
-    create:async(body:Record<string,string>,options:RequestOptions)=>{sent.push(options.idempotencyKey!);return {customer_verification_id:`verification_${sent.length}`,customer_id:body.customer_id,email:body.email,purpose:body.purpose};},
+    create:async(body:Record<string,string>,options:RequestOptions)=>{sent.push(options.idempotencyKey!);return {customer_verification_id:`verification_${sent.length}`,customer_id:body.customer_id,email:'buyer@example.invalid',purpose:body.purpose};},
     confirm:async(id:string)=>({customer_verification_id:id,customer_id:'cus_example',email:'buyer@example.invalid',purpose:'link_guest_purchases',status:'confirmed'}),
   },customers:{linkGuestPurchases:async()=>({linked_order_count:'1'})}},config,true);
   try{

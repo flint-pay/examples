@@ -15,26 +15,26 @@ import type {
   BuyerInvoice,
   BuyerRefund,
   BuyerSubscriptionPaymentRetry,
-  Customer,
+  BuyerCustomer as Customer,
   CustomerAddress,
   CustomerDeletionRequest,
   CustomerEmailPreferences,
   EmailChangeRequest,
   EmailPreferenceLink,
-  Fulfillment,
+  BuyerFulfillment as Fulfillment,
   MoneyValue,
-  Order,
+  BuyerOrder as Order,
   OrderPaymentAttempt,
-  Package,
+  BuyerPackage as Package,
   PaymentCollection,
-  PaymentIntent,
-  PaymentMethod,
-  ReturnEligibilityCheck,
+  BuyerPaymentIntent as PaymentIntent,
+  BuyerPaymentMethod as PaymentMethod,
+  BuyerReturnEligibilityPreview,
   ReturnReason,
-  ReturnResource,
+  BuyerReturn as ReturnResource,
   StripeClientSetupStripe,
   StripePaymentClientAction,
-  Subscription,
+  BuyerSubscription as Subscription,
 } from '@flintpay/node';
 
 export type {
@@ -61,7 +61,7 @@ export type {
   PaymentCollection,
   PaymentIntent,
   PaymentMethod,
-  ReturnEligibilityCheck,
+  BuyerReturnEligibilityPreview,
   ReturnReason,
   ReturnResource,
   StripeClientSetupStripe,
@@ -190,7 +190,7 @@ export type OrderReceiptData = Pick<OrderData, 'order' | 'payments' | 'refunds'>
 
 export interface ReturnStartData {
   order: Pick<Order, 'order_id' | 'order_number'>;
-  eligibility: ReturnEligibilityCheck;
+  eligibility: BuyerReturnEligibilityPreview;
   /** Active reasons from returnReasons.list (merchant key). */
   reasons: ReturnReason[];
   /** Submitted raw field values to restore after a validation error. Never secrets. */
@@ -384,10 +384,9 @@ export interface PaymentAttemptView
     | 'status'
     | 'is_resumable'
     | 'mode'
-    | 'failure_code'
-    | 'failure_message'
     | 'expected_outstanding_money'
   > {
+  failure_code?: string;
   legs?: Array<{
     payment_intent_id: string;
     status: PaymentLegStatus;
