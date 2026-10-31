@@ -7,23 +7,26 @@ import type {Config} from '../../src/config.ts';
 import {Store} from '../../src/store/db.ts';
 import type {ActionRecord} from '../../src/store/db.ts';
 import {IdentityStore} from '../../src/identity/index.ts';
+import {flintError} from './support/flint-error.ts';
 
 const origin='http://localhost:4100';
-const money=(amount:string)=>({amount,currency:'USD'});
+const money=(amount:string)=>({amount:amount as `${bigint}`,currency:'USD'});
+// Tax that is not ready refuses the payment as a shared code; the refusal's reason and resource say which.
+const taxNotReady=()=>flintError(409,'ACTION_NOT_ALLOWED',{reason:'configuration_required',resource_type:'order'});
 const sdkError=(code:string,status:number)=>new SdkError('conflict','fixture rejection','response',false,{status,headers:{},attempts:1,durationMs:1},code);
 function fixture(){
-  const order={order_id:'fixture-order',status:'open',payment_status:'unpaid',order_revision:'1',settlement_amounts:{outstanding_money:money('2400')},tax:{enabled:true,status:'calculated'},payment_collection:{stripe:{}}} as unknown as Order;
-  const session={checkout_session_id:'fixture-session',order_id:order.order_id,status:'open',customer_collection:{require_email:true},delivery_selection_required:false} as CheckoutSession;
+  const order={order_id:'fixture-order',status:'open',payment_status:'unpaid',version:'1',settlement_amounts:{outstanding_money:money('2400')},tax:{enabled:true,status:'calculated'},payment_collection:{stripe:{}}} as unknown as Order;
+  const session={checkout_session_id:'fixture-session',order_id:order.order_id,status:'open',buyer_fields:{require_email:true},delivery_selection_required:false} as CheckoutSession;
   const remote={pays:[] as {body:unknown;key:string|undefined}[],updates:[] as {body:unknown;key:string|undefined;authMode:unknown}[],staleTax:true,refreshedTotal:'2400',refreshError:undefined as SdkError|undefined,refreshLosesResponse:false};
   const client={
     orders:{get:async()=>order,
       pay:async(request:{body:unknown},options:RequestOptions<'checkout'>)=>{
         remote.pays.push({body:structuredClone(request.body),key:options.idempotencyKey});
-        if(remote.staleTax)throw sdkError('ORDER_TAX_NOT_READY',409);
-        return {order,payment_attempt:{order_payment_attempt_id:'fixture-attempt',status:'succeeded'}};
+        if(remote.staleTax)throw taxNotReady();
+        return {order,order_payment_attempt:{order_payment_attempt_id:'fixture-attempt',status:'succeeded'}};
       },
       update:async(_id:string,body:unknown,options:RequestOptions<'checkout'>)=>{
-        remote.updates.push({body:structuredClone(body),key:options.idempotencyKey,authMode:options.authMode});
+        remote.updates.push({body:structuredClone(body),key:options.idempotencyKey,authMode:options.checkoutToken?'checkout':undefined});
         if(remote.refreshError)throw remote.refreshError;
         remote.staleTax=false;order.settlement_amounts.outstanding_money=money(remote.refreshedTotal);
         if(remote.refreshLosesResponse)throw new SdkError('transport','fixture lost response','unknown',true);

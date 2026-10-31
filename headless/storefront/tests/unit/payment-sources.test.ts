@@ -22,7 +22,7 @@ type Call={id:string;expand?:string[];authMode:string;apiKey?:string};
 function fixture(t:TestContext,type='affirm'){
   const store=new Store(':memory:'),identity=new IdentityStore(':memory:');
   const config=readConfig({FLINT_API_KEY:MERCHANT_KEY,FLINT_API_BASE_URL:'https://api.staging.withflintpay.com',APP_ORIGIN:'http://localhost:4100',PORT:'4100'});
-  const order={order_id:'ord_fixture',status:'open',payment_status:'unpaid',order_revision:'1',line_items:[],payment_intent_ids:['pi_leg'],settlement_amounts:{outstanding_money:money,paid_money:{amount:'0',currency:'USD'}},
+  const order={order_id:'ord_fixture',status:'open',payment_status:'unpaid',version:'1',line_items:[],payment_intent_ids:['pi_leg'],settlement_amounts:{outstanding_money:money,paid_money:{amount:'0',currency:'USD'}},
     active_payment_attempt:{order_payment_attempt_id:'opa_fixture',status:type==='affirm'?'requires_action':'processing',is_resumable:type==='affirm',pending_actions:[],payment_intents:[{payment_intent_id:'pi_leg',status:type==='affirm'?'requires_action':'processing',amount_money:money}]}} as unknown as Order;
   const session={checkout_session_id:'cs_fixture',order_id:order.order_id,status:'open',page_origin:config.appOrigin} as CheckoutSession;
   const calls:Call[]=[];
@@ -30,13 +30,13 @@ function fixture(t:TestContext,type='affirm'){
   const expandedRow={payment_intent_id:'pi_leg',status:'requires_action',selected_payment_option:type,amount_money:money,customer_id:'cus_private',order_id:'ord_fixture',client_secret:'pi_leg_secret_PRIVATE'};
   const client={
     orders:{get:async(id:string,params:{expand?:string[]}|undefined,options:RequestOptions)=>{
-      const authMode=options.authMode??'merchant';calls.push({id,expand:params?.expand,authMode,apiKey:(options as {apiKey?:string}).apiKey});
+      const authMode=(options as {checkoutToken?:string}).checkoutToken?'checkout':'merchant';calls.push({id,expand:params?.expand,authMode,apiKey:(options as {apiKey?:string}).apiKey});
       if(!params?.expand)return order;
       if(authMode==='checkout')throw new SdkError('validation','Expansion refused','response',false,{status:400,headers:{},attempts:1,durationMs:1},'EXPANSION_NOT_ALLOWED');
       return {...order,order_id:'ord_fixture',customer_id:'cus_private',metadata:{internal:'x'},payment_intents:[expandedRow],...state.expansion};
     },getPaymentAttempt:async()=>order.active_payment_attempt},
     paymentIntents:{get:async(id:string,_params:unknown,options:RequestOptions)=>{
-      const authMode=options.authMode??'merchant';calls.push({id,authMode,apiKey:(options as {apiKey?:string}).apiKey});
+      const authMode=(options as {checkoutToken?:string}).checkoutToken?'checkout':'merchant';calls.push({id,authMode,apiKey:(options as {apiKey?:string}).apiKey});
       if(state.fail)throw state.fail;
       return {...expandedRow,...state.expansion};
     }},

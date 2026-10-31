@@ -7,32 +7,33 @@ import {join} from 'node:path';
 import type {Order,OrderPaymentAttempt,PayOrderRequestInput,RequestOptions} from '@flintpay/node';
 import {Client,SdkError} from '@flintpay/node';
 import {Store} from '../../src/store/db.ts';
+import {flintError} from './support/flint-error.ts';
 import type {CheckoutRecord,ActionRecord} from '../../src/store/db.ts';
 import {createAuth} from '../../src/flint/auth.ts';
 import {PaymentEngine,acceptedAllocation,approvalMatches,collectionKind,resolvesJob} from '../../src/payments/engine.ts';
 import type {PayInput} from '../../src/payments/engine.ts';
 import {nextStep} from '../../src/payments/next-step.ts';
 
-const money=(amount:string)=>({amount,currency:'USD'});
-function order(amount='1800'):Order{return {order_id:'example-order',payment_status:'unpaid',order_revision:'5',settlement_amounts:{outstanding_money:money(amount)},payment_collection:{stripe:{elements:{}}}} as unknown as Order;}
+const money=(amount:string)=>({amount:amount as `${bigint}`,currency:'USD'});
+function order(amount='1800'):Order{return {order_id:'example-order',payment_status:'unpaid',version:'5',settlement_amounts:{outstanding_money:money(amount)},payment_collection:{stripe:{elements:{}}}} as unknown as Order;}
 function attempt(status:string,is_resumable=false,id='example-attempt'):OrderPaymentAttempt{return {order_payment_attempt_id:id,status,is_resumable} as OrderPaymentAttempt;}
 function input(amount='1800'):PayInput{return {approved_outstanding_money:money(amount),approved_collection_kind:'processor'};}
 function trialOrder():Order{return {...order('0'),status:'open',payment_status:'paid',subscription_plan_id:'example-plan',setup_collection:{stripe:{elements:{mode:'setup'}}}} as Order;}
 test('a zero-dollar paid trial still submits setup and waits for its subscription',async()=>{
   const store=new Store(':memory:');const calls:PayOrderRequestInput[]=[];let current=trialOrder();
-  const client={orders:{get:async()=>current,pay:async(request:{body:PayOrderRequestInput})=>{calls.push(request.body);current={...current,status:'closed',setup_collection:undefined};return {order:current,payment_attempt:attempt('succeeded')};},getPaymentAttempt:async()=>attempt('succeeded')}} as unknown as Client;
+  const client={orders:{get:async()=>current,pay:async(request:{body:PayOrderRequestInput})=>{calls.push(request.body);current={...current,status:'closed',setup_collection:undefined};return {order:current,order_payment_attempt:attempt('succeeded')};},getPaymentAttempt:async()=>attempt('succeeded')}} as unknown as Client;
   try{
     const row=record(store);store.run("UPDATE checkouts SET kind='subscription',last_attempt_id=NULL WHERE checkout_ref=?",row.checkout_ref);const engine=new PaymentEngine(client,createAuth('local-fixture'),store);
     assert.equal(engine.next({order:current,unknown:false}),'new_payment');
     const result=await engine.start(row.checkout_ref,{approved_outstanding_money:money('0'),approved_collection_kind:'setup',credential:{kind:'payment_method_token',value:'pm_trial'},buyer_contact:{email:'buyer@example.test'}});
-    assert.equal(calls.length,1);assert.equal(calls[0]!.action,'setup');assert.deepEqual(calls[0]!.setup_payment_source,{token:'pm_trial'});assert.equal(engine.next(result),'wait');
+    assert.equal(calls.length,1);assert.equal(calls[0]!.action,'setup');assert.deepEqual(calls[0]!.setup_payment_source,{credential_type:'token',token:'pm_trial'});assert.equal(engine.next(result),'wait');
     await engine.start(row.checkout_ref,{approved_outstanding_money:money('0'),approved_collection_kind:'setup',credential:{kind:'payment_method_token',value:'pm_duplicate'}});assert.equal(calls.length,1);
     assert.equal(engine.next({...result,order:{...result.order,subscription_id:'example-subscription'}}),'done');
   }finally{store.close();}
 });
 test('paid zero-dollar trial cannot erase an unknown setup request or hide authentication',()=>{
   const store=new Store(':memory:');try{
-    const row=record(store);const engine=new PaymentEngine(new Client(),createAuth('local-fixture'),store);const job=engine.job(row,'pay',{action:'setup',setup_payment_source:{token:'pm_trial'}});store.run("UPDATE actions SET status='unknown' WHERE action_id=?",job.action_id);
+    const row=record(store);const engine=new PaymentEngine(new Client(),createAuth('local-fixture'),store);const job=engine.job(row,'pay',{action:'setup',setup_payment_source:{credential_type:'token',token:'pm_trial'}});store.run("UPDATE actions SET status='unknown' WHERE action_id=?",job.action_id);
     const current=trialOrder();const result=engine.observe(row,current,undefined);assert.equal(result.unknown,true);assert.ok(engine.unresolved(row));assert.equal(resolvesJob(job,current,undefined),false);
     assert.equal(engine.next({order:current,attempt:attempt('requires_action',true),unknown:false}),'authenticate');assert.equal(engine.next({order:current,attempt:attempt('processing',true),unknown:false}),'resume');
     assert.equal(engine.next({order:current,attempt:attempt('failed'),unknown:false}),'new_payment');assert.equal(engine.next({order:current,attempt:attempt('succeeded'),unknown:false}),'wait');
@@ -40,7 +41,7 @@ test('paid zero-dollar trial cannot erase an unknown setup request or hide authe
     assert.equal(engine.next({order:{...order('0'),payment_status:'paid'},unknown:false}),'done');assert.equal(resolvesJob(job,{...order('0'),payment_status:'paid'},undefined),true);
   }finally{store.close();}
 });
-function giftOrder():Order{return {...order(),gift_cards:[{gift_card_id:'example-gift'}],gift_card_estimate:{can_pay:true,order_revision:'5',gift_card_money:money('1800'),processor_money:money('0'),gift_cards:[{gift_card_id:'example-gift',amount_money:money('1800')}]}} as unknown as Order;}
+function giftOrder():Order{return {...order(),gift_cards:[{gift_card_id:'example-gift'}],gift_card_estimate:{can_pay:true,order_version:'5',gift_card_money:money('1800'),processor_money:money('0'),gift_cards:[{gift_card_id:'example-gift',amount_money:money('1800')}]}} as unknown as Order;}
 test('collection kind distinguishes zero-balance orders from subscription setup',()=>{
   assert.equal(collectionKind(order(),'order'),'processor');assert.equal(collectionKind(order('0'),'order'),'settlement');assert.equal(collectionKind(giftOrder(),'order'),'settlement');
   assert.equal(collectionKind(order('0'),'subscription'),'unavailable');assert.equal(collectionKind({...order('0'),setup_collection:{stripe:{}}} as Order,'subscription'),'setup');
@@ -49,10 +50,10 @@ test('approval rejects both increases and decreases, currency changes, and colle
   assert.equal(approvalMatches(order(),'order',input()),true);assert.equal(approvalMatches(order('1700'),'order',input()),false);assert.equal(approvalMatches(order('1900'),'order',input()),false);
   assert.equal(approvalMatches(order(),'order',{...input(),approved_outstanding_money:{amount:'1800',currency:'CAD'}}),false);assert.equal(approvalMatches(order('0'),'order',input('0')),false);
 });
-test('gift acceptance compares server revision and gift value and copies the exact allocation',()=>{
-  const current=giftOrder();const approval:PayInput={...input(),approved_collection_kind:'settlement',approved_order_revision:'5',approved_gift_card_money:money('1800')};
-  assert.equal(approvalMatches(current,'order',approval),true);assert.equal(approvalMatches(current,'order',{...approval,approved_order_revision:'4'}),false);assert.equal(approvalMatches(current,'order',{...approval,approved_gift_card_money:money('1700')}),false);
-  assert.deepEqual(acceptedAllocation(current),{order_revision:'5',gift_card_money:money('1800'),processor_money:money('0'),gift_cards:[{gift_card_id:'example-gift',amount_money:money('1800')}]});
+test('gift acceptance compares server order version and gift value and copies the exact allocation',()=>{
+  const current=giftOrder();const approval:PayInput={...input(),approved_collection_kind:'settlement',approved_order_version:'5',approved_gift_card_money:money('1800')};
+  assert.equal(approvalMatches(current,'order',approval),true);assert.equal(approvalMatches(current,'order',{...approval,approved_order_version:'4'}),false);assert.equal(approvalMatches(current,'order',{...approval,approved_gift_card_money:money('1700')}),false);
+  assert.deepEqual(acceptedAllocation(current),{order_version:'5',gift_card_money:money('1800'),processor_money:money('0'),gift_cards:[{gift_card_id:'example-gift',amount_money:money('1800')}]});
   assert.equal(acceptedAllocation(order()),undefined);assert.throws(()=>acceptedAllocation({...current,gift_card_estimate:{...current.gift_card_estimate!,can_pay:false}}));
 });
 for(const [status,resumable,next] of [['succeeded',false,'done'],['partially_succeeded',false,'pay_remaining'],['failed',false,'new_payment'],['canceled',false,'new_payment'],['expired',false,'new_payment'],['requires_capture',false,'capture'],['requires_action',true,'authenticate'],['processing',true,'resume'],['processing',false,'wait'],['finalizing',false,'wait']] as const)test(`next step for ${status}/${resumable}`,()=>assert.equal(nextStep(attempt(status,resumable)),next));
@@ -67,7 +68,7 @@ function record(store:Store):CheckoutRecord{
 }
 test('payment journal admits one durable body and clears the prior attempt atomically',()=>{
   const store=new Store(':memory:');try{
-    const row=record(store);const engine=new PaymentEngine(new Client(),createAuth('local-fixture'),store);const body={action:'pay' as const,payment_source:{token:'pm_fixture'},expected_outstanding_money:money('1800')};
+    const row=record(store);const engine=new PaymentEngine(new Client(),createAuth('local-fixture'),store);const body={action:'pay' as const,payment_source:{credential_type:'token' as const,token:'pm_fixture'},expected_outstanding_money:money('1800')};
     const job=engine.job(row,'pay',body);assert.equal(engine.record(row.checkout_ref).last_attempt_id,null);assert.equal(JSON.parse(job.body!).payment_source.token,'pm_fixture');
     const duplicate=engine.job(row,'pay',{...body,expected_outstanding_money:money('1900')});assert.equal(duplicate.idempotency_key,job.idempotency_key);assert.equal(duplicate.body,job.body);
     assert.throws(()=>store.run('INSERT INTO actions(action_id,resource,kind,idempotency_key,body_hash,created_at) VALUES(?,?,?,?,?,?)','duplicate','order:example-order','pay','duplicate','hash',Date.now()));
@@ -103,14 +104,14 @@ for(const scenario of [
   t.mock.timers.enable({apis:['setTimeout']});
   const directory=mkdtempSync(join(tmpdir(),'storefront-payment-recovery-'));const path=join(directory,'app.sqlite');let store=new Store(path);
   const sends:{body:PayOrderRequestInput;key:string|undefined;mode:string|undefined}[]=[];
-  let losing=true;let executions=0;let response:{order:Order;payment_attempt:OrderPaymentAttempt}|undefined;
+  let losing=true;let executions=0;let response:{order:Order;order_payment_attempt:OrderPaymentAttempt}|undefined;
   const client={orders:{
     get:async()=>order(),
     getPaymentAttempt:async()=>{throw new Error('no attempt ID should be remembered before recovery');},
     pay:async(request:{body:PayOrderRequestInput},options:RequestOptions<'checkout'>)=>{
-      sends.push({body:structuredClone(request.body),key:options.idempotencyKey,mode:options.authMode});
+      sends.push({body:structuredClone(request.body),key:options.idempotencyKey,mode:options.checkoutToken?'checkout':undefined});
       if(!response&&(!losing||scenario.accepted)){
-        executions++;response={order:scenario.status==='succeeded'?{...order('0'),payment_status:'paid'}:order(),payment_attempt:attempt(scenario.status)};
+        executions++;response={order:scenario.status==='succeeded'?{...order('0'),payment_status:'paid'}:order(),order_payment_attempt:attempt(scenario.status)};
       }
       if(losing)throw new SdkError('transport','local lost response','unknown',true);
       return response;
@@ -143,7 +144,7 @@ test('a repeated pay click replays the unknown request instead of using a new cr
   const client={orders:{get:async()=>order(),pay:async(request:{body:PayOrderRequestInput},options:RequestOptions<'checkout'>)=>{
     sends.push({body:structuredClone(request.body),key:options.idempotencyKey});
     if(losing)throw new SdkError('transport','local lost response','unknown',true);
-    return {order:{...order('0'),payment_status:'paid'},payment_attempt:attempt('succeeded')};
+    return {order:{...order('0'),payment_status:'paid'},order_payment_attempt:attempt('succeeded')};
   }}} as unknown as Client;
   try{
     const row=record(store);const engine=new PaymentEngine(client,createAuth('local-fixture'),store);
@@ -156,7 +157,7 @@ test('a repeated pay click replays the unknown request instead of using a new cr
 for(const kind of ['resume','cancel'] as const)test(`unknown ${kind} remains recoverable while its known attempt is non-resumable`,async t=>{
   t.mock.timers.enable({apis:['setTimeout']});const store=new Store(':memory:');let losing=true;const keys:(string|undefined)[]=[];
   const current={...order(),active_payment_attempt:attempt('processing',false,'prior-attempt')};
-  const send=async(options:RequestOptions<'checkout'>)=>{keys.push(options.idempotencyKey);if(losing)throw new SdkError('transport','local lost response','unknown',true);return {order:current,payment_attempt:current.active_payment_attempt};};
+  const send=async(options:RequestOptions<'checkout'>)=>{keys.push(options.idempotencyKey);if(losing)throw new SdkError('transport','local lost response','unknown',true);return {order:current,order_payment_attempt:current.active_payment_attempt};};
   const client={orders:{get:async()=>current,pay:async(request:{body:PayOrderRequestInput},options:RequestOptions<'checkout'>)=>{assert.deepEqual(request.body,{action:'resume',order_payment_attempt_id:'prior-attempt'});return send(options);},cancelPaymentAttempt:async(orderId:string,attemptId:string,body:unknown,options:RequestOptions<'checkout'>)=>{assert.equal(orderId,'example-order');assert.equal(attemptId,'prior-attempt');assert.deepEqual(body,{cancellation_reason:'abandoned'});return send(options);}}} as unknown as Client;
   try{
     const row=record(store);const engine=new PaymentEngine(client,createAuth('local-fixture'),store);
@@ -165,11 +166,20 @@ for(const kind of ['resume','cancel'] as const)test(`unknown ${kind} remains rec
     losing=false;assert.equal(engine.next(await engine.resume(row.checkout_ref)),'wait');assert.equal(keys.length,5);assert.ok(keys.every(key=>key===job.idempotency_key));
   }finally{store.close();}
 });
+for(const code of ['VERSION_CONFLICT','CONCURRENT_MODIFICATION','LIMIT_EXCEEDED'])test(`a ${code} refusal sends the buyer back to review the total, and nothing is charged`,async()=>{
+  const store=new Store(':memory:');let sends=0;
+  const client={orders:{get:async()=>order(),pay:async()=>{sends++;throw flintError(409,code,{},{retry:code==='CONCURRENT_MODIFICATION'?'same_request':code==='VERSION_CONFLICT'?'after_refresh':'none'});}}} as unknown as Client;
+  try{
+    const row=record(store);const engine=new PaymentEngine(client,createAuth('local-fixture'),store);
+    const result=await engine.start(row.checkout_ref,{...input(),credential:{kind:'payment_method_token',value:'pm_original'}});
+    assert.equal(sends,1);assert.equal(result.totalChanged,true);assert.equal(result.unknown,false);assert.equal(engine.unresolved(engine.record(row.checkout_ref)),undefined);
+  }finally{store.close();}
+});
 test('a known non-resumable active attempt clears the pay journal and stays read-only waiting',async()=>{
   const store=new Store(':memory:');let mutations=0;const current={...order(),active_payment_attempt:attempt('processing')};
   const client={orders:{get:async()=>current,pay:async()=>{mutations++;throw new Error('a status read must not send a payment');}}} as unknown as Client;
   try{
-    const row=record(store);const engine=new PaymentEngine(client,createAuth('local-fixture'),store);engine.job(row,'pay',{action:'pay',payment_source:{token:'pm_original'}});
+    const row=record(store);const engine=new PaymentEngine(client,createAuth('local-fixture'),store);engine.job(row,'pay',{action:'pay',payment_source:{credential_type:'token',token:'pm_original'}});
     const result=await engine.status(row.checkout_ref);assert.equal(result.unknown,false);assert.equal(engine.next(result),'wait');assert.equal(engine.unresolved(row),undefined);assert.equal(mutations,0);
   }finally{store.close();}
 });

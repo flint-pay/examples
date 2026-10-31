@@ -22,5 +22,5 @@ export function safeOrder(order:SourcedOrder):unknown {
   return buyerSafe({...order,active_payment_attempt:safeAttempt(order.active_payment_attempt),customer:undefined,merchant_id:undefined,inventory_reservation_id:undefined,inventory_routing_source:undefined});
 }
 export function safeSession(session:CheckoutSession):unknown {
-  return buyerSafe({...session,gift_card_challenge:undefined,page_origin:undefined,url:undefined,redirects:undefined,customer:undefined,merchant_id:undefined,active_payment_attempt:safeAttempt(session.active_payment_attempt)});
+  return buyerSafe({...session,gift_card_challenge:undefined,page_origin:undefined,url:undefined,redirects:undefined,payment_return_url:undefined,customer:undefined,merchant_id:undefined,active_payment_attempt:safeAttempt(session.active_payment_attempt)});
 }

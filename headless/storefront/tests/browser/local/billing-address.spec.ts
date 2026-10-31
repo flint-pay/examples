@@ -164,7 +164,7 @@ test('a gift card still pays the revision it was shown after the address changes
   await expect(page).toHaveURL(/complete$/);
   const pays = await entries(request, 'taxset', 'pay');
   expect(pays).toHaveLength(1);
-  expect(pays[0]!.body.approved_order_revision).toBe('4');
+  expect(pays[0]!.body.approved_order_version).toBe('4');
 });
 
 test('the service lists no address inputs once tax is calculated, and the saved address is still shown after a reload', async ({ page }) => {

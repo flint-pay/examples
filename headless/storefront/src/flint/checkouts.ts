@@ -1,7 +1,7 @@
-import type {Client,Order,CheckoutSession,BuyerDeliveryQuoteChoiceGroupResource,DeliveryAddressResource,DeliveryPickupAvailabilityLocationResource,DeliveryAddressRequestInput,DeliveryBuyerLocationRequestInput,OrderTaxLocationFullAddressRequestInput,Subscription} from '@flintpay/node';
+import type {Client,Order,CheckoutSession,DeliveryQuoteChoiceGroupResource,Address,DeliveryPickupAvailabilityLocationResource,DeliveryAddressRequestInput,DeliveryBuyerLocationRequestInput,OrderTaxLocationFullAddressRequestInput,Subscription} from '@flintpay/node';
 import {createHash} from 'node:crypto';
 import type {Auth} from './auth.ts';
-import {LocalError,unknownOutcome,appError,sessionEnded} from './errors.ts';
+import {LocalError,unknownOutcome,appError,condition,sessionEnded} from './errors.ts';
 import {SdkError} from '@flintpay/node';
 import {challengeFromError,confirmWithSession,newChallengeId,sessionTag,applyWithProof} from './gift-challenge.ts';
 import type {GiftChallengeView} from '../views/types.ts';
@@ -18,12 +18,12 @@ import {PaymentEngine,collectionKind,paymentComplete} from '../payments/engine.t
 import type {PaymentResult,SourcedOrder} from '../payments/engine.ts';
 import {attemptOpen} from '../payments/next-step.ts';
 
-export type Quote={delivery_quote_id:string;choice_groups:BuyerDeliveryQuoteChoiceGroupResource[];expires_at:string;input_requirements:unknown[];buyer_reasons?:string[];status:string};
-export type PickupPreviewLocation={location_id:string;name:string;address?:DeliveryAddressResource;distance_meters?:number;delivery_method_ids:string[]};
+export type Quote={delivery_quote_id:string;choice_groups:DeliveryQuoteChoiceGroupResource[];expires_at:string;input_requirements:unknown[];buyer_reasons?:string[];status:string};
+export type PickupPreviewLocation={location_id:string;name:string;address?:Address;distance_meters?:number;delivery_method_ids:string[]};
 export type PickupPreview={postal_code:string;country:string;evaluated_at:string;locations:PickupPreviewLocation[]};
 export type Details={name?:string;contact?:{email?:string|null;phone?:string|null};billing_address?:OrderTaxLocationFullAddressRequestInput;customer_billing_address?:OrderTaxLocationFullAddressRequestInput;delivery_quote?:Quote;delivery_selection?:{delivery_selection_id?:string;[key:string]:unknown};pickup_preview?:PickupPreview;quote_basis?:{selection_id:string|null};quote_input?:{destination_address?:DeliveryAddressRequestInput;buyer_location?:DeliveryBuyerLocationRequestInput;pickup_location_id?:string};verification?:{customer_verification_id:string;status:string;purpose?:string;channel?:string;email?:string;phone_last_digits?:string};receipt_sent_at?:number;gift_origin_replaced_at?:number};
 export type ReadCheckout={record:CheckoutRecord;session:CheckoutSession;order:SourcedOrder;result:PaymentResult};
-export type MutationContext={order_revision?:string;delivery_selection_id:string|null;delivery_quote_id?:string;customer_verification_id?:string};
+export type MutationContext={order_version?:`${bigint}`;delivery_selection_id:string|null;delivery_quote_id?:string;customer_verification_id?:string};
 const displayNotices=new Set(['checkout_refreshed','delivery_released','total_changed','gift_card_changed','affirm_incomplete','trial_not_started','signed_in_mid_checkout','delivery_requoted']);
 
 const bodyHash=(body:unknown)=>createHash('sha256').update(JSON.stringify(body)).digest('hex');
@@ -61,21 +61,24 @@ export class Checkouts {
     try{const response=await call(row.idempotency_key);this.store.run("UPDATE actions SET status='succeeded' WHERE action_id=?",row.action_id);return response;}
     catch(error){
       // Flint returns this before confirming the code, and keeps the verification open for another try.
-      const verificationRejected=kind==='checkout_verification_confirm'&&error instanceof SdkError&&error.kind==='server'&&error.outcome==='response'&&error.status===503&&error.code==='CUSTOMER_VERIFICATION_UNAVAILABLE';
+      const verificationRejected=kind==='checkout_verification_confirm'&&error instanceof SdkError&&error.kind==='server'&&error.outcome==='response'&&error.status===503&&condition(error,'verification')==='CUSTOMER_VERIFICATION_UNAVAILABLE';
       const uncertain=!verificationRejected&&(error instanceof SdkError?error.outcome!=='not_sent'&&(unknownOutcome(error)||error.outcome!=='response'||[401,403].includes(error.status??0)):!(error instanceof LocalError));
       this.store.run('UPDATE actions SET status=? WHERE action_id=?',classifyError?.(error)??(uncertain?'unknown':'rejected'),row.action_id);throw error;
     }
   }
   async launch(record:CheckoutRecord,customerId?:string,replaceCurrent=true):Promise<CheckoutRecord>{
-    const common={surface:'embedded' as const,page_origin:this.config.appOrigin,customer_collection:{require_email:true,...(customerId?{customer_id:customerId}:{})},expiration:{expires_in_seconds:String(this.config.checkoutTtl)},redirects:{success_redirect_url:`${this.config.appOrigin}/checkout/${record.checkout_ref}/return`},external_reference_id:record.checkout_ref};
-    const freshInput=record.order_id?{...common,order_id:record.order_id,...(replaceCurrent&&record.checkout_session_id?{replace_checkout_session_id:record.checkout_session_id}:{})}:{...common,subscription_plan_id:record.subscription_plan_id!};
+    // An order session acts for the order's customer, so only a plan signup names the customer here.
+    const common={surface:'embedded' as const,page_origin:this.config.appOrigin,buyer_fields:{require_email:true},expires_in_seconds:String(this.config.checkoutTtl) as `${bigint}`,payment_return_url:`${this.config.appOrigin}/checkout/${record.checkout_ref}/return`,external_reference_id:record.checkout_ref};
+    const freshInput=record.order_id?{...common,type:'order' as const,order_id:record.order_id,...(replaceCurrent&&record.checkout_session_id?{replace_checkout_session_id:record.checkout_session_id}:{})}:{...common,type:'subscription_plan' as const,subscription_plan_id:record.subscription_plan_id!,...(customerId?{customer_id:customerId}:{})};
     const previous=this.store.get<ActionRecord>('SELECT * FROM actions WHERE idempotency_key=?',`session-${record.checkout_ref}-${record.generation}`);
     const input=previous?.body?JSON.parse(previous.body) as typeof freshInput:freshInput;
     const launched=await this.action(record,'session_create',input,key=>this.client.checkoutSessions.create(input,this.auth.merchant(key)),`session-${record.checkout_ref}-${record.generation}`);
-    if(input.page_origin&&launched.checkout_session.page_origin!==input.page_origin){logLaunchInvalid('page_origin_mismatch');throw new LocalError('CHECKOUT_LAUNCH_INVALID',503);}
+    if(input.page_origin&&launched.page_origin!==input.page_origin){logLaunchInvalid('page_origin_mismatch');throw new LocalError('CHECKOUT_LAUNCH_INVALID',503);}
+    const checkoutAuthToken=launched.checkout_auth_token;
+    if(!checkoutAuthToken){logLaunchInvalid('credential_missing');throw new LocalError('CHECKOUT_LAUNCH_INVALID',503);}
     // The new session starts without the buyer's saved contact, so journal its restoration in the same step that stops flagging replacement.
     this.store.transaction(()=>{
-      this.store.run('UPDATE checkouts SET order_id=?,checkout_session_id=?,checkout_auth_token=?,needs_replacement=0,updated_at=? WHERE checkout_ref=?',launched.checkout_session.order_id??record.order_id,launched.checkout_session.checkout_session_id,launched.checkout_access.checkout_auth_token,Date.now(),record.checkout_ref);
+      this.store.run('UPDATE checkouts SET order_id=?,checkout_session_id=?,checkout_auth_token=?,needs_replacement=0,updated_at=? WHERE checkout_ref=?',launched.order_id??record.order_id,launched.checkout_session_id,checkoutAuthToken,Date.now(),record.checkout_ref);
       const current=this.record(record.checkout_ref),saved=this.details(current).contact??{},resource=`order:${current.order_id??current.checkout_ref}`,key=`contact-restore-${current.checkout_ref}-${current.generation}`;
       const buyer_contact:{email?:string|null;phone?:string|null}={};
       if(saved.email!==undefined)buyer_contact.email=saved.email;if(saved.phone!==undefined)buyer_contact.phone=saved.phone;
@@ -108,7 +111,7 @@ export class Checkouts {
   async finishStart(record:CheckoutRecord,cart:Cart,user?:User):Promise<CheckoutRecord>{
     const bound=this.identity.isBound(user,this.sandboxId)?user.flint_customer_id!:undefined;
     if(!record.order_id){
-      const freshInput={line_items:this.carts.lines(cart).map(line=>({variant_id:line.variant_id,quantity:String(line.quantity)})),...(bound?{customer_id:bound}:{}),external_reference_id:record.checkout_ref,metadata:{example_checkout_ref:record.checkout_ref}};
+      const freshInput={line_items:this.carts.lines(cart).map(line=>({type:'variant' as const,variant_id:line.variant_id,quantity:String(line.quantity) as `${bigint}`})),...(bound?{customer_id:bound}:{}),external_reference_id:record.checkout_ref,metadata:{example_checkout_ref:record.checkout_ref}};
       const previous=this.store.get<ActionRecord>('SELECT * FROM actions WHERE idempotency_key=?',`order-${record.checkout_ref}`);
       const input=previous?.body?JSON.parse(previous.body) as typeof freshInput:freshInput;
       const order=await this.action(record,'order_create',input,key=>this.client.orders.create(input,this.auth.merchant(key)),`order-${record.checkout_ref}`);
@@ -132,8 +135,8 @@ export class Checkouts {
         credentialsStale=true;
         session=await this.client.checkoutSessions.get(record.checkout_session_id!,undefined,this.auth.merchant());
       }
-      if(session.status==='open'&&!session.recovery_mode&&!credentialsStale&&!record.needs_replacement&&await this.restoreContact(record))session=await this.client.checkoutSessions.get(record.checkout_session_id!,undefined,this.auth.checkout(record));
-      const managedRead=['paid','partially_paid'].includes(session.status)||['invalidated','expired','closed'].includes(session.status)&&!session.recovery_mode;
+      if(session.status==='open'&&!session.is_in_recovery&&!credentialsStale&&!record.needs_replacement&&await this.restoreContact(record))session=await this.client.checkoutSessions.get(record.checkout_session_id!,undefined,this.auth.checkout(record));
+      const managedRead=['paid','partially_paid'].includes(session.status)||['invalidated','expired','closed'].includes(session.status)&&!session.is_in_recovery;
       let order=managedRead?await this.client.orders.get(record.order_id!,undefined,this.auth.merchant()):await this.payments.read(record);
       const unresolved=this.payments.unresolved(record);
       const unresolvedMutation=this.store.get<ActionRecord>("SELECT * FROM actions WHERE resource=? AND kind NOT IN ('pay','resume','cancel','session_create','contact_restore') AND status IN ('pending','unknown')",`order:${record.order_id}`);
@@ -145,7 +148,7 @@ export class Checkouts {
           this.store.run('UPDATE checkouts SET needs_replacement=1 WHERE checkout_ref=?',ref);record.needs_replacement=1;
         }
       }
-      if((credentialsStale||record.needs_replacement||['invalidated','expired','closed'].includes(session.status))&&!session.recovery_mode&&!attemptOpen(order.active_payment_attempt)&&!unresolved&&!unresolvedMutation&&!paymentComplete(order)&&order.status==='open'){
+      if((credentialsStale||record.needs_replacement||['invalidated','expired','closed'].includes(session.status))&&!session.is_in_recovery&&!attemptOpen(order.active_payment_attempt)&&!unresolved&&!unresolvedMutation&&!paymentComplete(order)&&order.status==='open'){
         const previous=this.store.get<ActionRecord>('SELECT * FROM actions WHERE idempotency_key=?',`session-${record.checkout_ref}-${record.generation}`);
         const replay=previous&&(previous.status==='pending'||previous.status==='unknown'||previous.status!=='rejected'&&previous.body&&JSON.parse(previous.body).replace_checkout_session_id===record.checkout_session_id);
         if(!replay){this.store.run('UPDATE checkouts SET generation=generation+1 WHERE checkout_ref=?',ref);record=this.record(ref);}
@@ -156,7 +159,7 @@ export class Checkouts {
         session=await this.client.checkoutSessions.get(record.checkout_session_id!,undefined,this.auth.checkout(record));order=await this.client.orders.get(record.order_id!,undefined,this.auth.checkout(record));
         credentialsStale=false;
       }
-      if(session.status==='open'&&!session.recovery_mode&&!credentialsStale){
+      if(session.status==='open'&&!session.is_in_recovery&&!credentialsStale){
         const selected=await this.client.checkoutSessions.getCurrentDeliverySelection(record.checkout_session_id!,undefined,this.auth.checkout(record)) as {delivery_selection?:Details['delivery_selection']};
         const details=this.details(record);details.delivery_selection=selected.delivery_selection;this.saveDetails(record,details);
         const stale=details.delivery_selection&&['expired','released','superseded'].includes(String(details.delivery_selection.status));
@@ -211,7 +214,7 @@ export class Checkouts {
       if(this.store.get<ActionRecord>("SELECT * FROM actions WHERE resource=? AND kind NOT IN ('pay','resume','cancel') AND status IN ('pending','unknown')",`order:${record.order_id}`))throw new LocalError('ACTION_RECONCILIATION_REQUIRED',409);
       const order=await this.payments.read(record);if(attemptOpen(order.active_payment_attempt))throw new LocalError('PAYMENT_ATTEMPT_IN_PROGRESS',409);
       const details=this.details(record);
-      const response=await this.client.deliveryPreviews.create({body:{mode:'pickup_locations',checkout_session_id:record.checkout_session_id!,buyer_location,expected_delivery_selection_id:details.delivery_selection?.delivery_selection_id??null}},this.auth.checkout(record));
+      const response=await this.client.deliveryPreviews.create({body:{mode:'pickup_locations',checkout_session_id:record.checkout_session_id!,buyer_location}},this.auth.checkout(record));
       if((response as {mode?:string}).mode!=='pickup_locations')throw new LocalError('DELIVERY_SERVICE_UNAVAILABLE',503);
       const preview=response as {evaluated_at:string;locations:DeliveryPickupAvailabilityLocationResource[]};
       details.pickup_preview={postal_code:buyer_location.address.postal_code,country:buyer_location.address.country,evaluated_at:preview.evaluated_at,locations:preview.locations.filter(item=>item.candidate_outcome.type==='available'&&item.compatible_methods.length>0).map(item=>({location_id:item.location.location_id,name:item.location.name,address:item.location.address,distance_meters:item.distance_meters,delivery_method_ids:item.compatible_methods.map(method=>method.delivery_method_id)}))};
@@ -240,7 +243,7 @@ export class Checkouts {
       const saved=pending?.body?JSON.parse(pending.body) as {input:unknown;context:MutationContext}:undefined;
       const body=typeof input==='function'?(input as (details:Details,saved?:{input:unknown})=>unknown)(details,saved):input;
       if(saved&&JSON.stringify(saved.input)!==JSON.stringify(body))throw new LocalError('ACTION_RECONCILIATION_REQUIRED',409);
-      const context=saved?.context??{order_revision:order.order_revision,delivery_selection_id:details.delivery_selection?.delivery_selection_id??null,delivery_quote_id:details.delivery_quote?.delivery_quote_id,customer_verification_id:details.verification?.customer_verification_id};
+      const context=saved?.context??{order_version:order.version,delivery_selection_id:details.delivery_selection?.delivery_selection_id??null,delivery_quote_id:details.delivery_quote?.delivery_quote_id,customer_verification_id:details.verification?.customer_verification_id};
       if(kind==='gift_remove')this.store.abandonGiftChallenges(ref,`order:${record.order_id}`);
       return this.action(record,kind,{input:body,context},key=>call(record,key,context));
     });
@@ -283,12 +286,12 @@ export class Checkouts {
       const input={code_hash:createHash('sha256').update(giftCardCode).digest('hex')},details=this.details(record);
       const saved=pending?.body?JSON.parse(pending.body) as {input:{code_hash:string};context:MutationContext}:undefined;
       if(saved&&saved.input.code_hash!==input.code_hash)throw new LocalError('ACTION_RECONCILIATION_REQUIRED',409);
-      const context=saved?.context??{order_revision:order.order_revision,delivery_selection_id:details.delivery_selection?.delivery_selection_id??null,delivery_quote_id:details.delivery_quote?.delivery_quote_id,customer_verification_id:details.verification?.customer_verification_id};
-      if(!context.order_revision)throw new LocalError('ORDER_CHANGED_REFRESH_REQUIRED',409);
+      const context=saved?.context??{order_version:order.version,delivery_selection_id:details.delivery_selection?.delivery_selection_id??null,delivery_quote_id:details.delivery_quote?.delivery_quote_id,customer_verification_id:details.verification?.customer_verification_id};
+      if(!context.order_version)throw new LocalError('ORDER_CHANGED_REFRESH_REQUIRED',409);
       this.store.abandonGiftChallenges(ref,resource);
       let action:ActionRecord|undefined;
       try{
-        await this.action(record,'gift',{input,context},key=>{action=this.store.get<ActionRecord>('SELECT * FROM actions WHERE idempotency_key=?',key);return this.client.orders.applyGiftCard(record.order_id!,{gift_card_code:giftCardCode,order_revision:context.order_revision!},this.auth.checkout(record,key));},undefined,error=>challengeFromError(error,this.config.giftChallengeOrigin)?'challenge':undefined);
+        await this.action(record,'gift',{input,context},key=>{action=this.store.get<ActionRecord>('SELECT * FROM actions WHERE idempotency_key=?',key);return this.client.orders.applyGiftCard(record.order_id!,{code:giftCardCode,expected_version:context.order_version!},this.auth.checkout(record,key));},undefined,error=>challengeFromError(error,this.config.giftChallengeOrigin)?'challenge':undefined);
       }catch(error){if(!action)throw error;return this.giftOutcome(record,action,error);}
     });
   }
@@ -306,10 +309,10 @@ export class Checkouts {
       if(action?.kind!=='gift'||action.status!=='challenge'||saved?.input.code_hash!==createHash('sha256').update(giftCardCode).digest('hex'))reject('GIFT_CHALLENGE_CODE_CHANGED');
       let order:Order;try{order=await this.payments.read(record);}catch(error){this.store.closeGiftChallenges(ref);throw error;}
       if(attemptOpen(order.active_payment_attempt))reject('PAYMENT_ATTEMPT_IN_PROGRESS');
-      if(order.order_revision!==saved!.context.order_revision)reject('GIFT_CHALLENGE_ORDER_CHANGED');
+      if(order.version!==saved!.context.order_version)reject('GIFT_CHALLENGE_ORDER_CHANGED');
       this.store.claimGiftChallenge(row);
       try{
-        await applyWithProof(this.client,this.auth,record,giftCardCode,saved!.context.order_revision!,action!.idempotency_key,proof);
+        await applyWithProof(this.client,this.auth,record,giftCardCode,saved!.context.order_version!,action!.idempotency_key,proof);
         this.store.run("UPDATE actions SET status='succeeded' WHERE action_id=?",action!.action_id);this.store.closeGiftChallenges(ref);
         logGiftChallenge({outcome:'retry_applied',checkout_ref:ref});
       }catch(error){
@@ -369,8 +372,8 @@ export class Checkouts {
       const input=change;
       await this.action(record,'cart_sync',input,key=>input.type==='delete'
         ?this.client.orders.deleteLineItem(record.order_id!,input.line_id!,undefined,this.auth.merchant(key))
-        :input.type==='update'?this.client.orders.updateLineItem(record.order_id!,input.line_id!,{quantity:String(input.quantity)},this.auth.merchant(key))
-        :this.client.orders.addLineItems(record.order_id!,{line_items:[{variant_id:input.variant_id,quantity:String(input.quantity)}]},this.auth.merchant(key)));
+        :input.type==='update'?this.client.orders.updateLineItem(record.order_id!,input.line_id!,{quantity:String(input.quantity) as `${bigint}`},this.auth.merchant(key))
+        :this.client.orders.addLineItems(record.order_id!,{line_items:[{type:'variant',variant_id:input.variant_id,quantity:String(input.quantity) as `${bigint}`}]},this.auth.merchant(key)));
       applied=true;
     }
     throw new LocalError('CART_RECONCILIATION_REQUIRED',409);

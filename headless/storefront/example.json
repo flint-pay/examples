@@ -10,7 +10,7 @@
     "node": ">=24"
   },
   "status": "beta",
-  "status_note": "Uses the @flintpay/node 3.0.0 beta.",
+  "status_note": "Uses @flintpay/node 7.0.0.",
   "guides": [
     {
       "title": "Build your own checkout",
@@ -32,7 +32,7 @@
   "requires": {
     "flint_sdk": {
       "package": "@flintpay/node",
-      "version": "3.0.0-beta.20261012044000"
+      "version": "7.0.0"
     },
     "stripe_js": true,
     "stripe_test_mode": true,
