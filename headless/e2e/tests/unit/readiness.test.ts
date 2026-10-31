@@ -55,6 +55,9 @@ test('gift SDK readiness requires three matching published and installed registr
   assert.equal(giftChallengeSdkReady(evidence()),true);
   for(const field of ['pin','installed','resolved'] as const){const values=evidence();values[1]![field]=field==='resolved'?'file:/tmp/candidate.tgz':'3.0.0-beta.20261007031000';assert.equal(giftChallengeSdkReady(values),false);}
   assert.equal(giftChallengeSdkReady(evidence().slice(1)),false);
+  const stable=(version:string)=>evidence().map(item=>({...item,pin:version,installed:version,resolved:`https://registry.npmjs.org/@flintpay/node/-/node-${version}.tgz`}));
+  assert.equal(giftChallengeSdkReady(stable('7.0.0')),true);
+  assert.equal(giftChallengeSdkReady(stable('2.9.0')),false);
   assert.equal(giftChallengeSdkReady(evidence().map(item=>({...item,pin:'3.0.0-beta.20261007031000',installed:'3.0.0-beta.20261007031000'}))),false);
 });
 
