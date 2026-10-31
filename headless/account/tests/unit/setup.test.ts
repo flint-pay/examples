@@ -12,7 +12,7 @@ type Write={customer_account:CustomerAccountSettings|null;expected_version:strin
 function localApi(initial:CustomerAccountSettings|null={mode:'flint_hosted'}){
   let account=initial??undefined,version=1,writes=0,lose:'before'|'after'|undefined,loseRead=false,normalize=false,beforeUpdate:((body:Write,key:string)=>void)|undefined;
   const attempts:{body:Write;key:string}[]=[],cache=new Map<string,{body:string;response:string}>();
-  const request_id='req_01KWM6WAHG3N9Q8T2V5XRZ7C4D',headers={'Content-Type':'application/json','Flint-Mode':'test','Flint-Sandbox-ID':'sandbox_example'};
+  const request_id=`req_${'0'.repeat(26)}`,headers={'Content-Type':'application/json','Flint-Mode':'test','Flint-Sandbox-ID':'sandbox_example'};
   const resource=()=>({settings_id:'settings_example',settings_scope:'merchant',tax_identity:null,version:String(version),...(account?{customer_account:account}:{})});
   const client=new Client({baseUrl:config.apiBaseUrl,maxAttempts:1,transport:async(input,init)=>{
     const path=new URL(String(input)).pathname;
@@ -63,7 +63,7 @@ test('published SDK sends explicit null clearing and serializes expected_version
     calls++;assert.equal(new URL(String(input)).pathname,'/v1/settings');assert.equal(init?.method,'PATCH');
     assert.deepEqual(JSON.parse(String(init?.body)),{expected_version:1,customer_account:null});
     assert.equal(new Headers(init?.headers).get('Idempotency-Key'),'example-clear-key');
-    return new Response(JSON.stringify({data:{settings_id:'settings_example',settings_scope:'merchant',tax_identity:null,version:'2'},request_id:'req_01KWM6WAHG3N9Q8T2V5XRZ7C4D'}),{headers:{'Content-Type':'application/json','Flint-Mode':'test','Flint-Sandbox-ID':'sandbox_example'}});
+    return new Response(JSON.stringify({data:{settings_id:'settings_example',settings_scope:'merchant',tax_identity:null,version:'2'},request_id:`req_${'0'.repeat(26)}`}),{headers:{'Content-Type':'application/json','Flint-Mode':'test','Flint-Sandbox-ID':'sandbox_example'}});
   }});
   try{
     const restored=await client.settings.update({expected_version:'1',customer_account:null},{apiKey:'flint_test_PLACEHOLDER',idempotencyKey:'example-clear-key'});

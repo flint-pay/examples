@@ -17,7 +17,7 @@ async function harness(api:unknown,appConfig=config,realRendering=false){
   const headers={Cookie:`${config.cookieName}=${session.token}`,Origin:config.appOrigin,'X-CSRF-Token':session.session.csrf_token,'Content-Type':'application/json'};
   return {app,identity,store,user,session,headers,rendered:()=>rendered,close:()=>{store.close();identity.close();}};
 }
-const credentialRejected=()=>new SdkError('authentication','Session rejected','response',false,{status:401,headers:{},attempts:1,durationMs:0},'INVALID_CREDENTIAL',{type:'authentication_error',code:'INVALID_CREDENTIAL',message:'Session rejected',doc_url:'https://developers.withflintpay.com/docs/errors#invalid_credential',error_source:'integration',remediation:null,request_id:'req_01KWM6WAHG3N9Q8T2V5XRZ7C4D',details:[{code:'INVALID_CREDENTIAL',message:'Session rejected',reason:'unknown'}]});
+const credentialRejected=()=>new SdkError('authentication','Session rejected','response',false,{status:401,headers:{},attempts:1,durationMs:0},'INVALID_CREDENTIAL',{type:'authentication_error',code:'INVALID_CREDENTIAL',message:'Session rejected',doc_url:'https://developers.withflintpay.com/docs/errors#invalid_credential',error_source:'integration',remediation:null,request_id:`req_${'0'.repeat(26)}`,details:[{code:'INVALID_CREDENTIAL',message:'Session rejected',reason:'unknown'}]});
 test('health exposes configured source identity and process start without inventing a build',async()=>{
   const sha='a'.repeat(40),build=readConfig({FLINT_API_KEY:'flint_test_PLACEHOLDER',FLINT_API_BASE_URL:config.apiBaseUrl,APP_ORIGIN:config.appOrigin,PORT:'4200',BUILD_SHA:sha,BUILD_ARTIFACT_ID:sha+':headless/account'});
   for(const configured of [config,build]){
@@ -144,7 +144,7 @@ test('published buyer SDK data reaches gift history and order summaries through 
     const url=new URL(String(input)),headers=new Headers(init?.headers);requests.push(url);
     assert.equal(headers.get('Authorization'),'Bearer example customer authority');assert.equal(headers.get('X-API-Key'),null);assert.equal(headers.get('X-Checkout-Session-ID'),null);assert.equal(headers.get('X-Checkout-Session-Secret'),null);
     assert.ok(Object.hasOwn(replies,url.pathname),url.pathname);
-    return new Response(JSON.stringify({...(replies[url.pathname] as object),request_id:'req_01KWM6WAHG3N9Q8T2V5XRZ7C4D'}),{headers:{'Content-Type':'application/json','Flint-Mode':'test','Flint-Sandbox-ID':'sandbox_example'}});
+    return new Response(JSON.stringify({...(replies[url.pathname] as object),request_id:`req_${'0'.repeat(26)}`}),{headers:{'Content-Type':'application/json','Flint-Mode':'test','Flint-Sandbox-ID':'sandbox_example'}});
   }});
   const h=await harness(client);try{
     assert.equal((await h.app.request('/gift-cards/gfc_example',{headers:{Cookie:h.headers.Cookie}})).status,200);

@@ -8,7 +8,7 @@ import {createAuth} from '../../src/flint/auth.ts';
 import {readConfig} from '../../src/config.ts';
 import {LocalError} from '../../src/flint/errors.ts';
 const config=readConfig({FLINT_API_KEY:'flint_test_PLACEHOLDER',FLINT_API_BASE_URL:'https://api.staging.withflintpay.com',APP_ORIGIN:'http://localhost:4200',PORT:'4200'});
-const credentialError=(reason:string)=>new SdkError('authentication','fixture','response',false,{status:401,headers:{},attempts:1,durationMs:1},'INVALID_CREDENTIAL',{type:'authentication_error',code:'INVALID_CREDENTIAL',message:'fixture',doc_url:'https://developers.withflintpay.com/docs/errors#invalid_credential',error_source:'integration',remediation:null,request_id:'req_01KWM6WAHG3N9Q8T2V5XRZ7C4D',details:[{code:'INVALID_CREDENTIAL',message:'fixture',reason}]});
+const credentialError=(reason:string)=>new SdkError('authentication','fixture','response',false,{status:401,headers:{},attempts:1,durationMs:1},'INVALID_CREDENTIAL',{type:'authentication_error',code:'INVALID_CREDENTIAL',message:'fixture',doc_url:'https://developers.withflintpay.com/docs/errors#invalid_credential',error_source:'integration',remediation:null,request_id:`req_${'0'.repeat(26)}`,details:[{code:'INVALID_CREDENTIAL',message:'fixture',reason}]});
 const result=(secret:string):CustomerSessionWithSecret=>({created_at:new Date().toISOString(),status:'active',customer_id:'cus_example',customer_session_id:'session_example',secret,refresh_token:secret+' refresh',expires_at:new Date(Date.now()+3600000).toISOString(),refresh_token_expires_at:new Date(Date.now()+86400000).toISOString()});
 test('concurrent expired requests use one refresh and atomically persist the rotated pair',async()=>{
   const identity=new IdentityStore(':memory:');try{

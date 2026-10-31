@@ -6,7 +6,7 @@ const types:Record<number,string>={400:'validation_error',401:'authentication_er
 
 /** A Flint error body: a public code with its first detail's reason, field and resource. */
 export function flintErrorBody(status:number,code:string,detail:Record<string,unknown>={},remediation:Record<string,unknown>|null={retry:'none'}){
-  return {type:types[status]??'internal_error',code,message:'Fixture refusal.',doc_url:`https://developers.withflintpay.com/docs/errors#${code.toLowerCase()}`,error_source:'integration',remediation,request_id:'req_01KWM6WAHG3N9Q8T2V5XRZ7C4D',details:[{code,message:'Fixture refusal.',...detail}]};
+  return {type:types[status]??'internal_error',code,message:'Fixture refusal.',doc_url:`https://developers.withflintpay.com/docs/errors#${code.toLowerCase()}`,error_source:'integration',remediation,request_id:`req_${'0'.repeat(26)}`,details:[{code,message:'Fixture refusal.',...detail}]};
 }
 
 /** The SdkError the SDK raises for that body. */

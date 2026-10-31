@@ -12,7 +12,7 @@ test('published SDK emits only the named authority and preserves list envelopes'
   const requests:{path:string;headers:Headers}[]=[];
   const client=new Client({baseUrl:'https://api.staging.withflintpay.com',maxAttempts:1,transport:async(input,init)=>{
     const url=new URL(String(input)),headers=new Headers(init?.headers);requests.push({path:url.pathname,headers});
-    return new Response(JSON.stringify({data:[],next_page_token:'example-page',request_id:'req_01KWM6WAHG3N9Q8T2V5XRZ7C4D'}),{headers:{'Content-Type':'application/json','Flint-Mode':'test','Flint-Sandbox-ID':'sandbox_example'}});
+    return new Response(JSON.stringify({data:[],next_page_token:'example-page',request_id:`req_${'0'.repeat(26)}`}),{headers:{'Content-Type':'application/json','Flint-Mode':'test','Flint-Sandbox-ID':'sandbox_example'}});
   }});
   try{
     const auth=createAuth('flint_test_PLACEHOLDER');const response=await client.me.listOrders({page_size:10},auth.customer('flint_cses_PLACEHOLDER'));assert.equal(response.next_page_token,'example-page');assert.deepEqual(response.data,[]);
@@ -43,7 +43,7 @@ test('requires-action card and Affirm legs retain payment options using publishe
       assert.equal(headers.get('Authorization'),'Bearer example checkout authority');assert.equal(headers.get('X-API-Key'),null);assert.equal(headers.get('X-Checkout-Session-ID'),null);assert.equal(headers.get('X-Checkout-Session-Secret'),null);
       assert.ok(['/v1/payment-intents/intent_example','/v1/checkout-sessions/session_example'].includes(url.pathname),url.pathname);
       const data=url.pathname.includes('/payment-intents/')?{payment_intent_id:'intent_example',status:'requires_action',amount_money:money,selected_payment_option:paymentOption,payment_flow:'invoice',payment_options:[paymentOption],last_payment_error:null,risk:null,support_reference:'EXAMPLE',metadata:{},supported_actions:[],version:'1'}:{checkout_session_id:'session_example',status:'open',surface:'embedded',type:'invoice',version:'1',is_in_recovery:false,delivery_method_ids:[],delivery_selection_required:false,problems:[]};
-      return new Response(JSON.stringify({data,request_id:'req_01KWM6WAHG3N9Q8T2V5XRZ7C4D'}),{headers:{'Content-Type':'application/json','Flint-Mode':'test','Flint-Sandbox-ID':'sandbox_example'}});
+      return new Response(JSON.stringify({data,request_id:`req_${'0'.repeat(26)}`}),{headers:{'Content-Type':'application/json','Flint-Mode':'test','Flint-Sandbox-ID':'sandbox_example'}});
     }});
     try{
       store.run('INSERT INTO payment_checkouts(checkout_ref,user_id,sandbox_id,resource_type,resource_id,order_id,checkout_session_id,checkout_auth_token,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)','checkout_example','user_example','sandbox_example','invoice','inv_example','ord_example','session_example','example checkout authority',Date.now(),Date.now());
