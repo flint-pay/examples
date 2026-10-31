@@ -112,7 +112,7 @@ export function buttonKind(state: CheckoutState): 'order' | 'confirm_order' | 's
 export function declineCode(state: CheckoutState): string | null {
   const attempt = state.attempt;
   if (!attempt) return null;
-  if (attempt.failure_code) return String(attempt.failure_code);
+  if (attempt.last_payment_error?.code) return attempt.last_payment_error.code;
   for (const intent of attempt.payment_intents ?? []) {
     if (intent.last_payment_error?.code) return intent.last_payment_error.code;
   }
@@ -143,7 +143,7 @@ function hasAffirmAction(state: CheckoutState): boolean {
 
 export function derivePaymentState(state: CheckoutState): RestingPaymentState {
   if (isExpired(state)) return 'expired';
-  if (state.session.recovery_mode) return 'recovery';
+  if (state.session.is_in_recovery) return 'recovery';
   const attempt = state.attempt;
   // The app can hold an unresolved payment request before Flint shows any attempt. Treat it as resolving.
   if (!attempt && state.next === 'resume') return 'resuming';
@@ -157,7 +157,7 @@ export function derivePaymentState(state: CheckoutState): RestingPaymentState {
       case 'capture': return 'unavailable';
       case 'pay_remaining': return 'pay_remaining';
       case 'new_payment':
-        if (attempt.status === 'failed' || attempt.failure_code) return 'declined';
+        if (attempt.status === 'failed' || attempt.last_payment_error) return 'declined';
         break;
       default: break;
     }
@@ -277,8 +277,13 @@ export function tipVisible(state: CheckoutState): boolean {
   return (state.delivery_selection?.choices ?? []).some(isPickupType);
 }
 
+/** The tip the buyer asked for, which settles when the order is paid. */
+export function requestedTip(state: CheckoutState) {
+  return state.order.tips?.find((tip) => tip.status === 'requested');
+}
+
 export function tipChoice(state: CheckoutState): 'none' | '10' | '15' | '20' | 'custom' {
-  const tip = state.order.requested_tip;
+  const tip = requestedTip(state);
   if (tip?.percent !== undefined && tip.percent !== null) {
     const asString = String(tip.percent);
     if (asString === '10' || asString === '15' || asString === '20') return asString;

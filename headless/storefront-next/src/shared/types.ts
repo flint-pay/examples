@@ -175,20 +175,21 @@ export type Order = {
   order_id: string;
   order_number?: string;
   customer_id?: string;
-  order_revision?: string | number;
+  version?: string;
   status?: string;
   payment_status?: string;
   line_items: OrderLineItem[];
   pricing_amounts: PricingAmounts | null;
   settlement_amounts: SettlementAmounts | null;
   charges?: { name: string; applied_money: Money | null }[];
-  applied_discounts?: {
+  discounts?: {
     order_discount_id: string;
+    status?: string;
     customer_facing_name?: string;
     promotion_code?: string;
     applied_money: Money | null;
   }[];
-  gift_cards?: { gift_card_id: string; last_characters: string; available_money: Money | null }[];
+  gift_cards?: { gift_card_id: string; last4: string; available_money: Money | null }[];
   gift_card_tender_enabled?: boolean;
   gift_card_estimate?: {
     can_pay: boolean;
@@ -196,7 +197,7 @@ export type Order = {
     processor_money: Money | null;
     gift_cards: { gift_card_id: string; amount_money: Money | null }[];
   } | null;
-  gift_card_settlements?: { amount_money: Money | null; last_characters?: string }[];
+  gift_card_settlements?: { amount_money: Money | null; last4?: string }[];
   payment_intents?: { payment_intent_id: string; status?: string; payment_source?: { type?: string } | null }[];
   tax?: {
     status: string;
@@ -205,7 +206,7 @@ export type Order = {
     available_location_inputs?: string[];
     location?: { address_source?: string; address_type?: string; address?: Address | null } | null;
   } | null;
-  requested_tip?: { percent?: number; amount_money?: Money | null } | null;
+  tips?: { status?: string; percent?: number; amount_money?: Money | null }[];
   buyer_contact?: { email: string | null; phone: string | null; is_email_cleared?: boolean; is_phone_cleared?: boolean } | null;
   delivery_destination?: {
     address: Address | null;
@@ -219,7 +220,7 @@ export type CheckoutProblem = { code: string; severity?: string; blocks_completi
 
 export type CheckoutSessionBuyer = {
   status?: string;
-  recovery_mode: boolean;
+  is_in_recovery: boolean;
   delivery_selection_required: boolean;
   expires_at?: string;
   buyer_contact?: { email: string | null; phone: string | null; is_email_cleared?: boolean; is_phone_cleared?: boolean } | null;
@@ -233,11 +234,11 @@ export type CheckoutSessionBuyer = {
   tip?: {
     enabled?: boolean;
     tip_percent_options?: number[];
-    is_custom_tip_enabled?: boolean;
+    custom_tip_enabled?: boolean;
   } | null;
   problems?: CheckoutProblem[];
-  save_payment_method_offered?: boolean;
-  save_payment_method_phone_offered?: boolean;
+  can_save_payment_method?: boolean;
+  can_save_payment_method_with_phone?: boolean;
   save_payment_method_requires_verification?: boolean;
   subscription_terms?: SubscriptionTerms | null;
   payment_method_save?: { status: string; email_confirmation_required: boolean; phone_last_digits?: string; expires_at?: string; saved_with?: string } | null;
@@ -284,8 +285,7 @@ export type PaymentAttempt = {
   status: string;
   is_resumable: boolean;
   mode?: string;
-  failure_code?: string | null;
-  failure_message?: string;
+  last_payment_error?: { code: string; message?: string } | null;
   expected_outstanding_money?: Money | null;
   payment_intents?: AttemptPaymentIntent[];
   /** Provider ids only. The client secret never appears in this object. */
@@ -389,9 +389,9 @@ export type CheckoutVerification = {
 export type CheckoutSubscription = {
   subscription_id: string;
   status: string;
-  trial_end?: string;
+  trial_end_at?: string;
   next_billing_at?: string;
-  recurring_amount_money?: Money | null;
+  recurring_subtotal_money?: Money | null;
   subscription_plan?: { name: string } | null;
   payment_method?: { card?: { brand: string; last4: string } | null } | null;
 };

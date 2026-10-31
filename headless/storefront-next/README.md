@@ -2,7 +2,7 @@
 
 The [headless storefront](../storefront/) rebuilt with the Next.js App Router. It is the same fictional coffee roaster, Cedar & Stone, with the same features: a catalog, a cart, and an embedded checkout on your domain with delivery or pickup, discount codes, gift cards (including the gift card check), tips, saved cards, digital wallets, ACH debit, Affirm, and subscription signup with free trials. Flint hosts no part of the checkout.
 
-This example uses the `@flintpay/node` 3.0.0 beta, so names and shapes can still change. It runs in test mode only.
+This example uses `@flintpay/node` 7.0.0 and runs in test mode only.
 
 ## How it maps to Next.js
 

@@ -32,7 +32,7 @@ export function SavingsSection() {
 
 function DiscountBlock() {
   const { controller, snap } = useCheckout();
-  const applied = snap.state.order.applied_discounts ?? [];
+  const applied = (snap.state.order.discounts ?? []).filter((discount) => discount.status !== 'canceled');
   const [code, setCode] = useState('');
   const error = snap.jobErrors.discount;
   const queued = controller.isQueued('discount') || controller.isQueued('discount-remove');
@@ -103,9 +103,9 @@ function GiftCardBlock() {
             const amount = allocations.get(card.gift_card_id) ?? null;
             return (
               <li key={card.gift_card_id} data-testid={`sf-gift-card-applied-${index}`}>
-                <span className="applied-name">{fill(copy.checkout.giftCardEnding, { last: card.last_characters })}</span>
+                <span className="applied-name">{fill(copy.checkout.giftCardEnding, { last: card.last4 })}</span>
                 <span className="applied-amount">{amount ? <MoneyText value={amount} text={fill(copy.checkout.giftCardAmount, { amount: formatMoney(amount) })} /> : null}</span>
-                <button className="button button-quiet button-small" type="button" disabled={snap.locked || controller.isQueued('gift-card-remove')} aria-label={fill(copy.checkout.giftCardRemoveLabel, { last: card.last_characters })}
+                <button className="button button-quiet button-small" type="button" disabled={snap.locked || controller.isQueued('gift-card-remove')} aria-label={fill(copy.checkout.giftCardRemoveLabel, { last: card.last4 })}
                   onClick={() => void controller.job('gift-card-remove', {}, { path: `/gift-card/${encodeURIComponent(card.gift_card_id)}/remove` })}>{copy.checkout.giftCardRemove}</button>
               </li>
             );
@@ -219,7 +219,7 @@ function PaymentForm({ onPayAnotherWay, anotherRef }: { onPayAnotherWay: () => v
   const savedVisible = state.kind === 'order' && processor && snap.savedMethods.length > 0;
   const fieldsHidden = !processor || snap.savedChoice !== null;
   const saveOffered = controller.saveOffered();
-  const phoneOffered = saveOffered && state.session.save_payment_method_phone_offered === true;
+  const phoneOffered = saveOffered && state.session.can_save_payment_method_with_phone === true;
   const guidance = logic.guidanceOf(state)?.stripe;
   const messaging = (guidance?.elements?.payment_method_types ?? []).includes('affirm');
   const settlement = logic.isSettlementOnly(state);

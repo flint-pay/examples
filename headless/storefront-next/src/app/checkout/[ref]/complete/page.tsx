@@ -4,7 +4,7 @@ import { deriveCompleteState, trialSetupNotStarted } from '@/shared/complete.ts'
 import { addressLine, formatDay, titleCase } from '@/shared/format.ts';
 import { formatMoney, isPositive } from '@/shared/money.ts';
 import type { CheckoutState, CheckoutSubscription } from '@/shared/types.ts';
-import { appError } from '@/server/flint/errors.ts';
+import { appError, condition } from '@/server/flint/errors.ts';
 import { buyerSafe } from '@/server/flint/projection.ts';
 import { pageVisitor } from '@/server/session.ts';
 import { projectState } from '@/server/checkout-view.ts';
@@ -39,7 +39,7 @@ export default async function CompletePage({ params }: Props) {
     try {
       subscription = await rt.checkouts.subscription(current.read);
     } catch (error) {
-      if (!(error && typeof error === 'object' && 'code' in error && error.code === 'CHECKOUT_SESSION_PAYMENT_REQUIRED')) throw error;
+      if (condition(error) !== 'CHECKOUT_SESSION_PAYMENT_REQUIRED') throw error;
     }
     state = { ...state, subscription: buyerSafe(subscription) as CheckoutSubscription | undefined };
     const order = current.read.order;
@@ -153,16 +153,16 @@ function SubscriptionFacts({ state, trialing }: { state: CheckoutState; trialing
   const sub = state.subscription!;
   const plan = sub.subscription_plan?.name ?? state.session.subscription_terms?.plan_name ?? state.order.subscription_plan?.name ?? '';
   const card = sub.payment_method?.card;
-  const next = sub.next_billing_at ?? sub.trial_end;
+  const next = sub.next_billing_at ?? sub.trial_end_at;
   const statusText = sub.status === 'trialing' ? copy.complete.statusTrialing : sub.status === 'active' ? copy.complete.statusActive : fill(copy.complete.statusOther, { status: sub.status.replace(/_/g, ' ') });
-  const amount = <MoneyText value={sub.recurring_amount_money ?? null} text={formatMoney(sub.recurring_amount_money)} />;
+  const amount = <MoneyText value={sub.recurring_subtotal_money ?? null} text={formatMoney(sub.recurring_subtotal_money)} />;
   return (
     <dl className="facts">
       <div><dt>{copy.complete.plan}</dt><dd>{plan}</dd></div>
       <div><dt>{copy.complete.status}</dt><dd data-testid="sf-subscription-status" data-status={sub.status}>{statusText}</dd></div>
       {trialing ? (
         <>
-          <div><dt>{copy.complete.trialEnds}</dt><dd>{formatDay(sub.trial_end, true)}</dd></div>
+          <div><dt>{copy.complete.trialEnds}</dt><dd>{formatDay(sub.trial_end_at, true)}</dd></div>
           <div><dt>{copy.complete.firstCharge}</dt><dd>{amount}{sub.next_billing_at ? ` on ${formatDay(sub.next_billing_at, true)}` : ''}</dd></div>
         </>
       ) : (

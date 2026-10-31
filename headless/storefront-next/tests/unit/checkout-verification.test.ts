@@ -9,10 +9,12 @@ import {createAuth} from '../../src/server/flint/auth.ts';
 import {PaymentEngine} from '../../src/server/payments/engine.ts';
 import {Store} from '../../src/server/store/db.ts';
 import type {ActionRecord,CheckoutRecord} from '../../src/server/store/db.ts';
+import {condition} from '../../src/server/flint/errors.ts';
+import {flintError,flintErrorBody} from './support/flint-error.ts';
 
 function fixture(){
   const store=new Store(':memory:');
-  const order={order_id:'ord_fixture',order_revision:'3'} as Order;
+  const order={order_id:'ord_fixture',version:'3'} as unknown as Order;
   const verification={customer_verification_id:'verification_fixture',status:'code_sent',purpose:'confirm_saved_payment_method',channel:'sms'};
   store.run('INSERT INTO checkouts(checkout_ref,session_hash,kind,order_id,checkout_session_id,checkout_auth_token,details,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)','chk_fixture','session_fixture','order',order.order_id,'checkout_fixture','local-fixture',JSON.stringify({verification}),Date.now(),Date.now());
   const payments=Object.assign(Object.create(PaymentEngine.prototype) as PaymentEngine,{store,read:async()=>order});
@@ -28,18 +30,19 @@ test('wrong and unavailable SMS checks reject their attempts so a changed code c
   const client=new Client({baseUrl:'https://sdk.example.invalid',maxAttempts:1,transport:async(input,init)=>{
     const request=new Request(input,init),body=await request.json() as {code:string};
     const wrong=body.code==='000000';
-    return new Response(JSON.stringify({error:{type:wrong?'validation_error':'server_error',code:wrong?'CUSTOMER_VERIFICATION_CODE_INVALID':'CUSTOMER_VERIFICATION_UNAVAILABLE',message:'Fixture verification response'}}),{status:wrong?400:503,headers:{'Content-Type':'application/json'}});
+    const answer=wrong?flintErrorBody(400,'INVALID_REQUEST',{param:'code',code:'INVALID_VALUE'}):flintErrorBody(503,'SERVICE_UNAVAILABLE');
+    return new Response(JSON.stringify({error:answer}),{status:wrong?400:503,headers:{'Content-Type':'application/json'}});
   }});
   const auth=createAuth('local-fixture'),calls:{code:string;key:string;verification_id:string|undefined}[]=[];
   const confirm=(code:string)=>f.mutate(code,async(record,key,context)=>{
     calls.push({code,key,verification_id:context.customer_verification_id});
     if(code==='123456')return 'confirmed';
-    return client.checkoutSessions.confirmCustomerVerification(record.checkout_session_id!,context.customer_verification_id!,{code,...auth.checkoutHeaders(record)},auth.checkout(record,key));
+    return client.checkoutSessions.confirmCustomerVerification(record.checkout_session_id!,context.customer_verification_id!,{code},auth.checkout(record,key));
   });
   try{
-    await assert.rejects(()=>confirm('000000'),error=>error instanceof SdkError&&error.outcome==='response'&&error.status===400&&error.code==='CUSTOMER_VERIFICATION_CODE_INVALID');
+    await assert.rejects(()=>confirm('000000'),error=>error instanceof SdkError&&error.outcome==='response'&&error.status===400&&condition(error,'verification')==='CUSTOMER_VERIFICATION_CODE_INVALID');
     assert.equal(f.actions()[0]?.status,'rejected');assert.deepEqual(f.savedVerification(),f.verification);
-    await assert.rejects(()=>confirm('999999'),error=>error instanceof SdkError&&error.kind==='server'&&error.outcome==='response'&&error.status===503&&error.code==='CUSTOMER_VERIFICATION_UNAVAILABLE');
+    await assert.rejects(()=>confirm('999999'),error=>error instanceof SdkError&&error.kind==='server'&&error.outcome==='response'&&error.status===503&&condition(error,'verification')==='CUSTOMER_VERIFICATION_UNAVAILABLE');
     assert.equal(f.actions()[1]?.status,'rejected');assert.deepEqual(f.savedVerification(),f.verification);
     assert.equal(await confirm('123456'),'confirmed');
     assert.deepEqual(f.actions().map(action=>action.status),['rejected','rejected','succeeded']);
@@ -50,12 +53,12 @@ test('wrong and unavailable SMS checks reject their attempts so a changed code c
 
 const response=(status:number,code:string,kind:SdkError['kind']='server',outcome:SdkError['outcome']='response')=>new SdkError(kind,'Fixture uncertain response',outcome,true,{status,headers:{},attempts:1,durationMs:1},code);
 for(const [label,kind,error] of [
-  ['another mutation with the named unavailable response','checkout_verification',response(503,'CUSTOMER_VERIFICATION_UNAVAILABLE')],
-  ['an unrelated 503 response','checkout_verification_confirm',response(503,'SERVICE_UNAVAILABLE')],
-  ['the named code with another 5xx status','checkout_verification_confirm',response(500,'CUSTOMER_VERIFICATION_UNAVAILABLE')],
-  ['an unknown outcome with the named unavailable code','checkout_verification_confirm',response(503,'CUSTOMER_VERIFICATION_UNAVAILABLE','server','unknown')],
+  ['another mutation with the unavailable response','checkout_verification',response(503,'SERVICE_UNAVAILABLE')],
+  ['a 503 response that says the outcome is unknown','checkout_verification_confirm',flintError(503,'SERVICE_UNAVAILABLE',{reason:'outcome_unknown'})],
+  ['the unavailable code with another 5xx status','checkout_verification_confirm',response(500,'SERVICE_UNAVAILABLE')],
+  ['an unknown outcome with the unavailable code','checkout_verification_confirm',response(503,'SERVICE_UNAVAILABLE','server','unknown')],
   ['a transport failure','checkout_verification_confirm',new SdkError('transport','Fixture lost response','unknown',true)],
-  ['a protocol failure with response metadata','checkout_verification_confirm',response(503,'CUSTOMER_VERIFICATION_UNAVAILABLE','protocol')],
+  ['a protocol failure with response metadata','checkout_verification_confirm',response(503,'SERVICE_UNAVAILABLE','protocol')],
   ['an idempotency operation still in progress','checkout_verification_confirm',response(409,'IDEMPOTENCY_KEY_IN_PROGRESS','conflict')],
 ] as const)test(`${label} keeps changed input fenced and replays the original key and context`,async()=>{
   const f=fixture(),calls:{key:string;context:MutationContext}[]=[];let fail=true;
@@ -64,7 +67,7 @@ for(const [label,kind,error] of [
     await assert.rejects(()=>f.mutate('999999',call,kind),caught=>caught===error);
     const pending=f.actions()[0]!;assert.equal(pending.status,'unknown');assert.deepEqual(f.savedVerification(),f.verification);
     await assert.rejects(()=>f.mutate('123456',call,kind),{code:'ACTION_RECONCILIATION_REQUIRED'});assert.equal(calls.length,1);
-    f.order.order_revision='4';fail=false;
+    f.order.version='4';fail=false;
     assert.equal(await f.mutate('999999',call,kind),'confirmed');assert.deepEqual(calls[1],calls[0]);
     assert.equal(f.actions().length,1);assert.equal(f.actions()[0]?.status,'succeeded');assert.equal(f.actions()[0]?.idempotency_key,pending.idempotency_key);
   }finally{f.close();}
