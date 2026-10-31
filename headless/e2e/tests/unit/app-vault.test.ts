@@ -239,7 +239,7 @@ async function replayFixture(dir:string,reply:'reused'|'accepted'|'unknown'|409|
   const c=config(dir),ledger=new Ledger(join(dir,'ledger.json'),run);
   for(const [id,type] of [[customer,'customer'],[family,'customer_session']]) await ledger.record({resource:id,type,mode:'test',sandbox:'A',merchant:c.pins.A.merchantId,sandboxId:c.pins.A.sandboxId,createdBy:run,purpose:'app-creation',cleanup:'review',owner:'unit',reviewAt:'2001-01-01T00:00:00Z',owned:true});
   const cleanup:string[]=[];
-  const operatorClient={customerSessions:{revoke:async(id:string)=>{cleanup.push(id);return {customer_session_id:id,revoked:true};}},customers:{revokeSessions:async(id:string)=>{cleanup.push(id);return {customer_id:id,revoked_count:'1'};}}};
+  const operatorClient={customerSessions:{revoke:async(id:string)=>{cleanup.push(id);return {customer_session_id:id,status:'revoked'};}},customers:{revokeSessions:async(id:string)=>{cleanup.push(id);return {customer_id:id,revoked_count:'1'};}}};
   const operator={ledger,clients:{writable:async()=>operatorClient}};
   const d=new Driver(c,{buyers:{b1:{customerId:customer}}} as any,{} as any,operator as any);
   let attempts=0;
@@ -248,8 +248,8 @@ async function replayFixture(dir:string,reply:'reused'|'accepted'|'unknown'|409|
     assert.equal(ledger.state.actions['A:ac15-superseded-refresh-replay'].phase,'unknown');
     const persisted=await readFile(ledger.file,'utf8');assert.equal(persisted.includes('flint_cref_'),false);assert.equal(persisted.includes('refresh_token_hash'),false);
     if(reply==='unknown') throw new Error('flint_cref_PLACEHOLDER raw private transport');
-    if(typeof reply==='number') return Response.json({error:{code:'UNAVAILABLE',message:'synthetic'}},{status:reply});
-    return Response.json(reply==='accepted'?{data:{secret:'flint_cses_PLACEHOLDER',refresh_token:'flint_cref_PLACEHOLDER'}}:{error:{code:'CUSTOMER_SESSION_REFRESH_REUSED',message:'synthetic'}},{status:reply==='accepted'?200:401});
+    if(typeof reply==='number') return Response.json({request_id:'req_UNIT',error:{code:'UNAVAILABLE',message:'synthetic'}},{status:reply});
+    return Response.json(reply==='accepted'?{request_id:'req_UNIT',data:{secret:'flint_cses_PLACEHOLDER',refresh_token:'flint_cref_PLACEHOLDER'}}:{request_id:'req_UNIT',error:{code:'CUSTOMER_SESSION_REFRESH_REUSED',message:'synthetic'}},{status:reply==='accepted'?200:401});
   });
   const result=await replayAppRefresh(d,anonymous,new SealedCredential('flint_cref_PLACEHOLDER'),family).then(()=>undefined,code);
   return {result,cleanup,ledger,attempts};
@@ -275,11 +275,11 @@ for(const status of [409,503] as const) test(`ambiguous HTTP ${status} replay is
   assert.equal(/flint_(?:cses|cref)_/.test(await readFile(r.ledger.file,'utf8')),false);
 }));
 test('current app authority must fail with exact API status and code after revocation',async()=>{
-  for(const response of [Response.json({data:{customer_id:customer,email:'unit@example.invalid',version:'1'}}),Response.json({error:{code:'INVALID_CUSTOMER_SESSION',message:'synthetic'}},{status:401}),Response.json({error:{code:'CUSTOMER_SESSION_NOT_FOUND',message:'synthetic'}},{status:503})]) {
+  for(const response of [Response.json({request_id:'req_UNIT',data:{customer_id:customer,email:'unit@example.invalid',version:'1',billing_address:null,shipping_address:null,default_payment_method_id:null,name:null,phone:null,status:'active',tax_identity:null}}),Response.json({request_id:'req_UNIT',error:{code:'INVALID_CUSTOMER_SESSION',message:'synthetic'}},{status:401}),Response.json({request_id:'req_UNIT',error:{code:'CUSTOMER_SESSION_NOT_FOUND',message:'synthetic'}},{status:503})]) {
     const anon=anonymousSessionClient(undefined,async(input,init)=>{assert.equal(new Request(input,init).headers.get('authorization'),'Bearer flint_cses_PLACEHOLDER');return response;});
     await assert.rejects(()=>assertAppSecretInvalid(anon,new SealedCredential('flint_cses_PLACEHOLDER'),'OLD_APP_SECRET_STILL_VALID'),{code:'OLD_APP_SECRET_STILL_VALID'});
   }
-  const anon=anonymousSessionClient(undefined,async()=>Response.json({error:{code:'CUSTOMER_SESSION_NOT_FOUND',message:'synthetic'}},{status:404}));await assertAppSecretInvalid(anon,new SealedCredential('flint_cses_PLACEHOLDER'),'UNIT');
+  const anon=anonymousSessionClient(undefined,async()=>Response.json({request_id:'req_UNIT',error:{code:'CUSTOMER_SESSION_NOT_FOUND',message:'synthetic'}},{status:404}));await assertAppSecretInvalid(anon,new SealedCredential('flint_cses_PLACEHOLDER'),'UNIT');
   const failure=await sessionCall(async()=>{throw Object.assign(new Error('raw flint_cses_PLACEHOLDER'),{code:'CUSTOMER_SESSION_NOT_FOUND',meta:{status:404},request:{headers:{authorization:'flint_cses_PLACEHOLDER'}}});}).catch(e=>e);
   assert.deepEqual(failure,{status:404,code:'CUSTOMER_SESSION_NOT_FOUND',requestId:undefined});assert.equal(JSON.stringify(failure).includes('flint_cses_'),false);
 });
@@ -336,9 +336,9 @@ async function flowFixture(dir: string, options: {early?: boolean; changedFamily
   };
   const anonymous=anonymousSessionClient(undefined,async(input,init)=>{
     const request=new Request(input,init);
-    if(request.url.endsWith('/customer-sessions/refresh')){assert.equal(request.headers.get('authorization'),null);revoked=true;return Response.json({error:{code:'CUSTOMER_SESSION_REFRESH_REUSED',message:'synthetic'}},{status:401});}
+    if(request.url.endsWith('/customer-sessions/refresh')){assert.equal(request.headers.get('authorization'),null);revoked=true;return Response.json({request_id:'req_UNIT',error:{code:'CUSTOMER_SESSION_REFRESH_REUSED',message:'synthetic'}},{status:401});}
     assert.ok(request.headers.get('authorization')?.startsWith('Bearer flint_cses_'));
-    return revoked&&!options.oldAccepted?Response.json({error:{code:'CUSTOMER_SESSION_NOT_FOUND',message:'synthetic'}},{status:404}):Response.json({data:{customer_id:customer,email:'unit@example.invalid',version:'1'}});
+    return revoked&&!options.oldAccepted?Response.json({request_id:'req_UNIT',error:{code:'CUSTOMER_SESSION_NOT_FOUND',message:'synthetic'}},{status:404}):Response.json({request_id:'req_UNIT',data:{customer_id:customer,email:'unit@example.invalid',version:'1',billing_address:null,shipping_address:null,default_payment_method_id:null,name:null,phone:null,status:'active',tax_identity:null}});
   });
   let boundaryCalls=0,verifyCalls=0,scanCalls=0;
   const ports={reader,anonymous,now:()=>clock,wait:async(ms:number)=>{clock+=ms;if(options.early&&!d.appMutations.length)d.appMutations.push({app:'accountA',operation:'CUSTOMER_SESSION_REFRESH',fingerprint:'early',timestamp:clock});},sync:async()=>{},verify:async()=>{verifyCalls++;},scan:async()=>{scanCalls++;for(const name of ['ledger.json','ledger.md'])assert.equal(/flint_(?:cses|cref)_/.test(await readFile(join(dir,name),'utf8')),false);d.scanner.assertClean();},boundary:async()=>{boundaryCalls++;}};

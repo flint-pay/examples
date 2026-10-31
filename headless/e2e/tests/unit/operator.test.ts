@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Client,SdkError } from '@flintpay/node';
-import type { CheckoutSession, CreateCheckoutSessionRequestInput, CreateInvoiceRequestInput, CreateOrderRequestInput, CreateSubscriptionPlanRequestInput, Invoice, InvoicePaymentPolicyInput, IssueInvoiceResult, Order, UpdateSubscriptionRequestInput } from '@flintpay/node';
+import type { CheckoutSession, CreateCheckoutSessionRequestInput, CreateInvoiceRequestInput, CreateOrderRequestInput, CreateSubscriptionPlanRequestInput, Invoice, InvoicePaymentPolicyInput, Order, UpdateSubscriptionRequestInput } from '@flintpay/node';
 import { Ledger } from '../../support/ledger.ts';
 import { Operator, operations } from '../../support/operator.ts';
 import type { VerifiedClients } from '../../support/sdk.ts';
@@ -19,29 +19,29 @@ test('every operator method exists in the exact published SDK', () => {
 });
 
 test('invoice fixture creates a taxed order before drafting and replays interrupted issue through the published SDK', async () => setup(async (ledger, dir) => {
-  const zero = { amount: '0', currency: 'USD' }, subtotal = { amount: '12000', currency: 'USD' }, tax = { amount: '1065', currency: 'USD' }, total = { amount: '13065', currency: 'USD' };
+  const zero = { amount: '0' as const, currency: 'USD' }, subtotal = { amount: '12000' as const, currency: 'USD' }, tax = { amount: '1065' as const, currency: 'USD' }, total = { amount: '13065' as const, currency: 'USD' };
   const order: Order = {
-    order_id: 'ord_UNIT_FAKE', buyer_actions: [], status: 'open', payment_status: 'unpaid', refund_status: 'none',
-    line_items: [{ order_line_item_id: 'oli_UNIT_FAKE', name: 'Acceptance service', quantity: '1', version: '1', refunded_quantity: '0', unit_price_money: subtotal, base_subtotal_money: subtotal, subtotal_money: subtotal, tax_money: tax, total_money: total, discount_money: zero, modifier_total_money: zero, refunded_money: zero }],
-    pricing_amounts: { charge_money: zero, discount_money: zero, requested_tip_money: zero, subtotal_money: subtotal, tax_money: tax, total_money: total },
-    settlement_amounts: { balance_money: total, outstanding_money: total, paid_money: zero, credit_money: zero, net_collected_money: zero, refunded_money: zero, settled_tip_money: zero },
-    tax: { enabled: true, mode: 'automatic', status: 'calculated', taxability_reason: 'standard_rated' },
+    version: '1', charges: [], checkout_session_ids: [], discounts: [], fulfillments: [], gift_card_settlements: [], gift_card_tender_enabled: true, gift_cards: [], governing_delivery_selection_id: null, payment_intent_ids: [], refund_ids: [], return_credit_settlements: [], tips: [], order_id: 'ord_UNIT_FAKE', buyer_actions: [], status: 'open', payment_status: 'unpaid', refund_status: 'none',
+    line_items: [{ order_line_item_id: 'oli_UNIT_FAKE', name: 'Acceptance service', quantity: '1', categories: [], bundle_components: [], inventory_snapshot: null, modifiers: [], purchased_gift_cards: [], selected_options: [], refunded_quantity: '0', unit_price_money: subtotal, base_subtotal_money: subtotal, subtotal_money: subtotal, tax_money: tax, total_money: total, discount_money: zero, modifier_total_money: zero, refunded_money: zero }],
+    pricing_amounts: { additive_tax_money: zero, inclusive_tax_money: zero, charge_money: zero, discount_money: zero, requested_tip_money: zero, subtotal_money: subtotal, tax_money: tax, total_money: total },
+    settlement_amounts: { written_off_money: zero, balance_money: total, outstanding_money: total, paid_money: zero, credit_money: zero, net_collected_money: zero, refunded_money: zero, settled_tip_money: zero },
+    tax: { enabled: true, mode: 'automatic', status: 'calculated',  },
   };
-  const invoice: Invoice = { invoice_id: 'inv_UNIT_FAKE', order_id: order.order_id, merchant_id: config.pins.A.merchantId, status: 'draft', version: '1', collection_block_status: 'none', credit_money: zero, currently_due_money: zero, outstanding_money: total, paid_money: zero, refunded_money: zero, refund_status: 'none', is_overdue: false, late_fees: [], reminders_paused: false };
+  const invoice: Invoice = { cc_emails: [], collection: { mode: 'buyer_initiated', payment_policy: { enabled_payment_options: ['card'] } }, external_reference_id: null, footer: null, memo: null, late_fee_money: zero, payment_due: { type: 'date', due_at: '2000-01-15T00:00:00Z' }, po_number: null, recipient_email: null, reference: null, schedule_entries: [], scheduled_issue_at: null, service_date: null, subscription_id: null, total_money: total, written_off_money: zero, invoice_id: 'inv_UNIT_FAKE', order_id: order.order_id, merchant_id: config.pins.A.merchantId, status: 'draft', version: '1', collection_block_status: 'none', credit_money: zero, currently_due_money: zero, outstanding_money: total, paid_money: zero, refunded_money: zero, refund_status: 'none', is_overdue: false, late_fees: [], reminders_paused: false };
   const orderInput: CreateOrderRequestInput = {
-    customer_id: 'cus_UNIT_FAKE', line_items: [{ name: 'Acceptance service', quantity: '1', unit_price_money: subtotal, fulfillment: { requirement: 'none' }, tax: { taxable: true } }],
+    customer_id: 'cus_UNIT_FAKE', line_items: [{ type: 'custom', name: 'Acceptance service', quantity: '1', unit_price_money: subtotal, fulfillment: { requirement: 'none' }, tax: { taxable: true } }],
     tax: { enabled: true, location: { address_source: 'provided', address_type: 'billing_address', address: { line1: '11 Wall Street', city: 'New York', state: 'NY', postal_code: '10005', country: 'US' } } }, metadata: { e2e_run: run },
   };
-  const invoiceInput: CreateInvoiceRequestInput = {
+  const invoiceInput: CreateInvoiceRequestInput = { type: 'order',
     order_id: order.order_id, collection: { mode: 'buyer_initiated', payment_policy: { enabled_payment_options: ['card'] } },
-    payment_due: { type: 'absolute', due_at: '2000-01-15T00:00:00.000Z' }, recipient_email: 'buyer@example.invalid', metadata: { e2e_run: run },
+    payment_due: { type: 'date', due_at: '2000-01-15T00:00:00.000Z' }, recipient_email: 'buyer@example.invalid', metadata: { e2e_run: run },
   };
   const calls: { method: string; path: string; key: string | null; body: unknown }[] = [];
   let orderCreated = false, invoiceCreated = false, issueResponseLost = false;
   const client = new Client({ baseUrl: 'https://api.staging.withflintpay.com', apiKey: 'flint_test_PLACEHOLDER', maxAttempts: 1, transport: async (input, init) => {
     const path = new URL(String(input)).pathname, method = init!.method!, body = JSON.parse(String(init!.body)), key = new Headers(init!.headers).get('Idempotency-Key');
     calls.push({ method, path, key, body });
-    const response = (data: Order | Invoice | IssueInvoiceResult) => Response.json({ data }, { headers: { 'X-Request-Id': 'req_UNIT_FAKE' } });
+    const response = (data: Order | Invoice) => Response.json({ request_id: 'req_UNIT_FAKE', data }, { headers: { 'X-Request-Id': 'req_UNIT_FAKE' } });
     if (method === 'POST' && path === '/v1/orders') {
       assert.deepEqual(body, { ...orderInput, line_items: [{ ...orderInput.line_items[0], quantity: 1, unit_price_money: { amount: 12000, currency: 'USD' } }] });
       assert.equal(orderCreated, false); orderCreated = true;
@@ -54,12 +54,12 @@ test('invoice fixture creates a taxed order before drafting and replays interrup
     }
     if (method === 'PATCH' && path === `/v1/orders/${order.order_id}`) {
       assert.equal(invoiceCreated, true);
-      return Response.json({ error: { type: 'conflict', code: 'INVOICE_LOCKED_ORDER_FINANCIALS', message: 'Financial fields cannot be changed while an active invoice owns collection. Void the invoice first.' } }, { status: 409 });
+      return Response.json({ request_id: 'req_UNIT_FAKE', error: { type: 'conflict', code: 'INVOICE_LOCKED_ORDER_FINANCIALS', message: 'Financial fields cannot be changed while an active invoice owns collection. Void the invoice first.' } }, { status: 409 });
     }
     assert.equal(method, 'POST'); assert.equal(path, `/v1/invoices/${invoice.invoice_id}/issue`); assert.deepEqual(body, { delivery_mode: 'email' });
     assert.equal(invoiceCreated, true);
     if (!issueResponseLost) { issueResponseLost = true; throw new TypeError('Unit fixture lost the issue response'); }
-    return response({ invoice: { ...invoice, status: 'open', version: '2' } });
+    return response({ ...invoice, status: 'open', version: '2' });
   } });
   const clients = { config, writable: async () => client } as unknown as VerifiedClients;
   await assert.rejects(() => new Operator(clients, ledger, {} as Fixtures).issueInvoice('acceptance-invoice', 'cus_UNIT_FAKE', 'buyer@example.invalid'), error => {
@@ -90,36 +90,36 @@ test('invoice fixtures use card by default and request only the explicit provide
     { name: 'ACH does not request Affirm', options: ['card', 'ach_debit'], expected: ['card', 'ach_debit'], merchantOptions: ['card', 'ach_debit'] },
   ];
   for (const item of cases) await t.test(item.name, async () => setup(async ledger => {
-    const zero = { amount: '0', currency: 'USD' }, total = { amount: '12000', currency: 'USD' };
+    const zero = { amount: '0' as const, currency: 'USD' }, total = { amount: '12000' as const, currency: 'USD' };
     const order: Order = {
-      order_id: 'ord_UNIT_FAKE', buyer_actions: [], status: 'open', payment_status: 'unpaid', refund_status: 'none', line_items: [],
-      pricing_amounts: { charge_money: zero, discount_money: zero, requested_tip_money: zero, subtotal_money: total, tax_money: zero, total_money: total },
-      settlement_amounts: { balance_money: total, outstanding_money: total, paid_money: zero, credit_money: zero, net_collected_money: zero, refunded_money: zero, settled_tip_money: zero },
-      tax: { enabled: true, mode: 'automatic', status: 'calculated', taxability_reason: 'standard_rated' },
+      version: '1', charges: [], checkout_session_ids: [], discounts: [], fulfillments: [], gift_card_settlements: [], gift_card_tender_enabled: true, gift_cards: [], governing_delivery_selection_id: null, payment_intent_ids: [], refund_ids: [], return_credit_settlements: [], tips: [], order_id: 'ord_UNIT_FAKE', buyer_actions: [], status: 'open', payment_status: 'unpaid', refund_status: 'none', line_items: [],
+      pricing_amounts: { additive_tax_money: zero, inclusive_tax_money: zero, charge_money: zero, discount_money: zero, requested_tip_money: zero, subtotal_money: total, tax_money: zero, total_money: total },
+      settlement_amounts: { written_off_money: zero, balance_money: total, outstanding_money: total, paid_money: zero, credit_money: zero, net_collected_money: zero, refunded_money: zero, settled_tip_money: zero },
+      tax: { enabled: true, mode: 'automatic', status: 'calculated',  },
     };
-    const invoiceFixture: Invoice = { invoice_id: 'inv_UNIT_FAKE', order_id: order.order_id, merchant_id: config.pins.A.merchantId, status: 'draft', version: '1', collection_block_status: 'none', credit_money: zero, currently_due_money: zero, outstanding_money: total, paid_money: zero, refunded_money: zero, refund_status: 'none', is_overdue: false, late_fees: [], reminders_paused: false };
+    const invoiceFixture: Invoice = { cc_emails: [], collection: { mode: 'buyer_initiated', payment_policy: { enabled_payment_options: ['card'] } }, external_reference_id: null, footer: null, memo: null, late_fee_money: zero, payment_due: { type: 'date', due_at: '2000-01-15T00:00:00Z' }, po_number: null, recipient_email: null, reference: null, schedule_entries: [], scheduled_issue_at: null, service_date: null, subscription_id: null, total_money: total, written_off_money: zero, invoice_id: 'inv_UNIT_FAKE', order_id: order.order_id, merchant_id: config.pins.A.merchantId, status: 'draft', version: '1', collection_block_status: 'none', credit_money: zero, currently_due_money: zero, outstanding_money: total, paid_money: zero, refunded_money: zero, refund_status: 'none', is_overdue: false, late_fees: [], reminders_paused: false };
     let policy: InvoicePaymentPolicyInput | undefined;
     const client = new Client({ baseUrl: 'https://api.staging.withflintpay.com', apiKey: 'flint_test_PLACEHOLDER', maxAttempts: 1, transport: async (input, init) => {
       const path = new URL(String(input)).pathname, body = JSON.parse(String(init!.body));
       assert.equal(init!.method, 'POST');
       assert.ok(new Headers(init!.headers).get('Idempotency-Key'));
       if (path === '/v1/orders') {
-        if (item.options?.includes('ach_debit')) assert.deepEqual(body.line_items, [{ variant_id: 'var_UNIT_SERVICE', quantity: 1 }]);
-        return Response.json({ data: order });
+        if (item.options?.includes('ach_debit')) assert.deepEqual(body.line_items, [{ type: 'variant', variant_id: 'var_UNIT_SERVICE', quantity: 1 }]);
+        return Response.json({ request_id: 'req_UNIT_FAKE', data: order });
       }
       if (path === '/v1/invoices') {
         policy = body.collection.payment_policy;
         assert.deepEqual(policy?.enabled_payment_options, item.expected);
         assert.ok(policy?.enabled_payment_options.every(option => item.merchantOptions.includes(option)), 'invoice options must be enabled for merchant checkout');
-        return Response.json({ data: { ...invoiceFixture, payment_policy: policy } });
+        return Response.json({ request_id: 'req_UNIT_FAKE', data: { ...invoiceFixture, collection: { mode: 'buyer_initiated', payment_policy: policy } } });
       }
       assert.equal(path, '/v1/invoices/inv_UNIT_FAKE/issue');
-      return Response.json({ data: { invoice: { ...invoiceFixture, status: 'open', payment_policy: policy } } });
+      return Response.json({ request_id: 'req_UNIT_FAKE', data: { ...invoiceFixture, status: 'open', collection: { mode: 'buyer_initiated', payment_policy: policy } } });
     } });
     const clients = { config, writable: async () => client } as unknown as VerifiedClients;
     const fixtures = { products: { 'brewing-class': { variantId: 'var_UNIT_SERVICE' } } } as unknown as Fixtures;
     const invoice = await new Operator(clients, ledger, fixtures).issueInvoice('policy-invoice', 'cus_UNIT_FAKE', 'buyer@example.invalid', item.options);
-    assert.deepEqual(invoice.payment_policy.enabled_payment_options, item.expected);
+    assert.deepEqual(invoice.collection.payment_policy.enabled_payment_options, item.expected);
     assert.deepEqual(Object.values(ledger.state.actions).map(action => action.operation), ['orders.create', 'invoices.create', 'invoices.issue']);
   }));
 });
@@ -128,7 +128,7 @@ test('invoice draft refuses absent, unowned or foreign-sandbox source orders bef
   let calls = 0;
   const clients = { config, writable: async () => ({ invoices: { createWithResponse: async () => { calls++; } } }) } as unknown as VerifiedClients;
   const operator = new Operator(clients, ledger, {} as Fixtures);
-  const input: CreateInvoiceRequestInput = { order_id: 'ord_UNIT_FAKE' };
+  const input: CreateInvoiceRequestInput = { type: 'order', order_id: 'ord_UNIT_FAKE' };
   const step: PlanStep = { name: 'invoice-draft', sandbox: 'A', operation: 'invoices.create', args: [input], creates: [{ path: 'invoice_id', type: 'invoice', cleanup: 'invoice', reviewAt: '2000-02-01T00:00:00Z' }], purpose: 'unit-invoice' };
   await assert.rejects(() => operator.execute(step), { code: 'RUN_RESOURCE_AUTHORITY_REQUIRED' });
   for (const ownership of [{ sandbox: 'A' as const, owned: false }, { sandbox: 'B' as const, owned: true }]) {
@@ -140,7 +140,7 @@ test('invoice draft refuses absent, unowned or foreign-sandbox source orders bef
 
 test('quick-pay invoice drafts still require tracking their newly created orders', () => {
   const operator = new Operator({ config } as unknown as VerifiedClients, new Ledger('/unused', run), {} as Fixtures);
-  const input: CreateInvoiceRequestInput = { quick_pay: { line_items: [{ name: 'Service', quantity: '1', unit_price_money: { amount: '12000', currency: 'USD' }, fulfillment: { requirement: 'none' }, tax: { taxable: true } }] } };
+  const input: CreateInvoiceRequestInput = { type: 'quick_pay', quick_pay: { line_items: [{ type: 'custom', name: 'Service', quantity: '1', unit_price_money: { amount: '12000' as const, currency: 'USD' }, fulfillment: { requirement: 'none' }, tax: { taxable: true } }] } };
   const step: PlanStep = { name: 'quick-invoice', sandbox: 'A', operation: 'invoices.create', args: [input], creates: [{ path: 'invoice_id', type: 'invoice', cleanup: 'invoice', reviewAt: '2000-02-01T00:00:00Z' }], purpose: 'unit-invoice' };
   assert.throws(() => operator.validate(step), { code: 'ALL_CREATED_RESOURCES_MUST_BE_TRACKED' });
   operator.validate({ ...step, creates: [...step.creates, { path: 'order_id', type: 'order', cleanup: 'review', reviewAt: '2000-02-01T00:00:00Z' }] });
@@ -149,14 +149,14 @@ test('quick-pay invoice drafts still require tracking their newly created orders
 function subscriptionPlanStep(quantity: unknown = 1): PlanStep {
   return { name: 'numeric-plan', sandbox: 'A', operation: 'subscriptionPlans.create', args: [{
     name: 'Unit subscription', billing_interval: 'monthly', billing_interval_count: 1, currency: 'USD',
-    line_items: [{ variant_id: 'var_UNIT_FAKE', quantity, modifiers: [{ modifier_id: 'mod_UNIT_FAKE', quantity: '1' }] }],
+    line_items: [{ type: 'variant', variant_id: 'var_UNIT_FAKE', quantity, modifiers: [{ type: 'catalog', modifier_id: 'mod_UNIT_FAKE', quantity: '1' }] }],
   }], creates: [{ path: 'subscription_plan_id', type: 'plan', cleanup: 'review', reviewAt: '2000-02-01T00:00:00Z' }], purpose: 'unit-plan' };
 }
 function subscriptionUpdateStep(quantity: unknown = 1): PlanStep {
   return { name: 'numeric-update', sandbox: 'A', operation: 'subscriptions.update', args: ['sub_UNIT_FAKE', { quantity, expected_version: '1' }], creates: [], purpose: 'unit-update' };
 }
 function subscriptionCheckoutStep(quantity: unknown = 1): PlanStep {
-  return { name: 'numeric-checkout', sandbox: 'A', operation: 'checkoutSessions.create', args: [{ subscription_plan_id: 'plan_UNIT_FAKE', subscription_terms: { quantity } }], creates: [{ path: 'checkout_session.checkout_session_id', type: 'checkout_session', cleanup: 'checkout_session', reviewAt: '2000-02-01T00:00:00Z' }], purpose: 'unit-checkout' };
+  return { name: 'numeric-checkout', sandbox: 'A', operation: 'checkoutSessions.create', args: [{ type: 'subscription_plan', subscription_plan_id: 'plan_UNIT_FAKE', subscription_terms: { quantity } }], creates: [{ path: 'checkout_session.checkout_session_id', type: 'checkout_session', cleanup: 'checkout_session', reviewAt: '2000-02-01T00:00:00Z' }], purpose: 'unit-checkout' };
 }
 async function ownSubscription(ledger: Ledger) {
   await ledger.record({ resource: 'sub_UNIT_FAKE', type: 'subscription', mode: 'test', sandbox: 'A', merchant: 'mer_PLACEHOLDER', sandboxId: 'test_PLACEHOLDER_A', createdBy: run, purpose: 'unit', cleanup: 'subscription', owner: 'unit', reviewAt: '2000-02-01T00:00:00Z', owned: true });
@@ -164,7 +164,7 @@ async function ownSubscription(ledger: Ledger) {
 test('subscription plan numeric line quantity executes through applyPlan and the durable ledger', async () => setup(async (ledger, dir) => {
   const input: CreateSubscriptionPlanRequestInput = {
     name: 'Unit subscription', billing_interval: 'monthly', billing_interval_count: 1, currency: 'USD',
-    line_items: [{ variant_id: 'var_UNIT_FAKE', quantity: 1, modifiers: [{ modifier_id: 'mod_UNIT_FAKE', quantity: '1' }] }],
+    line_items: [{ type: 'variant', variant_id: 'var_UNIT_FAKE', quantity: 1, modifiers: [{ type: 'catalog', modifier_id: 'mod_UNIT_FAKE', quantity: '1' }] }],
   };
   const step = { ...subscriptionPlanStep(), args: [input] };
   let calls = 0;
@@ -174,7 +174,7 @@ test('subscription plan numeric line quantity executes through applyPlan and the
     assert.equal(durable.state.actions['A:numeric-plan'].phase, 'unknown');
     assert.deepEqual(durable.state.actions['A:numeric-plan'].args, [input]);
     assert.equal(durable.state.actions['A:numeric-plan'].key, options.idempotencyKey);
-    return { body: { data: { subscription_plan_id: 'plan_UNIT_FAKE' } }, meta: { requestId: 'req_UNIT_FAKE' } };
+    return { body: { data: { type: 'subscription_plan', subscription_plan_id: 'plan_UNIT_FAKE' } }, meta: { requestId: 'req_UNIT_FAKE' } };
   } } };
   const clients = { config, writable: async () => fake } as unknown as VerifiedClients;
   const operator = new Operator(clients, ledger, {} as Fixtures);
@@ -182,7 +182,7 @@ test('subscription plan numeric line quantity executes through applyPlan and the
   await operator.applyPlan([step]); assert.equal(calls, 1);
   const loaded = new Ledger(join(dir, 'ledger.json'), run); await loaded.load();
   const resumed = new Operator(clients, loaded, {} as Fixtures);
-  assert.deepEqual(await resumed.execute(step), { data: { subscription_plan_id: 'plan_UNIT_FAKE' }, requestId: 'req_UNIT_FAKE' });
+  assert.deepEqual(await resumed.execute(step), { data: { type: 'subscription_plan', subscription_plan_id: 'plan_UNIT_FAKE' }, requestId: 'req_UNIT_FAKE' });
   assert.equal(calls, 1); assert.equal(loaded.state.actions['A:numeric-plan'].phase, 'known');
   assert.equal(loaded.state.resources.length, 1);
   assert.equal(loaded.state.resources[0].resource, 'plan_UNIT_FAKE');
@@ -214,7 +214,7 @@ test('subscription update numeric quantity retains exact version and run-owned a
   assert.deepEqual(loaded.state.actions['A:numeric-update'].args, ['sub_UNIT_FAKE', input]);
 }));
 test('subscription checkout restart replays the same key and terms to recover its redacted session ID', async () => setup(async (ledger, dir) => {
-  const input: CreateCheckoutSessionRequestInput = { subscription_plan_id: 'plan_UNIT_FAKE', subscription_terms: { quantity: 100 } };
+  const input: CreateCheckoutSessionRequestInput = { type: 'subscription_plan', subscription_plan_id: 'plan_UNIT_FAKE', subscription_terms: { quantity: 100 } };
   const step = { ...subscriptionCheckoutStep(100), args: [input] };
   let calls = 0; const keys: string[] = [];
   const fake = { checkoutSessions: { createWithResponse: async (body: CreateCheckoutSessionRequestInput, options: { idempotencyKey: string }) => {
@@ -260,7 +260,7 @@ test('numeric subscription exceptions do not admit order, modifier, revision or 
   const modifier = subscriptionPlanStep(); modifier.args[0].line_items[0].modifiers[0].quantity = 1;
   const nested = subscriptionUpdateStep(); nested.args[1].metadata = { quantity: 1 };
   const misplaced = subscriptionPlanStep(); misplaced.args[0].quantity = 1;
-  const order: PlanStep = { name: 'numeric-order', sandbox: 'A', operation: 'orders.create', args: [{ line_items: [{ name: 'Unit line', quantity: 1, unit_price_money: { amount: '100', currency: 'USD' } }] }], creates: [{ path: 'order_id', type: 'order', cleanup: 'review', reviewAt: '2000-02-01T00:00:00Z' }], purpose: 'unit-order' };
+  const order: PlanStep = { name: 'numeric-order', sandbox: 'A', operation: 'orders.create', args: [{ line_items: [{ type: 'custom', name: 'Unit line', quantity: 1, unit_price_money: { amount: '100' as const, currency: 'USD' } }] }], creates: [{ path: 'order_id', type: 'order', cleanup: 'review', reviewAt: '2000-02-01T00:00:00Z' }], purpose: 'unit-order' };
   const version = subscriptionUpdateStep(); version.args[1].expected_version = 1;
   const revision = subscriptionPlanStep(); revision.args[0].order_revision = 1;
   const checkout = subscriptionCheckoutStep(); checkout.args[0].quick_pay_item = { quantity: 1 };
@@ -362,15 +362,15 @@ test('unsupported settings absence and null remain blocked before any write',asy
 test('challenge probe satisfies order tax and embedded checkout inputs through the published SDK without payment', async () => setup(async ledger => {
   const orderId = 'ord_UNIT_FAKE', sessionId = 'cs_UNIT_FAKE', paths: string[] = [];
   const origin = 'http://localhost:4100', returnUrl = `${origin}/`;
-  const zero = { amount: '0', currency: 'USD' }, total = { amount: '200', currency: 'USD' };
+  const zero = { amount: '0' as const, currency: 'USD' }, total = { amount: '200' as const, currency: 'USD' };
   const order: Order = {
-    order_id: orderId, order_revision: '5', buyer_actions: [], status: 'open', payment_status: 'unpaid', refund_status: 'none',
-    line_items: [{ order_line_item_id: 'oli_UNIT_FAKE', name: 'Gift card verification probe', quantity: '1', version: '1', refunded_quantity: '0', unit_price_money: total, base_subtotal_money: total, subtotal_money: total, tax_money: zero, total_money: total, discount_money: zero, modifier_total_money: zero, refunded_money: zero, tax: { taxable: false } }],
-    pricing_amounts: { charge_money: zero, discount_money: zero, requested_tip_money: zero, subtotal_money: total, tax_money: zero, total_money: total },
-    settlement_amounts: { balance_money: total, outstanding_money: total, paid_money: zero, credit_money: zero, net_collected_money: zero, refunded_money: zero, settled_tip_money: zero },
-    tax: { enabled: true, mode: 'automatic', status: 'calculated', taxability_reason: 'not_taxable' },
+    order_id: orderId, version: '5', charges: [], checkout_session_ids: [], discounts: [], fulfillments: [], gift_card_settlements: [], gift_card_tender_enabled: true, gift_cards: [], governing_delivery_selection_id: null, payment_intent_ids: [], refund_ids: [], return_credit_settlements: [], tips: [], buyer_actions: [], status: 'open', payment_status: 'unpaid', refund_status: 'none',
+    line_items: [{ order_line_item_id: 'oli_UNIT_FAKE', name: 'Gift card verification probe', quantity: '1', categories: [], bundle_components: [], inventory_snapshot: null, modifiers: [], purchased_gift_cards: [], selected_options: [], refunded_quantity: '0', unit_price_money: total, base_subtotal_money: total, subtotal_money: total, tax_money: zero, total_money: total, discount_money: zero, modifier_total_money: zero, refunded_money: zero, tax: { taxable: false } }],
+    pricing_amounts: { additive_tax_money: zero, inclusive_tax_money: zero, charge_money: zero, discount_money: zero, requested_tip_money: zero, subtotal_money: total, tax_money: zero, total_money: total },
+    settlement_amounts: { written_off_money: zero, balance_money: total, outstanding_money: total, paid_money: zero, credit_money: zero, net_collected_money: zero, refunded_money: zero, settled_tip_money: zero },
+    tax: { enabled: true, mode: 'automatic', status: 'calculated',  },
   };
-  const session: CheckoutSession = { checkout_session_id: sessionId, order_id: orderId, status: 'open', surface: 'embedded', page_origin: origin, redirects: { success_redirect_url: returnUrl }, payments: { enabled_payment_options: ['card', 'affirm'] }, delivery_method_ids: [], delivery_selection_required: false, problems: [], recovery_mode: false };
+  const session: CheckoutSession = { checkout_session_id: sessionId, order_id: orderId, status: 'open', surface: 'embedded', page_origin: origin, payment_return_url: returnUrl, payments: { enabled_payment_options: ['card', 'affirm'] }, delivery_method_ids: [], delivery_selection_required: false, problems: [], is_in_recovery: false, type: 'order', version: '1' };
   const client = new Client({ baseUrl: 'https://api.staging.withflintpay.com', apiKey: 'flint_test_PLACEHOLDER', maxAttempts: 1, transport: async (input, init) => {
     const path = new URL(String(input)).pathname, method = init!.method!, headers = new Headers(init!.headers);
     const body = init!.body ? JSON.parse(String(init!.body)) : undefined;
@@ -378,28 +378,28 @@ test('challenge probe satisfies order tax and embedded checkout inputs through t
     if (method === 'POST') assert.ok(headers.get('Idempotency-Key'));
     if (method === 'POST' && path === '/v1/orders') {
       // An enabled merchant tax default requires explicit ad hoc line taxability.
-      if (typeof body.line_items[0]?.tax?.taxable !== 'boolean') return Response.json({ error: { type: 'validation', code: 'ORDER_LINE_ITEM_TAX_INPUT_REQUIRED', message: 'Explicit line-item taxability is required.' } }, { status: 400 });
-      assert.deepEqual(body, { line_items: [{ name: 'Gift card verification probe', quantity: 1, unit_price_money: { amount: 200, currency: 'USD' }, fulfillment: { requirement: 'none' }, tax: { taxable: false } }], metadata: { e2e_run: run } });
-      return Response.json({ data: order });
+      if (typeof body.line_items[0]?.tax?.taxable !== 'boolean') return Response.json({ request_id: 'req_UNIT_FAKE', error: { type: 'validation', code: 'ORDER_LINE_ITEM_TAX_INPUT_REQUIRED', message: 'Explicit line-item taxability is required.' } }, { status: 400 });
+      assert.deepEqual(body, { line_items: [{ type: 'custom', name: 'Gift card verification probe', quantity: 1, unit_price_money: { amount: 200, currency: 'USD' }, fulfillment: { requirement: 'none' }, tax: { taxable: false } }], metadata: { e2e_run: run } });
+      return Response.json({ request_id: 'req_UNIT_FAKE', data: order });
     }
     if (method === 'POST' && path === '/v1/checkout-sessions') {
       // Embedded checkout inherits Affirm, which requires a clean return destination.
-      if (!body.redirects?.success_redirect_url) return Response.json({ error: { type: 'validation', code: 'EMBEDDED_PAYMENT_RETURN_URL_REQUIRED', message: 'Embedded Affirm checkout requires a success redirect URL.' } }, { status: 400 });
-      assert.deepEqual(body, { order_id: orderId, surface: 'embedded', page_origin: origin, redirects: { success_redirect_url: returnUrl } });
-      return Response.json({ data: { checkout_session: session, checkout_access: { checkout_auth_token: 'fixture authority' }, reused_existing: false } });
+      if (!body.payment_return_url) return Response.json({ request_id: 'req_UNIT_FAKE', error: { type: 'validation', code: 'EMBEDDED_PAYMENT_RETURN_URL_REQUIRED', message: 'Embedded Affirm checkout requires a success redirect URL.' } }, { status: 400 });
+      assert.deepEqual(body, { type: 'order', order_id: orderId, surface: 'embedded', page_origin: origin, payment_return_url: returnUrl });
+      return Response.json({ request_id: 'req_UNIT_FAKE', data: { ...session, checkout_auth_token: 'fixture authority' } });
     }
-    if (method === 'GET' && path === `/v1/orders/${orderId}`) return Response.json({ data: order });
+    if (method === 'GET' && path === `/v1/orders/${orderId}`) return Response.json({ request_id: 'req_UNIT_FAKE', data: order });
     if (method === 'POST' && path === `/v1/orders/${orderId}/gift-cards`) {
-      assert.equal(headers.get('Authorization'), null);
-      assert.equal(headers.get('X-Checkout-Session-ID'), sessionId);
-      assert.equal(headers.get('X-Checkout-Session-Secret'), 'fixture authority');
-      assert.equal(body.order_revision, 5);
-      assert.match(body.gift_card_code, /^E2ENOPE[A-Za-z0-9_-]{16}$/);
-      return Response.json({ error: { type: 'validation', code: 'GIFT_CARD_CHALLENGE_REQUIRED', message: 'Complete the verification challenge.' } }, { status: 400 });
+      assert.equal(headers.get('Authorization'), 'Bearer fixture authority');
+      assert.equal(headers.get('X-Checkout-Session-ID'), null);
+      assert.equal(headers.get('X-Checkout-Session-Secret'), null);
+      assert.equal(body.expected_version, 5);
+      assert.match(body.code, /^E2ENOPE[A-Za-z0-9_-]{16}$/);
+      return Response.json({ request_id: 'req_UNIT_FAKE', error: { type: 'validation', code: 'GIFT_CARD_CHALLENGE_REQUIRED', message: 'Complete the verification challenge.' } }, { status: 400 });
     }
     assert.equal(method, 'POST'); assert.equal(path, `/v1/checkout-sessions/${sessionId}/close`);
     assert.deepEqual(body, {});
-    return Response.json({ data: { ...session, status: 'closed' } });
+    return Response.json({ request_id: 'req_UNIT_FAKE', data: { ...session, status: 'closed' } });
   } });
   const clients = { config: { ...config, origins: { storefrontA: origin } }, writable: async () => client } as unknown as VerifiedClients;
   await new Operator(clients, ledger, {} as Fixtures).tripGiftChallenge();
@@ -410,12 +410,12 @@ test('challenge probe satisfies order tax and embedded checkout inputs through t
 
 for(const trips of [true,false])test(`challenge trip ${trips?'proves a shared dimension':'fails at the bounded lookup limit'} without merchant apply or persisted codes`,async()=>setup(async(ledger,dir)=>{
  let sessionCount=0,lookups=0;const requests:any[]=[],codes:string[]=[];
- const fake={orders:{get:async()=>({order_revision:'5'}),applyGiftCard:async(_id:string,body:any,options:any)=>{lookups++;requests.push(options);codes.push(body.gift_card_code);assert.match(body.gift_card_code,/^E2ENOPE[A-Za-z0-9_-]{16}$/);assert.equal('Flint-Gift-Card-Challenge'in body,false);const code=trips&&(sessionCount>1||lookups===2)?'GIFT_CARD_CHALLENGE_REQUIRED':'GIFT_CARD_UNAVAILABLE';throw new SdkError('validation','fixture','response',false,{status:400,headers:{},attempts:1,durationMs:1},code);}},checkoutSessions:{closeSession:async()=>({})}};
+ const fake={orders:{get:async()=>({version:'5'}),applyGiftCard:async(_id:string,body:any,options:any)=>{lookups++;requests.push(options);codes.push(body.code);assert.match(body.code,/^E2ENOPE[A-Za-z0-9_-]{16}$/);assert.equal('Flint-Gift-Card-Challenge'in body,false);const code=trips&&(sessionCount>1||lookups===2)?'GIFT_CARD_CHALLENGE_REQUIRED':'GIFT_CARD_UNAVAILABLE';throw new SdkError('validation','fixture','response',false,{status:400,headers:{},attempts:1,durationMs:1},code);}},checkoutSessions:{closeSession:async()=>({})}};
  const clients={config:{...config,origins:{storefrontA:'http://localhost:4100'}},writable:async()=>fake} as unknown as VerifiedClients,op=new Operator(clients,ledger,{} as Fixtures);
  op.execute=async step=>{
    const session=step.operation==='checkoutSessions.create';if(session)sessionCount++;const id=`${session?'cs':'ord'}_fixture_${sessionCount+(!session?1:0)}`;
    await ledger.record({resource:id,type:session?'checkout_session':'order',mode:'test',sandbox:'A',merchant:'mer_PLACEHOLDER',sandboxId:'test_PLACEHOLDER_A',createdBy:run,purpose:'gift-challenge-probe',cleanup:session?'checkout_session':'review',owner:'unit',reviewAt:'2000-02-01T00:00:00Z',owned:true});
-   return {data:session?{checkout_session:{checkout_session_id:id},checkout_access:{checkout_auth_token:'fixture authority'}}:{order_id:id}};
+   return {data:session?{checkout_session_id:id,checkout_auth_token:'fixture authority'}:{order_id:id}};
  };
  if(trips){await op.tripGiftChallenge();assert.equal(sessionCount,2);assert.equal(lookups,3);assert.ok(ledger.state.giftChallengeTrippedAt);await op.tripGiftChallenge();assert.equal(sessionCount,3);assert.equal(lookups,4);}else{await assert.rejects(()=>op.tripGiftChallenge(),{code:'CHALLENGE_TRIP_NOT_OBSERVED'});assert.equal(sessionCount,3);assert.equal(lookups,15);}
  assert.ok(requests.every(options=>options.authMode==='checkout'&&options.apiKey===undefined&&options.maxAttempts===1));assert.ok(ledger.state.resources.filter(resource=>resource.type==='checkout_session').every(resource=>resource.status==='CLEANED UP'));

@@ -94,7 +94,7 @@ test('private checkout response fields leave a clean journal and replay before k
     const args = ['inv_PLACEHOLDER', { surface: 'embedded' }];
     const response = { invoice_id: 'inv_PLACEHOLDER', checkout_session: { checkout_session_id: 'cs_PLACEHOLDER', order_id: 'ord_PLACEHOLDER', recovery: [{ superseding_checkout_session_id: 'cs_NEXT_PLACEHOLDER', recovery_payment_attempt_id: 'pat_PLACEHOLDER' }] } };
     const send = async (key: string) => { keys.push(key); return response; };
-    const initial = ledger.action('invoice-session', 'A', 'invoices.getOrCreateCheckoutSession', args, send, async received => {
+    const initial = ledger.action('invoice-session', 'A', 'invoices.createCheckoutSession', args, send, async received => {
       assert.deepEqual(received, response);
       if (phase === 'unknown') throw new Error('interrupted reconciliation');
     });
@@ -110,7 +110,7 @@ test('private checkout response fields leave a clean journal and replay before k
     const restarted = new Ledger(ledger.file, run); await restarted.load();
     assert.equal(restarted.state.actions['A:invoice-session'].responseNeedsReplay, true);
     let reconciled = 0;
-    assert.deepEqual(await restarted.action('invoice-session', 'A', 'invoices.getOrCreateCheckoutSession', args, send, async received => {
+    assert.deepEqual(await restarted.action('invoice-session', 'A', 'invoices.createCheckoutSession', args, send, async received => {
       assert.equal(keys.length, 2); assert.deepEqual(received, response); reconciled++;
     }), response);
     assert.equal(reconciled, 1); assert.equal(keys.length, 2); assert.equal(keys[0], keys[1]);

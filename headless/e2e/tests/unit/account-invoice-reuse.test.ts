@@ -37,13 +37,14 @@ function invoiceHarness(attempts: [Attempt, Attempt], launch: { reused?: boolean
         if (name === 'conflict-invoice') { assert.equal(throughConflict, true); return { invoice_id: 'inv_CONFLICT_PLACEHOLDER', order_id: 'ord_CONFLICT_PLACEHOLDER' }; }
         assert.equal(name, 'acceptance-invoice'); return { invoice_id: invoiceId, order_id: orderId };
       },
+      clients: { clients: { A: { checkoutSessions: { list: async () => ({ data: [{ checkout_session_id: launch.reused === false ? 'cs_OLD_PLACEHOLDER' : 'cs_UNIT_PLACEHOLDER', surface: 'embedded' }] }) } } } },
       runDate: () => 0,
       execute: async (step: { name: string; operation: string; args: unknown[] }) => {
-        if (step.operation === 'invoices.getOrCreateCheckoutSession') {
+        if (step.operation === 'invoices.createCheckoutSession') {
           assert.equal(throughConflict, true);
           const kind = step.name === 'idle-hosted' ? 'IDLE' : 'CONFLICT';
           assert.deepEqual(step.args, [`inv_${kind}_PLACEHOLDER`, { surface: 'hosted' }]);
-          return { data: { checkout_session: { checkout_session_id: `cs_${kind}_HOSTED_PLACEHOLDER`, order_id: `ord_${kind}_PLACEHOLDER`, surface: 'hosted' }, checkout_access: { checkout_auth_token: 'UNIT_CHECKOUT_TOKEN_PLACEHOLDER' } } };
+          return { data: { checkout_session: { checkout_session_id: `cs_${kind}_HOSTED_PLACEHOLDER`, order_id: `ord_${kind}_PLACEHOLDER`, surface: 'hosted' }, checkout_auth_token: 'UNIT_CHECKOUT_TOKEN_PLACEHOLDER' } };
         }
         assert.equal(step.operation, 'customerSessions.create'); authorityRequests++;
         return { data: { secret: 'UNIT_CUSTOMER_TOKEN_PLACEHOLDER' } };
@@ -56,7 +57,7 @@ function invoiceHarness(attempts: [Attempt, Attempt], launch: { reused?: boolean
         }
         if (name === 'conflict-hosted-pay') {
           assert.equal(throughConflict, true); assert.equal(operation, 'orders.pay-checkout');
-          const response = { payment_attempt: { status: 'requires_action' } }; await observe(response); return response;
+          const response = { order_payment_attempt: { status: 'requires_action' } }; await observe(response); return response;
         }
         assert.equal(name, 'invoice-reuse'); assert.equal(sandbox, 'A'); assert.equal(operation, 'me.createInvoiceCheckoutSession');
         const response = { reused_existing: launch.reused ?? true, checkout_session: { checkout_session_id: 'cs_UNIT_PLACEHOLDER', order_id: launch.orderId ?? orderId } };
@@ -133,10 +134,10 @@ test('AC-05 observes hosted surface conflict on the shared payment region', asyn
     const url = new URL(input instanceof Request ? input.url : input.toString());
     assert.equal(url.origin, 'https://api.staging.withflintpay.com'); assert.equal(url.pathname, '/v1/orders/ord_CONFLICT_PLACEHOLDER'); assert.equal(init?.method, 'GET');
     publicReads++;
-    return Response.json({ data: {
-      order_id: 'ord_CONFLICT_PLACEHOLDER', buyer_actions: [], status: 'open', payment_status: 'unpaid', refund_status: 'none', line_items: [],
-      pricing_amounts: { charge_money: zero, discount_money: zero, requested_tip_money: zero, subtotal_money: total, tax_money: zero, total_money: total },
-      settlement_amounts: { balance_money: total, outstanding_money: total, paid_money: zero, credit_money: zero, net_collected_money: zero, refunded_money: zero, settled_tip_money: zero },
+    return Response.json({ request_id: 'req_UNIT', data: {
+      order_id: 'ord_CONFLICT_PLACEHOLDER', version: '1', charges: [], checkout_session_ids: [], discounts: [], fulfillments: [], gift_card_settlements: [], gift_card_tender_enabled: true, gift_cards: [], governing_delivery_selection_id: null, payment_intent_ids: [], refund_ids: [], return_credit_settlements: [], tips: [], buyer_actions: [], status: 'open', payment_status: 'unpaid', refund_status: 'none', line_items: [],
+      pricing_amounts: { additive_tax_money: zero, inclusive_tax_money: zero, charge_money: zero, discount_money: zero, requested_tip_money: zero, subtotal_money: total, tax_money: zero, total_money: total },
+      settlement_amounts: { written_off_money: zero, balance_money: total, outstanding_money: total, paid_money: zero, credit_money: zero, net_collected_money: zero, refunded_money: zero, settled_tip_money: zero },
       tax: { enabled: false, mode: 'external', status: 'not_required', taxability_reason: 'tax_disabled' },
     } });
   });
@@ -150,9 +151,9 @@ async function hostedPaymentHarness(t: TestContext, token: unknown, status = 're
   const ledger = new Ledger(join(directory, 'ledger.json'), 'hosted-payment-unit');
   const zero = { amount: '0', currency: 'USD' }, total = { amount: '12000', currency: 'USD' };
   const order = {
-    order_id: 'ord_UNIT_PLACEHOLDER', buyer_actions: [], status: 'open', payment_status: 'unpaid', refund_status: 'none', line_items: [],
-    pricing_amounts: { charge_money: zero, discount_money: zero, requested_tip_money: zero, subtotal_money: total, tax_money: zero, total_money: total },
-    settlement_amounts: { balance_money: total, outstanding_money: total, paid_money: zero, credit_money: zero, net_collected_money: zero, refunded_money: zero, settled_tip_money: zero },
+    order_id: 'ord_UNIT_PLACEHOLDER', version: '1', charges: [], checkout_session_ids: [], discounts: [], fulfillments: [], gift_card_settlements: [], gift_card_tender_enabled: true, gift_cards: [], governing_delivery_selection_id: null, payment_intent_ids: [], refund_ids: [], return_credit_settlements: [], tips: [], buyer_actions: [], status: 'open', payment_status: 'unpaid', refund_status: 'none', line_items: [],
+    pricing_amounts: { additive_tax_money: zero, inclusive_tax_money: zero, charge_money: zero, discount_money: zero, requested_tip_money: zero, subtotal_money: total, tax_money: zero, total_money: total },
+    settlement_amounts: { written_off_money: zero, balance_money: total, outstanding_money: total, paid_money: zero, credit_money: zero, net_collected_money: zero, refunded_money: zero, settled_tip_money: zero },
     tax: { enabled: false, mode: 'external', status: 'not_required', taxability_reason: 'tax_disabled' },
   };
   const payments: { body: unknown; key: string | null }[] = [];
@@ -162,12 +163,12 @@ async function hostedPaymentHarness(t: TestContext, token: unknown, status = 're
     assert.equal(url.origin, 'https://api.staging.withflintpay.com');
     if (init?.method === 'GET') {
       assert.equal(url.pathname, '/v1/orders/ord_UNIT_PLACEHOLDER'); reads++;
-      return Response.json({ data: order });
+      return Response.json({ request_id: 'req_UNIT', data: order });
     }
     assert.equal(init?.method, 'POST'); assert.equal(url.pathname, '/v1/orders/ord_UNIT_PLACEHOLDER/pay');
     payments.push({ body: JSON.parse(String(init?.body)), key: new Headers(init?.headers).get('idempotency-key') });
     if (transportFailure) { transportFailure = false; throw new TypeError('UNIT_TRANSPORT_OUTCOME_UNKNOWN'); }
-    return Response.json({ data: { order, payment_attempt: { order_payment_attempt_id: 'attempt_UNIT_PLACEHOLDER', mode: 'payment', status, is_resumable: status === 'requires_action', expected_outstanding_money: total } } });
+    return Response.json({ request_id: 'req_UNIT', data: { order, order_payment_attempt: { order_payment_attempt_id: 'attempt_UNIT_PLACEHOLDER', mode: 'payment', gift_card_redemptions: [], payment_intents: [], pending_actions: [], status, is_resumable: status === 'requires_action', expected_outstanding_money: total } } });
   });
   const driver = {
     config: { apiOrigin: 'https://api.staging.withflintpay.com' },
@@ -175,7 +176,7 @@ async function hostedPaymentHarness(t: TestContext, token: unknown, status = 're
     operator: { ledger, clients: { verify: async (sandbox: string) => { assert.equal(sandbox, 'A'); verifications++; } } },
     trackOrder: async (sandbox: string, id: string) => { assert.equal(sandbox, 'A'); assert.equal(id, order.order_id); tracked++; },
   } as unknown as Driver;
-  const launch = { checkout_session: { checkout_session_id: 'cs_UNIT_PLACEHOLDER', order_id: order.order_id }, checkout_access: { checkout_auth_token: 'UNIT_CHECKOUT_TOKEN_PLACEHOLDER' } };
+  const launch = { checkout_session: { checkout_session_id: 'cs_UNIT_PLACEHOLDER', order_id: order.order_id }, checkout_auth_token: 'UNIT_CHECKOUT_TOKEN_PLACEHOLDER' };
   return { driver, launch, ledger, payments, reads: () => reads, verifications: () => verifications, tracked: () => tracked };
 }
 
@@ -190,7 +191,7 @@ test('hosted conflict preparation requires a real private PaymentMethod token be
 test('hosted conflict preparation pays with the supplied source and refuses another action reusing it', async t => {
   const h = await hostedPaymentHarness(t, 'pm_UNIT3DS');
   await beginHostedAuthentication(h.driver, 'hosted-pay', h.launch);
-  assert.deepEqual(h.payments[0].body, { action: 'pay', expected_outstanding_money: { amount: 12000, currency: 'USD' }, payment_source: { token: 'pm_UNIT3DS' } });
+  assert.deepEqual(h.payments[0].body, { action: 'pay', expected_outstanding_money: { amount: 12000, currency: 'USD' }, payment_source: { credential_type: 'token', token: 'pm_UNIT3DS' } });
   assert.equal(h.payments.length, 1); assert.equal(h.verifications(), 1); assert.equal(h.tracked(), 1);
   await assert.rejects(beginHostedAuthentication(h.driver, 'different-hosted-pay', h.launch), { code: 'HOSTED_CONFLICT_PAYMENT_TOKEN_REUSED' });
   assert.equal(h.payments.length, 1); assert.equal(h.verifications(), 1);

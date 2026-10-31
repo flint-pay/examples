@@ -21,7 +21,7 @@ async function fixture(dir: string, options: { owned?: boolean; wrongCustomer?: 
   const second = { ...first, customer_session_id: 'cses_UNIT_SECOND_FAKE', secret: 'flint_cses_UNIT_SECOND_FAKE', refresh_token: 'flint_cref_UNIT_SECOND_FAKE' };
   const merchant = { customers: { get: async () => ({ customer_id: options.wrongCustomer ? 'cus_UNIT_FOREIGN_FAKE' : customer }) }, customerSessions: {
     createWithResponse: async (body: any, opts: any) => { assert.equal(body.customer_id, customer); writes++; keys.push(opts.idempotencyKey); return { body: { data: first }, meta: {} }; },
-    revoke: async (id: string, _body: unknown, opts: any) => { writes++; keys.push(opts.idempotencyKey); revoked = true; return { customer_session_id: id, revoked: true }; },
+    revoke: async (id: string, _body: unknown, opts: any) => { writes++; keys.push(opts.idempotencyKey); revoked = true; return { customer_session_id: id, status: 'revoked' }; },
   } };
   const verified = { config: { apiOrigin: 'https://api.staging.withflintpay.com', pins: { A: { merchantId: 'mer_UNIT_FAKE', sandboxId: 'test_UNIT_FAKE' } } }, clients: { A: merchant }, writable: async () => merchant } as unknown as VerifiedClients;
   const operator = new Operator(verified, ledger, {} as Fixtures);

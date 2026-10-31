@@ -30,7 +30,7 @@ export async function exerciseAccountApi(operator: Operator, customerId: string,
     const rotated = clients.buyer(refreshed.secret); buyers.push(rotated);
     invariant((await rotated.me.get()).customer_id === customerId, 'ACCOUNT_REFRESH_MUST_AUTHORIZE_CUSTOMER');
     const revoked = await operator.ledger.action('account-api-revoke', 'A', 'customerSessions.revoke', [refreshed.customer_session_id, {}], async key => (await operator.clients.writable('A')).customerSessions.revoke(refreshed.customer_session_id, {}, { idempotencyKey: key }), async () => {});
-    invariant(revoked.revoked === true && revoked.customer_session_id === refreshed.customer_session_id, 'ACCOUNT_SESSION_REVOCATION_REQUIRED');
+    invariant(revoked.status === 'revoked' && revoked.customer_session_id === refreshed.customer_session_id, 'ACCOUNT_SESSION_REVOCATION_REQUIRED');
     const invalid = await rotated.me.get().then(() => null, error => error);
     invariant(invalid?.status === 404 && invalid?.code === 'CUSTOMER_SESSION_NOT_FOUND', 'ACCOUNT_REVOKED_SESSION_MUST_BE_INVALID');
     return ['PUBLIC_ACCOUNT_SESSION_MINT', 'PUBLIC_BUYER_RESOURCE_LISTS', 'PUBLIC_ACCOUNT_SESSION_REFRESH', 'PUBLIC_ACCOUNT_SESSION_REVOKE_AND_DENIAL'];

@@ -26,7 +26,7 @@ export const operations = {
   'giftCards.create': { creates: ['gift_card'], cleanup: 'gift_card' },
   'invoices.create': { creates: ['invoice', 'order'], cleanup: 'invoice' },
   'invoices.issue': { creates: [], cleanup: '' },
-  'invoices.getOrCreateCheckoutSession': { creates: ['checkout_session'], cleanup: 'checkout_session' },
+  'invoices.createCheckoutSession': { creates: ['checkout_session'], cleanup: 'checkout_session' },
   'orders.create': { creates: ['order'], cleanup: 'review' },
   'orders.addLineItems': { creates: ['order_line_item'], cleanup: 'review' },
   'checkoutSessions.create': { creates: ['checkout_session'], cleanup: 'checkout_session' },
@@ -41,7 +41,6 @@ export const operations = {
   'returns.createResolution': { creates: ['return_resolution'], cleanup: 'return_resolution' },
   'returnResolutions.confirm': { creates: [], cleanup: '' },
   'subscriptions.update': { creates: [], cleanup: '' },
-  'subscriptions.updateBillingSchedule': { creates: [], cleanup: '' },
   'customerDeletionRequests.resolve': { creates: [], cleanup: '' },
 } as const;
 type Operation = keyof typeof operations;
@@ -77,7 +76,6 @@ export class Operator {
     }; step.args.forEach((arg, index) => exact(arg, [index]));
     // Positional target IDs must be run-owned. Creates may refer to sanctioned existing fixtures.
     if (!step.operation.endsWith('.create') && typeof step.args[0] === 'string') this.owned(step.sandbox, step.args[0]);
-    if (step.operation === 'subscriptions.updateBillingSchedule') this.owned(step.sandbox, step.args[0].subscription_id);
   }
   async execute(step: PlanStep): Promise<any> {
     this.validate(step);
@@ -116,15 +114,15 @@ export class Operator {
     const service = ach ? this.fixtures.products?.['brewing-class'] : undefined;
     if (ach) invariant(service?.variantId, 'ACH_INVOICE_SERVICE_FIXTURE_REQUIRED');
     const orderInput: CreateOrderRequestInput = {
-      customer_id: customerId, line_items: ach ? [{ variant_id: service!.variantId, quantity: '1' }] : [{ name: 'Acceptance service', quantity: '1', unit_price_money: { amount: '12000', currency: 'USD' }, fulfillment: { requirement: 'none' }, tax: { taxable: true } }],
+      customer_id: customerId, line_items: ach ? [{ type: 'variant', variant_id: service!.variantId, quantity: '1' }] : [{ type: 'custom', name: 'Acceptance service', quantity: '1', unit_price_money: { amount: '12000', currency: 'USD' }, fulfillment: { requirement: 'none' }, tax: { taxable: true } }],
       tax: { enabled: true, location: { address_source: 'provided', address_type: 'billing_address', address: { line1: '11 Wall Street', city: 'New York', state: 'NY', postal_code: '10005', country: 'US' } } },
       metadata: { e2e_run: this.ledger.run },
     };
     const order = await this.execute({ name: `${name}-order`, sandbox: 'A', operation: 'orders.create', args: [orderInput], creates: [{ path: 'order_id', type: 'order', cleanup: 'review', reviewAt }], purpose: name });
     const invoiceInput: CreateInvoiceRequestInput = {
-      order_id: order.data.order_id,
+      type: 'order', order_id: order.data.order_id,
       collection: { mode: 'buyer_initiated', payment_policy: { enabled_payment_options: enabledPaymentOptions } },
-      payment_due: { type: 'absolute', due_at: new Date(date + 14 * 86400_000).toISOString() }, recipient_email: email, metadata: { e2e_run: this.ledger.run },
+      payment_due: { type: 'date', due_at: new Date(date + 14 * 86400_000).toISOString() }, recipient_email: email, metadata: { e2e_run: this.ledger.run },
     };
     const response = await this.execute({ name, sandbox: 'A', operation: 'invoices.create', args: [invoiceInput], creates: [{ path: 'invoice_id', type: 'invoice', cleanup: 'invoice', reviewAt }], purpose: name });
     await this.execute({ name: `${name}-issue`, sandbox: 'A', operation: 'invoices.issue', args: [response.data.invoice_id, { delivery_mode: 'email' }], creates: [], purpose: name });
@@ -151,11 +149,11 @@ export class Operator {
   async challengeFor(orderId:string,pageOrigin:string):Promise<{url:string;checkoutSessionId:string}>{
     this.owned('A',orderId);
     const client=this.clients.clients.A;
-    const sessions=await client.checkoutSessions.list({order_id:orderId,status:'open',page_size:100});
+    const sessions=await client.checkoutSessions.list({order_id:orderId,status:['open'],page_size:100});
     invariant(sessions.data.length===1&&!sessions.next_page_token,'APP_CURRENT_CHECKOUT_SESSION_AMBIGUOUS');
     const session=await client.checkoutSessions.get(sessions.data[0]!.checkout_session_id);
     const url=trustedChallengeUrl(session.gift_card_challenge?.url);
-    invariant(session.order_id===orderId&&session.status==='open'&&!session.recovery_mode&&session.page_origin===pageOrigin&&url,'PUBLIC_GIFT_CHALLENGE_SESSION_REQUIRED');
+    invariant(session.order_id===orderId&&session.status==='open'&&!session.is_in_recovery&&session.page_origin===pageOrigin&&url,'PUBLIC_GIFT_CHALLENGE_SESSION_REQUIRED');
     return {url,checkoutSessionId:session.checkout_session_id};
   }
   async challengeUrlFor(orderId:string,pageOrigin:string):Promise<string>{return (await this.challengeFor(orderId,pageOrigin)).url;}
@@ -165,15 +163,15 @@ export class Operator {
     let lookups=0,tripped=false;
     for(let index=0;index<3&&!tripped;index++){
       const name=`challenge-probe-${++this.giftChallengeProbeSequence}`,reviewAt=new Date(this.runDate()+86400000).toISOString();
-      const order=await this.execute({name:`${name}-order`,sandbox:'A',operation:'orders.create',args:[{line_items:[{name:'Gift card verification probe',quantity:'1',unit_price_money:{amount:'200',currency:'USD'},fulfillment:{requirement:'none'},tax:{taxable:false}}],metadata:{e2e_run:this.ledger.run}}],creates:[{path:'order_id',type:'order',cleanup:'review',reviewAt}],purpose:'gift-challenge-probe'});
-      const launched=await this.execute({name:`${name}-session`,sandbox:'A',operation:'checkoutSessions.create',args:[{order_id:order.data.order_id,surface:'embedded',page_origin:origin,redirects:{success_redirect_url:new URL('/',origin).href}}],creates:[{path:'checkout_session.checkout_session_id',type:'checkout_session',cleanup:'checkout_session',reviewAt}],purpose:'gift-challenge-probe'});
-      const sessionId=launched.data.checkout_session.checkout_session_id,secret=launched.data.checkout_access.checkout_auth_token;
+      const order=await this.execute({name:`${name}-order`,sandbox:'A',operation:'orders.create',args:[{line_items:[{type:'custom',name:'Gift card verification probe',quantity:'1',unit_price_money:{amount:'200',currency:'USD'},fulfillment:{requirement:'none'},tax:{taxable:false}}],metadata:{e2e_run:this.ledger.run}}],creates:[{path:'order_id',type:'order',cleanup:'review',reviewAt}],purpose:'gift-challenge-probe'});
+      const launched=await this.execute({name:`${name}-session`,sandbox:'A',operation:'checkoutSessions.create',args:[{type:'order',order_id:order.data.order_id,surface:'embedded',page_origin:origin,payment_return_url:new URL('/',origin).href}],creates:[{path:'checkout_session_id',type:'checkout_session',cleanup:'checkout_session',reviewAt}],purpose:'gift-challenge-probe'});
+      const sessionId=launched.data.checkout_session_id,secret=launched.data.checkout_auth_token;
       invariant(sessionId&&secret,'CHALLENGE_PROBE_AUTHORITY_REQUIRED');
       try{
         for(let attempt=0;attempt<5&&lookups<15;attempt++){
-          lookups++;const fresh=await client.orders.get(order.data.order_id);invariant(fresh.order_revision,'CHALLENGE_PROBE_REVISION_REQUIRED');
+          lookups++;const fresh=await client.orders.get(order.data.order_id);invariant(fresh.version,'CHALLENGE_PROBE_REVISION_REQUIRED');
           let code:string|undefined;
-          try{await client.orders.applyGiftCard(order.data.order_id,{gift_card_code:`E2ENOPE${randomBytes(12).toString('base64url')}`,order_revision:fresh.order_revision},{authMode:'checkout',credentials:{CheckoutSessionIDHeader:sessionId,CheckoutSessionSecretHeader:secret},idempotencyKey:randomUUID(),maxAttempts:1});}
+          try{await client.orders.applyGiftCard(order.data.order_id,{code:`E2ENOPE${randomBytes(12).toString('base64url')}`,expected_version:fresh.version},{authMode:'checkout',credentials:{CheckoutSessionBearer:secret},idempotencyKey:randomUUID(),maxAttempts:1});}
           catch(error){if(error instanceof SdkError)code=error.code;else throw error;}
           invariant(code==='GIFT_CARD_UNAVAILABLE'||code==='GIFT_CARD_CHALLENGE_REQUIRED','CHALLENGE_TRIP_UNEXPECTED_OUTCOME');
           if(code==='GIFT_CARD_CHALLENGE_REQUIRED'){
@@ -247,7 +245,7 @@ export class Operator {
           invariant(['closed', 'expired', 'paid', 'invalidated'].includes((await c.checkoutSessions.get(r.resource)).status), 'CHECKOUT_CLEANUP_FAILED');
         } else if (r.cleanup === 'customer_session') {
           const result = await call('customerSessions.revoke', [r.resource, {}], k => c.customerSessions.revoke(r.resource, {}, { idempotencyKey: k }));
-          invariant(result.revoked === true && result.customer_session_id === r.resource, 'SESSION_CLEANUP_FAILED');
+          invariant(result.status === 'revoked' && result.customer_session_id === r.resource, 'SESSION_CLEANUP_FAILED');
         } else if (r.cleanup === 'gift_card') {
           const card = await c.giftCards.get(r.resource);
           if (!['frozen', 'closed'].includes(card.status)) {

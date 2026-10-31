@@ -58,7 +58,7 @@ test('I-01 declares fixture taxability and preserves resource and cross-sandbox 
   assert.deepEqual(h.reads, ['order:ord_UNIT_FOREIGN_FAKE', 'customer:cus_UNIT_A_FAKE', 'invoice:inv_UNIT_FOREIGN_FAKE', 'buyer-order:ord_UNIT_FOREIGN_FAKE']);
   assert.deepEqual(h.requests, ['A', 'B'].map(sandbox => ({ sandbox, key: h.key, body: {
     external_reference_id: h.key,
-    line_items: [{ name: 'Isolation acceptance service', quantity: '1', unit_price_money: { amount: '100', currency: 'USD' }, fulfillment: { requirement: 'none' }, tax: { taxable: true } }],
+    line_items: [{ type: 'custom', name: 'Isolation acceptance service', quantity: '1', unit_price_money: { amount: '100', currency: 'USD' }, fulfillment: { requirement: 'none' }, tax: { taxable: true } }],
   } })));
   assert.equal(h.journals.length, 2); assert.equal(h.journals[0].args, h.journals[1].args);
   for (const entry of h.journals) {

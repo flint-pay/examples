@@ -51,10 +51,11 @@ export class VerifiedClients {
   }
   async verify(sandbox: Sandbox): Promise<void> {
     await this.verifyContext(sandbox);
-    const caps = await this.clients[sandbox].capabilities.list({ domain: 'payments' });
-    const card = caps.data.find(c => c.capability === 'accept_card_payments');
+    const merchant = await this.clients[sandbox].merchants.get();
+    const caps = merchant.readiness.capabilities.filter(c => c.domain === 'payments');
+    const card = caps.find(c => c.capability === 'accept_card_payments');
     invariant(card?.status === 'ready' && this.fixtures.readiness[sandbox].cards, 'PAYMENT_READINESS_CONTRADICTION');
-    if (this.fixtures.readiness[sandbox].affirm) invariant(caps.data.find(c => c.capability === 'accept_affirm_payments')?.status === 'ready', 'AFFIRM_READINESS_CONTRADICTION');
+    if (this.fixtures.readiness[sandbox].affirm) invariant(caps.find(c => c.capability === 'accept_affirm_payments')?.status === 'ready', 'AFFIRM_READINESS_CONTRADICTION');
     this.verified.add(sandbox);
   }
   async writable(sandbox: Sandbox, cleanup = false): Promise<PublicClient> {

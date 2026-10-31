@@ -18,7 +18,7 @@ export function envelope(overrides: Partial<Envelope> & Record<string, unknown> 
     merchant_id: 'mer_example',
     created_at: '2026-10-15T12:00:00Z',
     request: null,
-    data: { order_id: 'ord_example_one' },
+    data: { object: { order_id: 'ord_example_one' } },
     ...overrides,
   };
 }

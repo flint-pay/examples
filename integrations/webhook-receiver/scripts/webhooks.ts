@@ -78,7 +78,7 @@ async function main() {
       for (const attempt of await deliveryAttempts({ client, auth }, id(argument, 'webhook_delivery_id'))) {
         const duration = attempt.duration_milliseconds ? ` in ${attempt.duration_milliseconds} ms` : '';
         console.info(`#${attempt.attempt_number} ${attempt.delivery_trigger} ${attempt.status} ${attempt.status_code ?? ''}${duration}  ${time(attempt.started_at)}`);
-        if (attempt.diagnostic_category || attempt.error_summary) console.info(`  ${[attempt.diagnostic_category, attempt.error_summary].filter(Boolean).join(': ')}`);
+        if (attempt.error_category || attempt.error_summary) console.info(`  ${[attempt.error_category, attempt.error_summary].filter(Boolean).join(': ')}`);
         if (attempt.recommended_action) console.info(`  Next: ${attempt.recommended_action}`);
       }
     } else if (command === 'resend') {

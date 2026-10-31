@@ -9,7 +9,7 @@ export async function createBuyerClient(d: Driver, name: string, customerId: str
   return new Client({ baseUrl: d.config.apiOrigin, customerToken: response.data.secret, transport: pinnedFetch(), maxAttempts: 1 });
 }
 export async function buyerInvoiceLaunch(d: Driver, buyer: Client, name: string, invoiceId: string): Promise<any> {
-  const args = { surface: 'embedded' as const, redirects: { success_redirect_url: `${d.config.origins.accountA}/invoices/${invoiceId}/pay/return` } };
+  const args = { surface: 'embedded' as const, payment_return_url: `${d.config.origins.accountA}/invoices/${invoiceId}/pay/return` };
   return d.operator.ledger.action(name, 'A', 'me.createInvoiceCheckoutSession', [invoiceId, args], async key => {
     await d.operator.clients.verify('A');
     const response = await buyer.me.createInvoiceCheckoutSessionWithResponse(invoiceId, args, { idempotencyKey: key });
@@ -21,22 +21,21 @@ export async function buyerInvoiceLaunch(d: Driver, buyer: Client, name: string,
   });
 }
 export async function hostedInvoiceLaunch(d: Driver, name: string, invoiceId: string): Promise<any> {
-  const response = await d.operator.execute({ name, sandbox: 'A', operation: 'invoices.getOrCreateCheckoutSession', args: [invoiceId, { surface: 'hosted' }], creates: [{ path: 'checkout_session.checkout_session_id', type: 'checkout_session', cleanup: 'checkout_session', reviewAt: new Date(d.operator.runDate() + 86400_000).toISOString() }], purpose: name });
+  const response = await d.operator.execute({ name, sandbox: 'A', operation: 'invoices.createCheckoutSession', args: [invoiceId, { surface: 'hosted' }], creates: [{ path: 'checkout_session.checkout_session_id', type: 'checkout_session', cleanup: 'checkout_session', reviewAt: new Date(d.operator.runDate() + 86400_000).toISOString() }], purpose: name });
   return response.data;
 }
 export async function beginHostedAuthentication(d: Driver, name: string, launch: any): Promise<void> {
-  invariant(launch.checkout_access?.checkout_auth_token && launch.checkout_session?.checkout_session_id && launch.checkout_session.order_id, 'PUBLIC_CHECKOUT_AUTHORITY_REQUIRED');
+  invariant(launch.checkout_auth_token && launch.checkout_session?.checkout_session_id && launch.checkout_session.order_id, 'PUBLIC_CHECKOUT_AUTHORITY_REQUIRED');
   const token = d.fixtures.values.hostedConflictPaymentToken;
   invariant(typeof token === 'string' && token.length > 0, 'HOSTED_CONFLICT_PAYMENT_TOKEN_REQUIRED');
   invariant(/^pm_[A-Za-z0-9]+$/.test(token), 'HOSTED_CONFLICT_PAYMENT_TOKEN_INVALID');
-  const id = launch.checkout_session.checkout_session_id;
-  const checkout = new Client({ baseUrl: d.config.apiOrigin, authMode: 'checkout', credentials: { checkout: { CheckoutSessionIDHeader: id, CheckoutSessionSecretHeader: launch.checkout_access.checkout_auth_token } }, transport: pinnedFetch(), maxAttempts: 1 });
+  const checkout = new Client({ baseUrl: d.config.apiOrigin, checkoutToken: launch.checkout_auth_token, transport: pinnedFetch(), maxAttempts: 1 });
   const order = await checkout.orders.get(launch.checkout_session.order_id);
   // A new action needs a fresh one-shot source; the same ledger action may replay it.
   invariant(!Object.entries(d.operator.ledger.state.actions).some(([actionId, action]) => actionId !== `A:${name}` && action.sandbox === 'A' && action.operation === 'orders.pay-checkout' && (action.args[0] as any)?.body?.payment_source?.token === token), 'HOSTED_CONFLICT_PAYMENT_TOKEN_REUSED');
-  const request = { order_id: order.order_id, body: { action: 'pay' as const, expected_outstanding_money: money(order.settlement_amounts.outstanding_money), payment_source: { token } } };
+  const request = { order_id: order.order_id, body: { action: 'pay' as const, expected_outstanding_money: money(order.settlement_amounts.outstanding_money), payment_source: { credential_type: 'token' as const, token } } };
   const result = await d.operator.ledger.action(name, 'A', 'orders.pay-checkout', [request], async key => {
     await d.operator.clients.verify('A'); return checkout.orders.pay(request, { idempotencyKey: key });
   }, async () => { await d.trackOrder('A', order.order_id); });
-  invariant(result.payment_attempt?.status === 'requires_action', 'HOSTED_AUTHENTICATION_NOT_PENDING');
+  invariant(result.order_payment_attempt?.status === 'requires_action', 'HOSTED_AUTHENTICATION_NOT_PENDING');
 }
