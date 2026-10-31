@@ -16,7 +16,7 @@
     "test:browser": "playwright test"
   },
   "dependencies": {
-    "@flintpay/node": "3.0.0-beta.20261012044000",
+    "@flintpay/node": "7.0.0",
     "@stripe/stripe-js": "10.0.0",
     "next": "16.4.0",
     "react": "19.3.0",
