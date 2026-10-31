@@ -117,11 +117,13 @@ export const account: Record<string, Scenario> = {
     invariant(typeof firstOrderNumber === 'string' && firstOrderNumber.length > 0 && typeof secondOrderNumber === 'string' && secondOrderNumber.length > 0, 'INVOICE_RELAUNCH_ORDER_MISSING');
     invariant(firstOrderNumber === secondOrderNumber, 'INVOICE_RELAUNCH_CHANGED_ORDER');
     const buyer = await createBuyerClient(d, 'invoice-buyer-authority', d.fixtures.buyers.b1.customerId!);
-    const reused = await buyerInvoiceLaunch(d, buyer, 'invoice-reuse', invoice.invoice_id); invariant(reused.reused_existing === true, 'INVOICE_SESSION_NOT_REUSED');
+    const sessions = await d.operator.clients.clients.A.checkoutSessions.list({ order_id: invoice.order_id, status: ['open'], page_size: 100 });
+    invariant(sessions.data.length === 1 && !sessions.next_page_token && sessions.data[0]!.surface === 'embedded', 'INVOICE_SESSION_NOT_REUSED');
+    const reused = await buyerInvoiceLaunch(d, buyer, 'invoice-reuse', invoice.invoice_id); invariant(reused.checkout_session.checkout_session_id === sessions.data[0]!.checkout_session_id, 'INVOICE_SESSION_NOT_REUSED');
     invariant(reused.checkout_session.order_id === invoice.order_id, 'INVOICE_RELAUNCH_CHANGED_ORDER');
     const idle = await d.operator.issueInvoice('idle-invoice', d.fixtures.buyers.b1.customerId!, d.fixtures.buyers.b1.email);
     const hosted = await hostedInvoiceLaunch(d, 'idle-hosted', idle.invoice_id); const embedded = await buyerInvoiceLaunch(d, buyer, 'idle-embedded-replace', idle.invoice_id);
-    invariant(embedded.reused_existing === false && embedded.checkout_session.surface === 'embedded' && hosted.checkout_session.checkout_session_id !== embedded.checkout_session.checkout_session_id, 'HOSTED_IDLE_NOT_REPLACED');
+    invariant(embedded.checkout_session.surface === 'embedded' && hosted.checkout_session.checkout_session_id !== embedded.checkout_session.checkout_session_id, 'HOSTED_IDLE_NOT_REPLACED');
     const conflict = await d.operator.issueInvoice('conflict-invoice', d.fixtures.buyers.b1.customerId!, d.fixtures.buyers.b1.email);
     const pending = await hostedInvoiceLaunch(d, 'conflict-hosted', conflict.invoice_id); await beginHostedAuthentication(d, 'conflict-hosted-pay', pending);
     await d.goto(page, d.config.origins.accountA, `/invoices/${conflict.invoice_id}/pay`); await expect(page.getByTestId('ac-payment')).toHaveAttribute('data-state', 'surface_conflict');
@@ -326,7 +328,7 @@ export async function replayAppRefresh(d: Driver, anonymous: Pick<Client, 'custo
     }, async () => {});
   } catch (error) { failure = apiFailure(error); }
   if (!failure || failure.status && failure.status >= 200 && failure.status < 300) {
-    await ledger.action('ac15-accepted-replay-cleanup', 'A', 'customerSessions.revoke', [familyId, {}], async key => (await d.operator.clients.writable('A', true)).customerSessions.revoke(familyId, {}, { idempotencyKey: key }), async response => { invariant(response.revoked === true && response.customer_session_id === familyId, 'SESSION_CLEANUP_FAILED'); });
+    await ledger.action('ac15-accepted-replay-cleanup', 'A', 'customerSessions.revoke', [familyId, {}], async key => (await d.operator.clients.writable('A', true)).customerSessions.revoke(familyId, {}, { idempotencyKey: key }), async response => { invariant(response.status === 'revoked' && response.customer_session_id === familyId, 'SESSION_CLEANUP_FAILED'); });
     invariant(false, 'SUPERSEDED_REFRESH_ACCEPTED');
   }
   if (ledger.state.actions['A:ac15-superseded-refresh-replay'].phase === 'unknown') {

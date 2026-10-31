@@ -39,7 +39,7 @@ export function giftCardsPage(ctx: RenderContext<GiftCardsData>): Html {
   } else {
     body = html`<ul class="rows" data-state="loaded">${gift_cards.value.items.map(
       (giftCard) => html`<li class="row" data-testid="ac-gift-card-${giftCard.gift_card_id}">
-        <a class="row-link" href="${path('/gift-cards', giftCard.gift_card_id)}"><span class="row-title">${fill(copy.masked, { last: giftCard.last_characters })}</span><span class="row-meta">${copy.available} ${money(giftCard.available_money)}</span></a>
+        <a class="row-link" href="${path('/gift-cards', giftCard.gift_card_id)}"><span class="row-title">${fill(copy.masked, { last: giftCard.last4 })}</span><span class="row-meta">${copy.available} ${money(giftCard.available_money)}</span></a>
         <span class="row-end">${badge(copy.statuses[giftCard.status] ?? giftCard.status, giftStatusTone(giftCard.status), { 'data-state': giftCard.status })}</span>
       </li>`,
     )}</ul>
@@ -115,7 +115,7 @@ export function giftCardPage(ctx: RenderContext<GiftCardData>): Html {
             </li>`,
           )}</ul>`
         : html`<p class="muted">${copy.historyEmpty}</p>`;
-  const main = html`${pageHeader(fill(copy.masked, { last: giftCard.last_characters }), { testid: 'ac-gift-card-title' })}
+  const main = html`${pageHeader(fill(copy.masked, { last: giftCard.last4 }), { testid: 'ac-gift-card-title' })}
     <div class="status-line">${badge(copy.statuses[giftCard.status] ?? giftCard.status, giftStatusTone(giftCard.status), { 'data-state': giftCard.status, 'data-testid': 'ac-gift-card-status' })}</div>
     ${card(
       html`<dl class="facts" data-testid="ac-gift-card-balances">

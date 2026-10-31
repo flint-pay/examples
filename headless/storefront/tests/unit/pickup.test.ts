@@ -13,7 +13,7 @@ const address={line1:'400 Congress Ave',city:'Austin',state:'TX',postal_code:'78
 const location=(id:string,name:string)=>({location_id:id,name,address});
 const method={delivery_method_id:'dm_pickup',delivery_method_revision_id:'dmr_pickup'};
 // The real pickup_locations preview: nearest first, with one location that cannot fill the cart and one without a compatible method.
-const preview={mode:'pickup_locations',audience:'buyer',evaluation_status:'complete',evaluated_at:'2026-10-09T12:00:00Z',input_requirements:[],locations:[
+const preview={mode:'pickup_locations',evaluation_status:'complete',evaluated_at:'2026-10-09T12:00:00Z',input_requirements:[],locations:[
   {location:location('loc_near','Congress roastery'),distance_meters:804.672,compatible_methods:[method],candidate_outcome:{type:'available'},applicable_quantities:[]},
   {location:location('loc_out','Sold out roastery'),distance_meters:1000,compatible_methods:[method],candidate_outcome:{type:'unavailable',unavailable_reason:'inventory_insufficient'},applicable_quantities:[]},
   {location:location('loc_none','No method roastery'),distance_meters:2000,compatible_methods:[],candidate_outcome:{type:'available'},applicable_quantities:[]},
@@ -22,8 +22,8 @@ const option=(locationId:string,name:string)=>({delivery_option_id:`opt_${locati
 
 function fixture(){
   const remote={previews:[] as {input:Record<string,unknown>;options:Record<string,unknown>|undefined}[],quotes:[] as {input:Record<string,unknown>;key?:string}[],selections:[] as {input:Record<string,any>;key?:string}[],selection:undefined as unknown,selectionError:undefined as SdkError|undefined,lostResponse:undefined as SdkError|undefined,byKey:new Map<string,unknown>()};
-  const order={order_id:'fixture-order',status:'open',payment_status:'unpaid',order_revision:'1',settlement_amounts:{outstanding_money:{amount:'2400',currency:'USD'}},payment_collection:{stripe:{}}} as unknown as Order;
-  const session={checkout_session_id:'fixture-session',status:'open',customer_collection:{require_email:true}} as unknown as CheckoutSession;
+  const order={order_id:'fixture-order',status:'open',payment_status:'unpaid',version:'1',settlement_amounts:{outstanding_money:{amount:'2400',currency:'USD'}},payment_collection:{stripe:{}}} as unknown as Order;
+  const session={checkout_session_id:'fixture-session',status:'open',buyer_fields:{require_email:true}} as unknown as CheckoutSession;
   const client={
     orders:{get:async()=>order},
     deliveryPreviews:{create:async(input:Record<string,unknown>,options?:Record<string,unknown>)=>{remote.previews.push({input,options});return preview;}},
@@ -59,7 +59,7 @@ function fixture(){
 test('pickup search uses the checkout-authorized preview and projects only selectable locations',async()=>{
   const app=fixture();try{
     const response=await app.search();assert.equal(response.status,200);
-    assert.deepEqual(app.remote.previews,[{input:{body:{mode:'pickup_locations',checkout_session_id:'fixture-session',buyer_location:{type:'address',address:{postal_code:'78701',country:'US'}},expected_delivery_selection_id:null}},options:{authMode:'checkout',credentials:{CheckoutSessionIDHeader:'fixture-session',CheckoutSessionSecretHeader:'local-checkout-fixture'},idempotencyKey:undefined,maxAttempts:1}}]);
+    assert.deepEqual(app.remote.previews,[{input:{body:{mode:'pickup_locations',checkout_session_id:'fixture-session',buyer_location:{type:'address',address:{postal_code:'78701',country:'US'}}}},options:{checkoutToken:'local-checkout-fixture'}}]);
     assert.equal(app.remote.quotes.length,0);
     const {state}=await response.json();
     assert.deepEqual(state.pickup_search,{postal_code:'78701'});

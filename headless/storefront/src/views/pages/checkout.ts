@@ -20,6 +20,7 @@ import {
   serverBlockers,
   showDelivery,
   taxLocationState,
+  requestedTip,
   tipChoice,
   tipVisible,
   TIP_PERCENTS,
@@ -110,7 +111,7 @@ function contactSection(ctx: Ctx): Html {
 function discountSection(ctx: Ctx): Html {
   const state = ctx.data.state;
   if (state.session.promotion_config?.codes_enabled === false) return html`<div data-region="discount"></div>`;
-  const applied = state.order.applied_discounts ?? [];
+  const applied = (state.order.discounts ?? []).filter((discount) => discount.status !== 'canceled');
   return html`<section class="section checkout-section" id="discount" data-region="discount" aria-labelledby="discount-title" data-section="discount">
     <h2 id="discount-title">${copy.checkout.discountHeading}</h2>
     <form method="post" action="${path(state, '/discount')}" data-job-form="discount" novalidate class="inline-field" data-testid="sf-discount">
@@ -364,9 +365,9 @@ function giftCardSection(ctx: Ctx): Html {
       ? html`<ul class="applied-list" role="list" aria-label="${copy.checkout.giftCardApplied}">${cards.map((card, index) => {
           const amount = allocations.get(card.gift_card_id) ?? null;
           return html`<li data-testid="sf-gift-card-applied-${index}">
-            <span class="applied-name">${fill(copy.checkout.giftCardEnding, { last: card.last_characters })}</span>
+            <span class="applied-name">${fill(copy.checkout.giftCardEnding, { last: card.last4 })}</span>
             <span class="applied-amount">${amount ? money(amount, fill(copy.checkout.giftCardAmount, { amount: formatMoney(amount) })) : ''}</span>
-            <form method="post" action="${path(state, `/gift-card/${encodeURIComponent(card.gift_card_id)}/remove`)}" data-job-form="gift-card-remove" class="inline-form"><button class="button button-quiet button-small" type="submit" aria-label="${fill(copy.checkout.giftCardRemoveLabel, { last: card.last_characters })}">${copy.checkout.giftCardRemove}</button></form>
+            <form method="post" action="${path(state, `/gift-card/${encodeURIComponent(card.gift_card_id)}/remove`)}" data-job-form="gift-card-remove" class="inline-form"><button class="button button-quiet button-small" type="submit" aria-label="${fill(copy.checkout.giftCardRemoveLabel, { last: card.last4 })}">${copy.checkout.giftCardRemove}</button></form>
           </li>`;
         })}</ul>`
       : ''}
@@ -379,7 +380,7 @@ function tipSection(ctx: Ctx): Html {
   const state = ctx.data.state;
   if (!tipVisible(state)) return html`<div data-region="tip"></div>`;
   const choice = tipChoice(state);
-  const custom = state.order.requested_tip?.amount_money;
+  const custom = requestedTip(state)?.amount_money;
   const customValue = custom ? minorToDecimal(custom.amount, custom.currency) : '';
   const options: { value: string; label: string }[] = [
     { value: 'none', label: copy.checkout.tipNone },
@@ -548,8 +549,8 @@ function paymentSection(ctx: Ctx): Html {
   const showForm = resting !== 'expired' && resting !== 'unavailable' && resting !== 'recovery' && resting !== 'needs_billing';
   const initial = resting === 'ready' || resting === 'declined' || resting === 'pay_remaining' ? (processor ? 'loading' : resting) : resting;
   const code = declineCode(state);
-  const saveOffered = state.kind === 'order' && state.session.save_payment_method_offered === true && processor;
-  const phoneOffered = saveOffered && state.session.save_payment_method_phone_offered === true;
+  const saveOffered = state.kind === 'order' && state.session.can_save_payment_method === true && processor;
+  const phoneOffered = saveOffered && state.session.can_save_payment_method_with_phone === true;
   const settlementOnly = isSettlementOnly(state);
   const stripeGuidance = guidanceOf(state)?.stripe;
   const messaging = (stripeGuidance?.elements?.payment_method_types ?? []).includes('affirm');

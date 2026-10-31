@@ -51,7 +51,7 @@ export function subscriptionsPage(ctx: RenderContext<SubscriptionsData>): Html {
             <td data-label="${subs.status}">${badge(status.label, status.tone, { 'data-state': status.state })}</td>
             <td data-label="${subs.nextCharge}">${
               subscription.next_billing_at && subscription.status !== 'canceled'
-                ? fill(subs.nextChargeOn, { amount: fmt.money(subscription.recurring_amount_money), date: fmt.date(subscription.next_billing_at) })
+                ? fill(subs.nextChargeOn, { amount: fmt.money(subscription.recurring_subtotal_money), date: fmt.date(subscription.next_billing_at) })
                 : subs.noNextCharge
             }</td>
           </tr>`;
@@ -71,7 +71,7 @@ const ACTION_ORDER = ['cancel', 'pause', 'resume', 'reactivate', 'update_payment
 type ActionKind = (typeof ACTION_ORDER)[number];
 
 function endDate(subscription: Subscription): string | undefined {
-  return subscription.current_period_end ?? subscription.next_billing_at;
+  return subscription.current_period_end_at ?? subscription.next_billing_at;
 }
 
 /** The action that gets the primary style: required first, else the first available non-cancel action. */
@@ -94,8 +94,8 @@ function retryRegion(subscription: Subscription, retry: SubscriptionData['retry'
       ? subs.retryInProgress
       : state === 'succeeded'
         ? subs.retrySucceeded
-        : retry.failure?.message
-          ? fill(subs.retryFailed, { message: retry.failure.message })
+        : retry.last_payment_error?.message
+          ? fill(subs.retryFailed, { message: retry.last_payment_error.message })
           : subs.retryFailedNoMessage;
   return html`<div class="${state === 'failed' ? 'alert alert-error' : state === 'succeeded' ? 'notice notice-info' : 'status-note'}" role="${state === 'failed' ? 'alert' : 'status'}" data-testid="ac-retry-status" data-state="${state}"${attrs({
     'data-retry-poll': pending ? 'true' : undefined,
@@ -199,7 +199,7 @@ function pauseDialog(subscription: Subscription, capabilities: BuyerCapabilities
 function methodDialog(subscription: Subscription, methods: SubscriptionData['payment_methods'], data: SubscriptionData, ctx: RenderContext): Html {
   const base = path('/subscriptions', subscription.subscription_id);
   const errors = ctx.error?.field_errors;
-  const currentId = subscription.payment_method?.payment_method_id;
+  const currentId = subscription.payment_method_id;
   const addHref = `/payment-methods/new?return_to=${encodeURIComponent(base)}`;
   const selected = data.values?.payment_method_id ?? currentId ?? '';
   let list: Html;
@@ -295,10 +295,11 @@ export function subscriptionPage(ctx: RenderContext<SubscriptionData>): Html {
           )}</ul>`
         : html`<p class="muted">${subs.billingHistoryEmpty}</p>`;
 
-  const methodText = subscription.payment_method?.card ? cardLabel(subscription.payment_method.card) : subs.noPaymentMethod;
+  const currentMethod = data.payment_methods.status === 'ok' ? data.payment_methods.value.find((method) => method.payment_method_id === subscription.payment_method_id) : undefined;
+  const methodText = currentMethod?.card ? cardLabel(currentMethod.card) : subs.noPaymentMethod;
   const nextCharge =
     subscription.status !== 'canceled' && subscription.next_billing_at && !subscription.cancel_at_period_end
-      ? fill(subs.nextChargeOn, { amount: fmt.money(subscription.recurring_amount_money), date: fmt.date(subscription.next_billing_at) })
+      ? fill(subs.nextChargeOn, { amount: fmt.money(subscription.recurring_subtotal_money), date: fmt.date(subscription.next_billing_at) })
       : subs.noNextCharge;
   const interval = intervalLabel(subscription.billing_interval_count ?? subscription.subscription_plan?.billing_interval_count, subscription.billing_interval ?? subscription.subscription_plan?.billing_interval);
 
@@ -311,7 +312,7 @@ export function subscriptionPage(ctx: RenderContext<SubscriptionData>): Html {
     ${subscription.status === 'past_due' ? html`<div class="alert alert-warn" role="status" data-state="past_due" data-testid="ac-subscription-past-due"><p class="alert-title">${subs.pastDue}</p></div>` : ''}
     ${subscription.cancel_at_period_end && endsOn ? html`<div class="notice notice-warn" data-testid="ac-subscription-scheduled-cancel"><p>${fill(subs.scheduledCancel, { date: fmt.date(endsOn) })}</p></div>` : ''}
     ${subscription.status === 'paused' ? html`<div class="notice notice-info" data-testid="ac-subscription-paused"><p>${subs.pausedNotice}</p></div>` : ''}
-    ${subscription.status === 'trialing' && subscription.trial_end ? html`<div class="notice notice-info"><p>${fill(subs.trialEnds, { date: fmt.date(subscription.trial_end) })}</p></div>` : ''}
+    ${subscription.status === 'trialing' && subscription.trial_end_at ? html`<div class="notice notice-info"><p>${fill(subs.trialEnds, { date: fmt.date(subscription.trial_end_at) })}</p></div>` : ''}
     ${retryRegion(subscription, data.retry)}
     ${card(
       html`<h2 id="sub-details">${name}</h2>

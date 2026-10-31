@@ -7,4 +7,4 @@ export function logRequest(entry:{request_id:string;route:string;status:number;d
 export function logGiftChallenge(entry:{outcome:'issued'|'origin_required'|'unavailable'|'retry_applied'|'retry_rejected'|'retry_unknown';cause?:string;checkout_ref:string;flint_request_id?:string}){
   console.info(JSON.stringify({event:'gift_challenge',...entry}));
 }
-export function logLaunchInvalid(cause:'page_origin_mismatch'|'invalid_page_origin',flint_request_id?:string){console.warn(JSON.stringify({event:'checkout_launch_invalid',cause,flint_request_id}));}
+export function logLaunchInvalid(cause:'page_origin_mismatch'|'invalid_page_origin'|'credential_missing',flint_request_id?:string){console.warn(JSON.stringify({event:'checkout_launch_invalid',cause,flint_request_id}));}

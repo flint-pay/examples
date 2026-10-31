@@ -40,7 +40,7 @@ export function returnsPage(ctx: RenderContext<ReturnsData>): Html {
             <th scope="row" data-label="${columns.return}"><a href="${path('/returns', ret.return_id)}">${fill(returnsCopy.number, { number: ret.return_number })}</a></th>
             <td data-label="${columns.date}">${timeEl(ret.created_at, ctx)}</td>
             <td data-label="${columns.status}">${badge(status.label, status.tone, { 'data-state': status.state })}</td>
-            <td data-label="${columns.order}"><a href="${path('/orders', ret.order_id)}">${ret.order?.order_number ?? ret.order_id}</a></td>
+            <td data-label="${columns.order}"><a href="${path('/orders', ret.order_id)}">${ret.order_id}</a></td>
           </tr>`;
         })}</tbody>
       </table>

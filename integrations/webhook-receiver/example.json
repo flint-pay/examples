@@ -20,7 +20,7 @@
   "requires": {
     "flint_sdk": {
       "package": "@flintpay/node",
-      "version": "3.0.0-beta.20261012044000"
+      "version": "7.0.0"
     },
     "stripe_js": false,
     "stripe_test_mode": true,

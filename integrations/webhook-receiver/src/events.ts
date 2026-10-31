@@ -50,7 +50,8 @@ export type Handler = (event: Envelope, context: HandlerContext) => Promise<(inb
  */
 export const handlers = {
   'order.paid': async (event, { client, auth }) => {
-    const orderId = event.data.order_id;
+    // Keep processing stored deliveries from the previous payload version after upgrading.
+    const orderId = isRecord(event.data.object) ? event.data.object.order_id : event.data.order_id;
     if (typeof orderId !== 'string' || !orderId) throw new PermanentError('order.paid without an order_id');
     const order = await client.orders.get(orderId, {}, auth.merchant());
     return (inbox) => {

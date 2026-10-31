@@ -54,7 +54,7 @@
     "tier": "e2e",
     "schedule": "nightly",
     "prq": [],
-    "assert": "Operator gift card $25 applied with order_revision; outstanding reduced; card pays remainder; exactly one invalid code attempt per run shows GIFT_CARD_UNAVAILABLE copy."
+    "assert": "Operator gift card $25 applied with expected_version; outstanding reduced; card pays remainder; exactly one invalid code attempt per run shows GIFT_CARD_UNAVAILABLE copy."
   },
   {
     "id": "SF-06",

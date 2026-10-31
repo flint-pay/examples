@@ -10,7 +10,7 @@ import {createAuth} from '../src/server/flint/auth.ts';
 import type {Auth} from '../src/server/flint/auth.ts';
 import {preflight} from '../src/server/flint/preflight.ts';
 import {Store} from '../src/server/store/db.ts';
-import {unknownOutcome} from '../src/server/flint/errors.ts';
+import {facts,unknownOutcome} from '../src/server/flint/errors.ts';
 
 export const catalogProducts=[
   {slug:'house-blend',name:'House blend coffee, 12 oz',product_type:'physical',amount:'1800'},
@@ -24,15 +24,16 @@ export const catalogPlans=[
   {slug:'coffee-club-monthly',name:'Coffee club, monthly',trial:undefined},
   {slug:'coffee-club-trial',name:'Coffee club with a 14-day free trial',trial:14}
 ] as const;
+type PaymentOption='card'|'ach_debit'|'affirm'|'apple_pay'|'google_pay';
 const catalog='cedar-and-stone';
 const metadata=(slug:string)=>({example_catalog:catalog,example_slug:slug});
 export function productInput(item:typeof catalogProducts[number]):CreateProductRequestInput{
   const common={name:item.name,product_type:item.product_type,status:'active' as const,external_reference_id:`examples-${item.slug}`,metadata:metadata(item.slug)};
   const price={amount:item.amount,currency:'USD'};
-  if(item.slug!=='house-blend')return {...common,default_variant:{unit_price_money:price,status:'active'}};
-  return {...common,options:[{name:'Grind',client_option_key:'grind',values:[{value:'Whole bean',client_value_key:'whole-bean'},{value:'Ground',client_value_key:'ground'}]}],variants:[
-    {name:'Whole bean',unit_price_money:price,status:'active',selected_option_values:[{client_option_key:'grind',client_value_key:'whole-bean'}]},
-    {name:'Ground',unit_price_money:price,status:'active',selected_option_values:[{client_option_key:'grind',client_value_key:'ground'}]}
+  if(item.slug!=='house-blend')return {...common,variant_mode:'simple',default_variant:{unit_price_money:price,status:'active'}};
+  return {...common,variant_mode:'optioned',options:[{name:'Grind',values:[{value:'Whole bean'},{value:'Ground'}]}],variants:[
+    {name:'Whole bean',unit_price_money:price,status:'active',selected_options:[{option_name:'Grind',value:'Whole bean'}]},
+    {name:'Ground',unit_price_money:price,status:'active',selected_options:[{option_name:'Grind',value:'Ground'}]}
   ]};
 }
 export function deliveryInputs(locationId:string,setId:string):CreateDeliveryMethodRequestInput[]{
@@ -65,7 +66,7 @@ async function inventory(client:Client,auth:Auth):Promise<Snapshot>{
   return {locations,sets,methods,products,plans,promotions};
 }
 type Probe={name:string;idempotency_key:string;resource_id:string|null};
-async function probe<T>(store:Store,name:string,create:(key:string)=>Promise<T>,id:(response:T)=>string,cleanup:(id:string,key:string)=>Promise<unknown>,unavailable:string[]):Promise<boolean>{
+async function probe<T>(store:Store,name:string,create:(key:string)=>Promise<T>,id:(response:T)=>string,cleanup:(id:string,key:string)=>Promise<unknown>,unavailable:(error:SdkError)=>boolean):Promise<boolean>{
   let job=store.get<Probe>('SELECT * FROM setup_probes WHERE name=?',name);
   if(!job){store.run('INSERT INTO setup_probes VALUES(?,?,NULL)',name,`examples-probe-${randomUUID()}`);job=store.get<Probe>('SELECT * FROM setup_probes WHERE name=?',name)!;}
   try{
@@ -73,7 +74,7 @@ async function probe<T>(store:Store,name:string,create:(key:string)=>Promise<T>,
     if(!resourceId){resourceId=id(await create(job.idempotency_key));store.run('UPDATE setup_probes SET resource_id=? WHERE name=?',resourceId,name);job.resource_id=resourceId;}
     await cleanup(resourceId,`${job.idempotency_key}-cleanup`);store.run('DELETE FROM setup_probes WHERE name=?',name);return true;
   }catch(error){
-    if(error instanceof SdkError&&unavailable.includes(error.code??'')&&!job.resource_id){store.run('DELETE FROM setup_probes WHERE name=?',name);return false;}
+    if(error instanceof SdkError&&unavailable(error)&&!job.resource_id){store.run('DELETE FROM setup_probes WHERE name=?',name);return false;}
     if(!unknownOutcome(error)&&!job.resource_id)store.run('DELETE FROM setup_probes WHERE name=?',name);
     throw error;
   }
@@ -90,14 +91,14 @@ export async function setup(args:string[]=process.argv.slice(2)){
     const existing=await inventory(client,auth);const settings=await client.settings.get(undefined,auth.merchant());
     const existingPromotion=owned(existing.promotions,'welcome10');
     validateWelcomeCodes(await collect(client.promotions.listCodesItems({code:'WELCOME10',page_size:100},auth.merchant())),existingPromotion?.promotion_id);
-    const affirm=affirmReady((await client.capabilities.list({capability:'accept_affirm_payments'},auth.merchant())).data);
+    const affirm=affirmReady((await client.merchants.get(undefined,auth.merchant())).readiness.capabilities);
     let ach=false;let tax=false;
     const last=store.get<{ach:number;affirm:number;tax:number;checked_at:number}>('SELECT * FROM setup_readiness WHERE sandbox_id=?',ready.sandboxId);
     if(last&&last.checked_at>Date.now()-24*60*60_000){ach=!!last.ach;tax=!!last.tax;}
     if(check){
       console.info('Readiness probes create a $2.00 ACH payment intent and a service order, then cancel or close them.');
-      ach=await probe(store,'ach',key=>client.paymentIntents.create({amount_money:{amount:'200',currency:'USD'},payment_options:['ach_debit'],transaction_purpose:'goods',metadata:{example_probe:'true'}},auth.merchant(key)),response=>response.payment_intent.payment_intent_id,(id,key)=>client.paymentIntents.cancel(id,{cancellation_reason:'abandoned'},auth.merchant(key)),['PAYMENT_OPTION_UNAVAILABLE']);
-      tax=await probe(store,'tax',key=>client.orders.create({line_items:[{name:'Automatic tax readiness probe',tax:{line_item_tax_category:'services'},fulfillment:{requirement:'none'},unit_price_money:{amount:'200',currency:'USD'},quantity:'1'}],tax:{enabled:true},metadata:{example_probe:'true'}},auth.merchant(key)),response=>response.order_id,(id,key)=>client.orders.closeSession(id,{},auth.merchant(key)),['AUTOMATIC_TAX_CONNECTION_REQUIRED']);
+      ach=await probe(store,'ach',key=>client.paymentIntents.create({amount_money:{amount:'200',currency:'USD'},payment_options:['ach_debit'],transaction_purpose:'goods',metadata:{example_probe:'true'}},auth.merchant(key)),response=>response.payment_intent_id,(id,key)=>client.paymentIntents.cancel(id,{cancellation_reason:'abandoned'},auth.merchant(key)),error=>error.code==='PAYMENT_OPTION_UNAVAILABLE');
+      tax=await probe(store,'tax',key=>client.orders.create({line_items:[{type:'custom',name:'Automatic tax readiness probe',tax:{line_item_tax_category:'services'},fulfillment:{requirement:'none'},unit_price_money:{amount:'200',currency:'USD'},quantity:'1'}],tax:{enabled:true},metadata:{example_probe:'true'}},auth.merchant(key)),response=>response.order_id,(id,key)=>client.orders.closeSession(id,{},auth.merchant(key)),error=>error.code==='ACTION_NOT_ALLOWED'&&facts(error).reason==='configuration_required');
       store.run('INSERT OR REPLACE INTO setup_readiness VALUES(?,?,?,?,?)',ready.sandboxId,Number(ach),Number(affirm),Number(tax),Date.now());
     }
     const key=(resource:string)=>deterministicKey(ready.sandboxId,resource);
@@ -112,7 +113,7 @@ export async function setup(args:string[]=process.argv.slice(2)){
     const methodInputs=deliveryInputs(location?.location_id??'<roastery location>',set?.delivery_location_set_id??'<pickup location set>');const methodIds:string[]=[];
     for(const input of methodInputs){const slug=input.metadata!.example_slug!;const method=await resource(slug,owned(existing.methods,slug),input,()=>client.deliveryMethods.create(input,auth.merchant(key(slug))));if(method){if(method.status!=='active')throw new Error(`${slug} must be active before it becomes a checkout default.`);methodIds.push(method.delivery_method_id);}}
     for(const item of catalogProducts){const input=productInput(item);const product=await resource(item.slug,owned(existing.products,item.slug),input,()=>client.products.create(input,auth.merchant(key(item.slug))));if(product&&product.status!=='active')throw new Error(`${item.slug} exists but is not active. Activate it before setup.`);}
-    for(const item of catalogPlans){const input={name:item.name,billing_interval:'monthly' as const,billing_interval_count:1,currency:'USD',line_items:[{name:'Monthly coffee club',unit_price_money:{amount:'2200',currency:'USD'},quantity:1}],...(item.trial?{trial_period_days:item.trial}:{}),metadata:metadata(item.slug)};const plan=await resource(item.slug,owned(existing.plans,item.slug),input,()=>client.subscriptionPlans.create(input,auth.merchant(key(item.slug))));if(plan&&plan.status!=='active')throw new Error(`${item.slug} exists but is not active. Activate it before setup.`);}
+    for(const item of catalogPlans){const input={name:item.name,billing_interval:'monthly' as const,billing_interval_count:1,currency:'USD',line_items:[{type:'custom' as const,name:'Monthly coffee club',unit_price_money:{amount:'2200' as const,currency:'USD'},quantity:1}],...(item.trial?{trial_period_days:item.trial}:{}),metadata:metadata(item.slug)};const plan=await resource(item.slug,owned(existing.plans,item.slug),input,()=>client.subscriptionPlans.create(input,auth.merchant(key(item.slug))));if(plan&&plan.status!=='active')throw new Error(`${item.slug} exists but is not active. Activate it before setup.`);}
     const promotionInput=welcomePromotionInput();
     const promotion=await resource('welcome10',existingPromotion,promotionInput,()=>client.promotions.create(promotionInput,auth.merchant(key('welcome10'))));
     const codes=await collect(client.promotions.listCodesItems({code:'WELCOME10',page_size:100},auth.merchant()));
@@ -123,7 +124,7 @@ export async function setup(args:string[]=process.argv.slice(2)){
     }
     const checkedAffirm=affirm&&(check||!!last?.affirm&&last.checked_at>Date.now()-24*60*60_000);
     const enabled=[...new Set([...(settings.checkout?.enabled_payment_options??[]).filter(option=>!['ach_debit','affirm'].includes(option)),'card','apple_pay','google_pay',...(ach?['ach_debit']:[]),...(checkedAffirm?['affirm']:[])])];
-    const checkout={default_delivery_method_ids:apply?methodIds:['<standard shipping>','<roastery pickup>'],enabled_payment_options:enabled};
+    const checkout={default_delivery_method_ids:apply?methodIds:['<standard shipping>','<roastery pickup>'],enabled_payment_options:enabled as PaymentOption[]};
     console.info(`Previous checkout settings: ${JSON.stringify({default_delivery_method_ids:settings.checkout?.default_delivery_method_ids??[],enabled_payment_options:settings.checkout?.enabled_payment_options??[]})}`);
     console.info(`${apply?'Set':'Would set'} checkout defaults: ${JSON.stringify(checkout)}`);
     if(apply){

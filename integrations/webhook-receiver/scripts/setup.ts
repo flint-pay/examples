@@ -14,7 +14,7 @@ const DESCRIPTION = 'Flint examples webhook receiver';
 
 export type Step =
   | { kind: 'create'; url: string; events: string[] }
-  | { kind: 'update'; changes: { url?: string; enabled_events?: string[]; enabled?: true } }
+  | { kind: 'update'; changes: { url?: string; enabled_events?: string[]; status?: 'active'; expected_version?: `${bigint}` } }
   | { kind: 'rotate' }
   | { kind: 'save_endpoint_id' }
   | { kind: 'needs_secret' };
@@ -27,12 +27,13 @@ export function planSetup(input: { endpoint?: WebhookEndpoint; url: string; save
   const { endpoint, url } = input;
   if (!endpoint) return [{ kind: 'create', url, events: [...handledEventTypes] }];
   const steps: Step[] = [];
-  const changes: { url?: string; enabled_events?: string[]; enabled?: true } = {};
+  const changes: { url?: string; enabled_events?: string[]; status?: 'active'; expected_version?: `${bigint}` } = {};
   if (endpoint.url !== url) changes.url = url;
-  // An empty list means every event. Otherwise add the types this app handles.
-  const missing = handledEventTypes.filter((type) => endpoint.enabled_events.length && !endpoint.enabled_events.includes(type));
+  // A wildcard means every event. Otherwise add the types this app handles.
+  const missing = handledEventTypes.filter((type) => !endpoint.enabled_events.includes('*') && !endpoint.enabled_events.includes(type));
   if (missing.length) changes.enabled_events = [...endpoint.enabled_events, ...missing];
-  if (!endpoint.enabled) changes.enabled = true;
+  if (endpoint.status !== 'active') changes.status = 'active';
+  if (changes.enabled_events) changes.expected_version = endpoint.version;
   if (Object.keys(changes).length) steps.push({ kind: 'update', changes });
   const known = input.savedEndpointId === endpoint.webhook_endpoint_id;
   if (!known) steps.push({ kind: 'save_endpoint_id' });
@@ -104,7 +105,7 @@ async function main() {
   for (const step of steps) {
     if (step.kind === 'create') {
       const created = await client.webhookEndpoints.create(
-        { url: step.url, enabled_events: step.events, description: DESCRIPTION, enabled: true },
+        { url: step.url, enabled_events: step.events, description: DESCRIPTION, status: 'active', signing_methods: ['hmac'] },
         auth.merchant(createKey(sandboxId, step.url)),
       );
       if (!created.secret) throw new Error(`Endpoint ${created.webhook_endpoint_id} was created, but no secret was returned. Run again with --rotate-secret.`);
@@ -122,6 +123,7 @@ async function main() {
       const current = config.webhookSecrets[0];
       const key = current ? `examples-webhook-rotate-${createHash('sha256').update(current).digest('hex').slice(0, 24)}` : `examples-webhook-rotate-${randomUUID()}`;
       const rotated = await client.webhookEndpoints.rotateWebhookSecret(endpointId!, {}, auth.merchant(key));
+      if (!rotated.secret) throw new Error('Rotation returned no signing secret. The saved secret was kept.');
       updateEnvFile(ENV_PATH, { FLINT_WEBHOOK_SECRET: rotated.secret, FLINT_WEBHOOK_PREVIOUS_SECRET: current ?? null });
       console.info('Rotated the signing secret and saved it to .env. Remove FLINT_WEBHOOK_PREVIOUS_SECRET after 24 hours.');
     }

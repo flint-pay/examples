@@ -14,12 +14,12 @@ export async function failedDeliveries({ client, auth }: Deps, options: { endpoi
   const found: Array<{ event: WebhookEvent; delivery: WebhookDelivery }> = [];
   const events = client.webhookEvents.listItems({
     page_size: 100,
-    delivery_status: 'failed',
+    delivery_status: ['failed'],
     created_after: options.since.toISOString(),
     ...(options.endpointId ? { webhook_endpoint_id: options.endpointId } : {}),
   }, auth.merchant());
   for await (const event of events) {
-    const deliveries = await client.webhookEvents.listWebhookDeliveries(event.webhook_event_id, { page_size: 100 }, auth.merchant());
+    const deliveries = await client.webhookEvents.listWebhookDeliveries({ webhook_event_id: event.webhook_event_id, page_size: 100 }, auth.merchant());
     for (const delivery of deliveries.data) {
       if (delivery.status !== 'failed') continue;
       if (options.endpointId && delivery.webhook_endpoint_id !== options.endpointId) continue;

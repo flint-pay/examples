@@ -1,16 +1,17 @@
-import type {Client,ExpandedPaymentIntentSummary,MoneyValue,Order,OrderPaymentAttempt,PayOrderRequestInput,OrderGiftCardAllocationAcceptanceInput} from '@flintpay/node';
+import type {Client,ExpandedPaymentIntentSummary,MoneyValue,Order,OrderPaymentAttempt,PayOrderRequestInput,PaymentSourceCredentialInput,OrderGiftCardAllocationAcceptanceInput} from '@flintpay/node';
 import {SdkError} from '@flintpay/node';
 import {createHash} from 'node:crypto';
 import type {Auth} from '../flint/auth.ts';
-import {LocalError,unknownOutcome,sessionEnded} from '../flint/errors.ts';
+import {LocalError,condition,unknownOutcome,sessionEnded} from '../flint/errors.ts';
 import {Store} from '../store/db.ts';
 import type {CheckoutRecord,ActionRecord} from '../store/db.ts';
 import {moneyEqual} from '../security/money.ts';
 import {nextStep,attemptOpen} from './next-step.ts';
 
+const TOTAL_CHANGED_CODES=['VERSION_CONFLICT','CONCURRENT_MODIFICATION','LIMIT_EXCEEDED'];
 export type Credential={kind:'confirmation_token'|'payment_method_token'|'saved_payment_method';value:string};
 export type CollectionKind='processor'|'settlement'|'setup'|'unavailable';
-export type PayInput={credential?:Credential;approved_outstanding_money:MoneyValue;approved_order_revision?:string;approved_gift_card_money?:MoneyValue;approved_collection_kind:CollectionKind;buyer_contact?:{email:string;phone?:string};save_payment_method?:boolean;save_payment_method_phone?:string};
+export type PayInput={credential?:Credential;approved_outstanding_money:MoneyValue;approved_order_version?:string;approved_gift_card_money?:MoneyValue;approved_collection_kind:CollectionKind;buyer_contact?:{email:string;phone?:string};save_payment_method?:boolean;save_payment_method_phone?:string};
 // The checkout read lists intent IDs. The public payment-intent read identifies
 // the selected option; project only its ID, status and option into the buyer state.
 export type PaymentSourceRow=Pick<ExpandedPaymentIntentSummary,'payment_intent_id'|'status'>&{payment_source?:{type:string}};
@@ -24,7 +25,7 @@ export function collectionKind(order:SourcedOrder,kind:CheckoutRecord['kind']):C
 }
 export function approvalMatches(order:Order,kind:CheckoutRecord['kind'],input:PayInput):boolean{
   if(!input.approved_outstanding_money||!moneyEqual(order.settlement_amounts.outstanding_money,input.approved_outstanding_money)||collectionKind(order,kind)!==input.approved_collection_kind)return false;
-  if(order.gift_cards?.length&&(!order.gift_card_estimate?.can_pay||input.approved_order_revision!==order.order_revision||!input.approved_gift_card_money||!moneyEqual(input.approved_gift_card_money,order.gift_card_estimate.gift_card_money)))return false;
+  if(order.gift_cards?.length&&(!order.gift_card_estimate?.can_pay||input.approved_order_version!==order.version||!input.approved_gift_card_money||!moneyEqual(input.approved_gift_card_money,order.gift_card_estimate.gift_card_money)))return false;
   return true;
 }
 
@@ -32,7 +33,7 @@ export function acceptedAllocation(order:Order):OrderGiftCardAllocationAcceptanc
   const estimate=order.gift_card_estimate;
   if(!order.gift_cards?.length)return undefined;
   if(!estimate?.can_pay||estimate.gift_card_money.currency!=='USD'||estimate.processor_money.currency!=='USD'||estimate.gift_cards.some(card=>card.amount_money.currency!=='USD'))throw new LocalError('GIFT_CARD_ALLOCATION_CHANGED',409);
-  return {order_revision:estimate.order_revision,gift_card_money:{amount:estimate.gift_card_money.amount,currency:'USD'},processor_money:{amount:estimate.processor_money.amount,currency:'USD'},gift_cards:estimate.gift_cards.map(card=>({gift_card_id:card.gift_card_id,amount_money:{amount:card.amount_money.amount,currency:'USD'}}))};
+  return {order_version:estimate.order_version,gift_card_money:{amount:estimate.gift_card_money.amount,currency:'USD'},processor_money:{amount:estimate.processor_money.amount,currency:'USD'},gift_cards:estimate.gift_cards.map(card=>({gift_card_id:card.gift_card_id,amount_money:{amount:card.amount_money.amount,currency:'USD'}}))};
 }
 // A zero-dollar trial is financially paid before its card is set up. The
 // subscription ID is the authoritative proof that signup finished.
@@ -111,14 +112,13 @@ export class PaymentEngine {
         const response=job.kind==='cancel'
           ? await this.client.orders.cancelPaymentAttempt(record.order_id!,job.attempt_id!,JSON.parse(job.body) as {cancellation_reason:'abandoned'},this.auth.checkout(record,job.idempotency_key))
           : await this.client.orders.pay({order_id:record.order_id!,body:JSON.parse(job.body) as PayOrderRequestInput},this.auth.checkout(record,job.idempotency_key));
-        this.complete(job,response.payment_attempt);this.remember(record,response.payment_attempt);
-        return {order:response.order,attempt:response.payment_attempt,unknown:false};
+        this.complete(job,response.order_payment_attempt);this.remember(record,response.order_payment_attempt);
+        return {order:response.order,attempt:response.order_payment_attempt,unknown:false};
       }catch(error){
         if(!unknownOutcome(error)){
           if(error instanceof SdkError&&(error.outcome!=='response'||[401,403].includes(error.status??0))){this.store.run("UPDATE actions SET status='unknown' WHERE action_id=?",job.action_id);return this.reconcile(record);}
           this.store.run("UPDATE actions SET status='rejected',body=NULL WHERE action_id=?",job.action_id);
-          const code=error&&typeof error==='object'&&'code'in error?error.code:undefined;
-          if(['ORDER_PAYMENT_ATTEMPT_ACTIVE','PAYMENT_ATTEMPT_STILL_PROCESSING','PAYMENT_ATTEMPT_NOT_RESUMABLE'].includes(String(code)))return this.reconcile(record);
+          if(['ORDER_PAYMENT_ATTEMPT_ACTIVE','PAYMENT_ATTEMPT_STILL_PROCESSING','PAYMENT_ATTEMPT_NOT_RESUMABLE'].includes(String(condition(error,'payment'))))return this.reconcile(record);
           throw error;
         }
         this.store.run("UPDATE actions SET status='unknown' WHERE action_id=?",job.action_id);
@@ -154,21 +154,21 @@ export class PaymentEngine {
       let body:PayOrderRequestInput;
       if(record.kind==='subscription'&&BigInt(order.settlement_amounts.outstanding_money.amount)===0n){
         if(input.credential?.kind!=='payment_method_token')throw new LocalError('SETUP_PAYMENT_SOURCE_REQUIRED');
-        body={action:'setup',setup_payment_source:{token:input.credential.value},expected_outstanding_money:input.approved_outstanding_money,buyer_contact:input.buyer_contact};
+        body={action:'setup',setup_payment_source:{credential_type:'token',token:input.credential.value},expected_outstanding_money:input.approved_outstanding_money,buyer_contact:input.buyer_contact};
       }else{
-        let source: {confirmation_token:string}|{token:string}|{payment_method_id:string}|undefined;
+        let source: PaymentSourceCredentialInput|undefined;
         if(BigInt(processorAmount)>0n){
           if(!input.credential)throw new LocalError('PAYMENT_SOURCE_REQUIRED');
           if(input.credential.kind==='saved_payment_method'){
-            const methods=await this.client.paymentMethods.list(undefined,this.auth.checkout(record));
+            const methods=await this.client.paymentMethods.list({status:['active']},this.auth.checkout(record));
             if(!methods.data.some(method=>method.payment_method_id===input.credential!.value))throw new LocalError('PAYMENT_SOURCE_UNAVAILABLE');
-            source={payment_method_id:input.credential.value};
+            source={credential_type:'payment_method',payment_method_id:input.credential.value};
           }else if(input.credential.kind==='confirmation_token'){
             if(!input.credential.value.startsWith('ctoken_'))throw new LocalError('PAYMENT_SOURCE_REQUIRED');
-            source={confirmation_token:input.credential.value};
+            source={credential_type:'stripe_confirmation_token',stripe:{confirmation_token:input.credential.value}};
           }else{
             if(!input.credential.value.startsWith('pm_'))throw new LocalError('PAYMENT_SOURCE_REQUIRED');
-            source={token:input.credential.value};
+            source={credential_type:'token',token:input.credential.value};
           }
         }
         body={action:'pay',payment_source:source,expected_outstanding_money:input.approved_outstanding_money,accepted_gift_card_allocation:allocation,buyer_contact:input.buyer_contact,
@@ -177,8 +177,9 @@ export class PaymentEngine {
       const job=this.job(record,'pay',body);
       try{return await this.execute(record,job,assertOwnership);}
       catch(error){
-        if(error&&typeof error==='object'&&'code'in error&&['GIFT_CARD_INSUFFICIENT_VALUE','GIFT_CARD_ALLOCATION_CHANGED','ORDER_CHANGED_REFRESH_REQUIRED'].includes(String(error.code)))return {order:await this.read(record),unknown:false,totalChanged:true};
-        if(!(error&&typeof error==='object'&&'code'in error&&error.code==='PAYMENT_LEG_SELECTION_REQUIRED')||body.action!=='pay'||!body.payment_source)throw error;
+        // A stale order version, a stale gift card allocation (VERSION_CONFLICT), a lost write race (CONCURRENT_MODIFICATION) and gift card value that cannot cover the payment (LIMIT_EXCEEDED) all send the buyer back to review the total.
+        if(error instanceof SdkError&&TOTAL_CHANGED_CODES.includes(error.code??''))return {order:await this.read(record),unknown:false,totalChanged:true};
+        if(condition(error,'payment')!=='PAYMENT_LEG_SELECTION_REQUIRED'||body.action!=='pay'||!body.payment_source)throw error;
         const fresh=await this.read(record);const selectable=fresh.payment_collection?.stripe?.elements?.selectable_payment_intents;
         if(!approvalMatches(fresh,record.kind,input))return {order:fresh,unknown:false,totalChanged:true};
         if(selectable?.length!==1)throw new LocalError('PAYMENT_LEG_SELECTION_REQUIRED',409);

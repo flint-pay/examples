@@ -34,7 +34,7 @@ export const crossApp: Record<string, Scenario> = {
     const b = d.operator.clients.clients.B;
     await notFound(b.orders.get(order)); await notFound(b.customers.get(d.fixtures.buyers.b1.customerId)); await notFound(b.invoices.get(invoice));
     const buyer = await buyerClient(d, d.fixtures.buyers.b1b.customerId, 'B'); await notFound(buyer.me.getOrder(order));
-    const key = `fx-${d.config.run}-same-key-two-sandboxes`, args = [{ external_reference_id: key, line_items: [{ name: 'Isolation acceptance service', quantity: '1', unit_price_money: { amount: '100', currency: 'USD' }, fulfillment: { requirement: 'none' as const }, tax: { taxable: true } }] }];
+    const key = `fx-${d.config.run}-same-key-two-sandboxes`, args = [{ external_reference_id: key, line_items: [{ type: 'custom' as const, name: 'Isolation acceptance service', quantity: '1' as const, unit_price_money: { amount: '100' as const, currency: 'USD' }, fulfillment: { requirement: 'none' as const }, tax: { taxable: true } }] }];
     const ids: string[] = [];
     for (const sandbox of ['A', 'B'] as const) {
       const result = await d.operator.ledger.action('cross-sandbox-key', sandbox, 'orders.create', args, async durableKey => {
@@ -68,14 +68,14 @@ export const crossApp: Record<string, Scenario> = {
   },
   'SF-26': async d => {
     const secret = process.env.E2E_WEBHOOK_SECRET; invariant(secret && secret.startsWith('whsec_'), 'RUN_WEBHOOK_SECRET_REQUIRED');
-    const envelope = d.fixtures.values.signedWebhookEnvelope; invariant(envelope?.event_type === 'order.paid' && typeof envelope.data?.order_id === 'string', 'PUBLISHED_WEBHOOK_ENVELOPE_REQUIRED');
+    const envelope = d.fixtures.values.signedWebhookEnvelope; invariant(envelope?.event_type === 'order.paid' && typeof envelope.data?.object?.order_id === 'string', 'PUBLISHED_WEBHOOK_ENVELOPE_REQUIRED');
     const checkoutRef = d.fixtures.values.webhookCheckoutRef; invariant(checkoutRef, 'WEBHOOK_OWNED_CHECKOUT_REQUIRED');
     const body = JSON.stringify(envelope), id = `msg_${d.config.run}`, timestamp = Math.floor(Date.now() / 1000).toString();
     const key = Buffer.from(secret.slice(6), 'base64'); const signature = createHmac('sha256', key).update(`${id}.${timestamp}.${body}`).digest('base64');
     const headers = { 'content-type': 'application/json', 'webhook-id': id, 'webhook-timestamp': timestamp, 'webhook-signature': `v1,${signature}` };
     const page = await d.page('webhooks'); await d.goto(page, d.sf(), '/');
     const owned = await d.job(page, `/checkout/${checkoutRef}/state`);
-    invariant(owned.status === 200 && owned.body?.state?.order?.order_id === envelope.data.order_id, 'WEBHOOK_OWNED_CHECKOUT_REQUIRED');
+    invariant(owned.status === 200 && owned.body?.state?.order?.order_id === envelope.data.object.order_id, 'WEBHOOK_OWNED_CHECKOUT_REQUIRED');
     const send = async (h: Record<string, string>) => page.request.post(`${d.sf()}/webhooks/flint`, { data: body, headers: h });
     invariant((await send({ ...headers, 'webhook-signature': 'v1,invalid' })).status() === 400, 'WEBHOOK_BAD_SIGNATURE_ACCEPTED');
     invariant((await send(headers)).status() === 200 && (await send(headers)).status() === 200, 'WEBHOOK_VALID_OR_DEDUP_FAILED');
@@ -87,8 +87,8 @@ export const crossApp: Record<string, Scenario> = {
     invariant(d.fixtures.values.realWebhookForwarding?.owned && d.fixtures.values.realWebhookForwarding?.ready, 'PUBLIC_WEBHOOK_FORWARDER_AUTHORITY_REQUIRED');
     const page = await d.page('real-webhook'), c = await d.checkout(page, 'brewing-class'); await billing(d, c); await d.pay(c); await d.settled(c);
     await expect.poll(async () => {
-      const events = await d.operator.clients.clients.A.webhookEvents.list({ event_type: 'order.paid', resource_type: 'order', resource_id: c.orderId });
-      return events.data.some(e => e.event_type === 'order.paid' && e.resource_type === 'order' && e.resource_id === c.orderId && e.event_origin === 'business_event' && !e.test);
+      const events = await d.operator.clients.clients.A.webhookEvents.list({ event_type: ['order.paid'], resource_type: ['order'], resource_id: c.orderId });
+      return events.data.some(e => e.event_type === 'order.paid' && e.resource_type === 'order' && e.resource_id === c.orderId && !e.test);
     }, { timeout: 60_000 }).toBe(true);
     // The confirmation badge reads the stored delivery signal when the completion document renders.
     await expect.poll(async () => {

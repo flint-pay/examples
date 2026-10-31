@@ -799,7 +799,7 @@ export class CheckoutController {
   }
 
   saveOffered() {
-    return this.state.kind === 'order' && this.state.session.save_payment_method_offered === true && this.needsProcessor();
+    return this.state.kind === 'order' && this.state.session.can_save_payment_method === true && this.needsProcessor();
   }
 
   private initialRestingState() {
@@ -833,9 +833,9 @@ export class CheckoutController {
     return {
       approved_outstanding_money: this.approved,
       approved_collection_kind: logic.collectionKindOf(this.state),
-      ...(giftCards && order.order_revision !== undefined ? { approved_order_revision: String(order.order_revision) } : {}),
+      ...(giftCards && order.version !== undefined ? { approved_order_version: order.version } : {}),
       ...(giftCards && order.gift_card_estimate?.gift_card_money ? { approved_gift_card_money: order.gift_card_estimate.gift_card_money } : {}),
-    } as { approved_outstanding_money: Money | null; approved_collection_kind: string; approved_order_revision?: string; approved_gift_card_money?: Money | null };
+    } as { approved_outstanding_money: Money | null; approved_collection_kind: string; approved_order_version?: string; approved_gift_card_money?: Money | null };
   }
 
   /** `source` is where the credential came from. Only a card typed into the form can be saved. */
@@ -855,7 +855,7 @@ export class CheckoutController {
       // One of them changed what the buyer approved. Ask for a fresh press instead of paying a different amount.
       const now = this.approvalOf();
       if (!sameMoney(now.approved_outstanding_money, approval.approved_outstanding_money) || now.approved_collection_kind !== approval.approved_collection_kind) return 'total_changed';
-      if (now.approved_order_revision !== approval.approved_order_revision || !sameMoney(now.approved_gift_card_money ?? null, approval.approved_gift_card_money ?? null)) return 'gift_changed';
+      if (now.approved_order_version !== approval.approved_order_version || !sameMoney(now.approved_gift_card_money ?? null, approval.approved_gift_card_money ?? null)) return 'gift_changed';
       this.paysSent += 1;
       return this.request('POST', '/pay', body);
     });

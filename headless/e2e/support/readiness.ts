@@ -11,7 +11,8 @@ import { fixturePrerequisites, rows } from '../scenarios/registry.ts';
 export type GiftSdkEvidence={pin:string;installed:string;resolved:string};
 export function giftChallengeSdkReady(evidence:readonly GiftSdkEvidence[]):boolean{
   if(evidence.length!==3)return false;const version=evidence[0]?.pin;
-  if(!version||!/^3\.0\.0-beta\.\d{14}$/.test(version)||version<'3.0.0-beta.20261008013000')return false;
+  const stable=/^(\d+)\.\d+\.\d+$/.exec(version??'');
+  if(!version||!(stable?Number(stable[1])>=3:/^3\.0\.0-beta\.\d{14}$/.test(version)&&version>='3.0.0-beta.20261008013000'))return false;
   return evidence.every(item=>{if(item.pin!==version||item.installed!==version)return false;try{const url=new URL(item.resolved);return url.protocol==='https:'&&url.hostname==='registry.npmjs.org'&&!url.username&&!url.password&&url.pathname.endsWith('.tgz');}catch{return false;}});
 }
 export function giftChallengeReadiness(evidence:readonly GiftSdkEvidence[],attestation:Pick<Fixtures['readiness']['A'],'publicGiftChallenge'|'checkedAt'>):{ready:boolean;code:string}{const sdk=giftChallengeSdkReady(evidence);return {ready:sdk&&attestation.publicGiftChallenge===true&&Number.isFinite(Date.parse(attestation.checkedAt)),code:sdk?'STAGING_GIFT_CHALLENGE_RELEASE_REQUIRED':'PINNED_SDK_PUBLIC_GIFT_CHALLENGE_UNAVAILABLE'};}

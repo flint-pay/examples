@@ -3,7 +3,7 @@ import {SdkError} from '@flintpay/node';
 import type {Auth} from './auth.ts';
 import {IdentityStore,digest,randomReference} from '../identity/index.ts';
 import type {User,Session} from '../identity/index.ts';
-import {LocalError,unknownOutcome} from './errors.ts';
+import {LocalError,condition,unknownOutcome} from './errors.ts';
 type VerificationRequest={user_id:string;sandbox_id:string;sequence:number;idempotency_key:string|null;body:string|null};
 export class IdentityBinding {
   client:Client;auth:Auth;identity:IdentityStore;sandboxId:string;
@@ -49,12 +49,12 @@ export class IdentityBinding {
       if(!customer){
         try{customer=await this.client.customers.create({email:user.email,name:user.name},this.auth.merchant(this.identity.actionKey(`customer-${user.user_id}`)));}
         catch(error){
-          if(!(error&&typeof error==='object'&&'code'in error&&error.code==='CUSTOMER_EMAIL_ALREADY_USED'))throw error;
+          if(condition(error)!=='CUSTOMER_EMAIL_ALREADY_USED')throw error;
           customers=await this.client.customers.list({email:user.email,page_size:2},this.auth.merchant());customer=customers.data[0];
         }
       }
       if(!customer)throw new LocalError('CUSTOMER_VERIFICATION_UNAVAILABLE',503);
-      body={customer_id:customer.customer_id,email:user.email,purpose:'link_guest_purchases',channel:'email'};
+      body={customer_id:customer.customer_id,purpose:'link_guest_purchases',channel:'email'};
     }
     if(this.identity.customerBoundElsewhere(user.user_id,this.sandboxId,body.customer_id))throw new LocalError('CUSTOMER_ALREADY_BOUND',409);
     const request=this.reserveVerification(user,session,body);if(!request)return;
@@ -70,7 +70,7 @@ export class IdentityBinding {
     try{
       // A late retry response must not overwrite a newer issuance's proof.
       if(this.verificationRequest(user)?.sequence===request.sequence){
-        this.identity.setPending(session,{customer_verification_id:verification.customer_verification_id,customer_id:body.customer_id,email:body.email,purpose:'link_guest_purchases',created_at:Date.now()});
+        this.identity.setPending(session,{customer_verification_id:verification.customer_verification_id,customer_id:body.customer_id,email:user.email,purpose:'link_guest_purchases',created_at:Date.now()});
         this.releaseVerification(request);
       }
       this.identity.db.exec('COMMIT');

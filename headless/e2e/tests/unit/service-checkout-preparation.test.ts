@@ -145,8 +145,8 @@ function harness(billingNeeded = true, savingCards = true, verification: Verific
     },
     settled: async (c: Checkout) => { assert.equal((c.page as unknown as Page).current.paid, true); events.push(`settled:${c.ref}`); },
     operator: { clients: { clients: { A: { webhookEvents: { list: async (query: unknown) => {
-      assert.deepEqual(query, { event_type: 'order.paid', resource_type: 'order', resource_id: 'ord_UNIT_1' }); events.push('webhook-read');
-      const event={webhook_event_id:'evt_UNIT_1',event_type:'order.paid',event_origin:'business_event',created_at:new Date().toISOString(),resource_type:'order',resource_id:'ord_UNIT_1',test:false} satisfies WebhookEvent;
+      assert.deepEqual(query, { event_type: ['order.paid'], resource_type: ['order'], resource_id: 'ord_UNIT_1' }); events.push('webhook-read');
+      const event={webhook_event_id:'evt_UNIT_1',event_type:'order.paid',api_version:'2026-09-07',created_at:new Date().toISOString(),resource_type:'order',resource_id:'ord_UNIT_1',test:false} satisfies WebhookEvent;
       return { data: events.filter(event => event === 'webhook-read').length === 1 ? [{...event,resource_type:'invoice'}, {...event,resource_id:'ord_UNIT_OTHER'}, {...event,event_origin:'test_api',test:true}] : [event] };
     } } } } } },
   };

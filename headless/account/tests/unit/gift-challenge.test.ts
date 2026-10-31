@@ -8,26 +8,28 @@ import {readConfig} from '../../src/config.ts';
 import {securityHeaders} from '../../src/security/headers.ts';
 import {redact} from '../../src/security/log.ts';
 const origin='https://checkout.staging.withflintpay.com',url=`${origin}/gift-card-challenge/gccf_fixture.token`;
-const error=(details:unknown,status=400,code='GIFT_CARD_CHALLENGE_REQUIRED')=>new SdkError('validation','fixture refusal','response',false,{status,headers:{},attempts:1,durationMs:1},code,details);
-const details=(reason='proof_required',urls=[url])=>({reason,remediation:{next_actions:urls.map(url=>({action_type:'complete_gift_card_challenge',url}))}});
+const error=(details:Record<string,unknown>,status=400,code='GIFT_CARD_CHALLENGE_REQUIRED')=>new SdkError('validation','fixture refusal','response',false,{status,headers:{},attempts:1,durationMs:1},code,details as never);
+const errorObject=(code='GIFT_CARD_CHALLENGE_REQUIRED',extra:object={})=>({type:'conflict_error',code,message:'fixture refusal',doc_url:`https://developers.withflintpay.com/docs/errors#${code.toLowerCase()}`,error_source:'integration',remediation:null,request_id:`req_${'0'.repeat(26)}`,...extra});
+const reasoned=(reason:string,remediation:object|null=null)=>errorObject('GIFT_CARD_CHALLENGE_REQUIRED',{details:[{code:'GIFT_CARD_CHALLENGE_REQUIRED',message:'fixture refusal',reason,...(remediation?{remediation}:{})}]});
+const details=(reason='proof_required',urls=[url],actionType='complete_gift_card_challenge')=>reasoned(reason,{retry:'none',next_actions:urls.map(url=>({action_type:actionType,url}))});
 test('U1 exact trusted URLs reject ambiguous serialization, hosts, paths and authority',()=>{
   assert.equal(trustedChallengeUrl(url,origin),url);assert.equal(trustedChallengeUrl('https://checkout.withflintpay.com/gift-card-challenge/token','https://checkout.withflintpay.com'),'https://checkout.withflintpay.com/gift-card-challenge/token');
   for(const raw of [null,42,url.replace('https:','http:'),url.replace('checkout.staging','CHECKOUT.STAGING'),url.replace('checkout.staging.withflintpay.com','checkout.staging.withflintpay.com.evil.example'),url.replace('checkout.staging','api.staging'),url.replace('staging.',''),url.replace('https://','https://user@'),url.replace('.com/','.com:443/'),url+'?x=1',url+'#x',origin+'/gift-card-challenge',origin+'/gift-card-challenge/',origin+'/prefix/gift-card-challenge/token',url+'/extra',origin+'/gift-card-challenge/%74oken',origin+'/gift-card-challenge/'+ 'x'.repeat(257),'x'.repeat(2049)])assert.equal(trustedChallengeUrl(raw,origin),null,String(raw));
 });
 test('U2 challenge remediation is read directly from SdkError.details and fails closed',()=>{
   for(const reason of ['proof_required','proof_rejected'])assert.deepEqual(challengeFromError(error(details(reason)),origin),{kind:'challenge',reason,url});
-  assert.deepEqual(challengeFromError(error({reason:'page_origin_required'}),origin),{kind:'origin_required'});
-  for(const value of [{},{reason:'future_reason'},{error:details()}])assert.deepEqual(challengeFromError(error(value),origin),{kind:'unavailable',cause:'reason_unknown'});
-  for(const value of [details('proof_required',[]),details('proof_required',[url,url]),{reason:'proof_required',remediation:{next_actions:[{action_type:'other',url}]}}])assert.deepEqual(challengeFromError(error(value),origin),{kind:'unavailable',cause:'next_action_missing'});
+  assert.deepEqual(challengeFromError(error(reasoned('page_origin_required')),origin),{kind:'origin_required'});
+  for(const value of [errorObject(),reasoned('future_reason'),{error:details()}])assert.deepEqual(challengeFromError(error(value),origin),{kind:'unavailable',cause:'reason_unknown'});
+  for(const value of [details('proof_required',[]),details('proof_required',[url,url]),details('proof_required',[url],'get_order')])assert.deepEqual(challengeFromError(error(value),origin),{kind:'unavailable',cause:'next_action_missing'});
   assert.deepEqual(challengeFromError(error(details('proof_required',['https://evil.example/x'])),origin),{kind:'unavailable',cause:'url_untrusted'});
   assert.deepEqual(challengeFromError(error(details(),503),origin),{kind:'unavailable',cause:'reason_unknown'});
   assert.equal(challengeFromError(new Error('local'),origin),null);assert.equal(challengeFromError(error(details(),400,'OTHER'),origin),null);
 });
 test('U3 session confirmation binds the current open session and exact URL',async()=>{
-  const outcome={kind:'challenge' as const,reason:'proof_required' as const,url},session={checkout_session_id:'session_fixture',status:'open',recovery_mode:false,gift_card_challenge:{url}};
+  const outcome={kind:'challenge' as const,reason:'proof_required' as const,url},session={checkout_session_id:'session_fixture',status:'open',is_in_recovery:false,gift_card_challenge:{url}};
   assert.deepEqual(await confirmWithSession(outcome,async()=>session as unknown as CheckoutSession,'session_fixture'),outcome);
-  for(const patch of [{checkout_session_id:'different'},{status:'closed'},{recovery_mode:true},{gift_card_challenge:undefined},{gift_card_challenge:{url:url+'different'}}])assert.deepEqual(await confirmWithSession(outcome,async()=>({...session,...patch}) as unknown as CheckoutSession,'session_fixture'),{kind:'unavailable',cause:'session_mismatch'});
-  assert.deepEqual(await confirmWithSession(outcome,async()=>{throw error({},409,'CHECKOUT_SESSION_NOT_OPEN');},'session_fixture'),{kind:'unavailable',cause:'session_not_open'});
+  for(const patch of [{checkout_session_id:'different'},{status:'closed'},{is_in_recovery:true},{gift_card_challenge:undefined},{gift_card_challenge:{url:url+'different'}}])assert.deepEqual(await confirmWithSession(outcome,async()=>({...session,...patch}) as unknown as CheckoutSession,'session_fixture'),{kind:'unavailable',cause:'session_mismatch'});
+  assert.deepEqual(await confirmWithSession(outcome,async()=>{throw error(errorObject('INVALID_CREDENTIAL'),401,'INVALID_CREDENTIAL');},'session_fixture'),{kind:'unavailable',cause:'session_not_open'});
   await assert.rejects(()=>confirmWithSession(outcome,async()=>{throw new Error('unknown read');},'session_fixture'));
 });
 test('U4 pinned session tag and fresh opaque challenge references',()=>{

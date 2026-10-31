@@ -5,7 +5,7 @@ import {bodyLimit} from 'hono/body-limit';
 import {serveStatic} from '@hono/node-server/serve-static';
 import {fileURLToPath} from 'node:url';
 import {randomUUID} from 'node:crypto';
-import type {Client,RequestOptions,BuyerAction,PostalAddressInput,EmailChangeRequest,ReturnLineItemRequestInput} from '@flintpay/node';
+import type {Client,RequestOptions,BuyerInvoiceCheckoutSessionResult,BuyerCheckoutSessionWithSecret,BuyerAction,AddressRequestInput,EmailChangeRequest,ReturnLineItemRequestInput} from '@flintpay/node';
 import {renderPage} from './views/index.ts';
 import type {PageId,RenderContext} from './views/types.ts';
 type Renderer=(pageId:PageId,context:RenderContext)=>string|Promise<string>;
@@ -19,7 +19,7 @@ import type {CheckoutRecord,ActionRecord} from './store/db.ts';
 import type {ReadOptions} from './flint/auth.ts';
 import {createAuth} from './flint/auth.ts';
 import type {Preflight} from './flint/preflight.ts';
-import {LocalError,appError,errorStatus,unknownOutcome,giftPayError} from './flint/errors.ts';
+import {LocalError,appError,errorStatus,unknownOutcome,giftPayError,checkoutSessionUnusable} from './flint/errors.ts';
 import {project,safeMethod,safeNested} from './flint/projection.ts';
 import {securityHeaders} from './security/headers.ts';
 import {RateLimiter} from './security/rate-limit.ts';
@@ -55,7 +55,7 @@ export function createApp(deps:Dependencies){
   const nonce=(c:C)=>{const value=c.req.header('X-Action-ID')??c.get('body')?._action_id;return value===undefined?undefined:id(value);};
   const user=(c:C)=>{const value=c.get('user');if(!identity.isBound(value,preflight.sandboxId))throw new LocalError('SESSION_ENDED',401);return value;};
   const me=<T>(c:C,fn:(opts:ReadOptions<'customer'>)=>Promise<T>)=>sessions.call(user(c),opts=>fn({...opts,idempotencyKey:undefined}));
-  const mutate=<T>(c:C,action:string,resource:string,body:unknown,fn:(opts:RequestOptions<'customer'>)=>Promise<T>)=>store.mutate(`${preflight.sandboxId}:${user(c).user_id}:${resource}`,action,body,key=>sessions.call(user(c),fn,key),nonce(c));
+  const mutate=<T>(c:C,action:string,resource:string,body:unknown,fn:(opts:RequestOptions<'customer'>&{idempotencyKey:string})=>Promise<T>)=>store.mutate(`${preflight.sandboxId}:${user(c).user_id}:${resource}`,action,body,key=>sessions.call(user(c),opts=>fn({...opts,idempotencyKey:key}),key),nonce(c));
   const isJson=(c:C)=>c.req.header('Content-Type')?.includes('application/json')||c.req.header('Accept')?.includes('application/json');
   const flash=(c:C,key:string,params?:Record<string,string|number>)=>identity.db.prepare('UPDATE sessions SET flash=? WHERE session_hash=?').run(JSON.stringify({notices:[params?{key,params}:key]}),c.get('session').session_hash);
   const finish=(c:C,path:string,data?:unknown)=>isJson(c)?c.json(data??{ok:true}):c.redirect(path,303);
@@ -131,7 +131,7 @@ export function createApp(deps:Dependencies){
   app.onError(async(error,c)=>{
     const safe=/\/pay\/gift-card(?:\/|$)/.test(c.req.path)?giftPayError(error):appError(error),status=errorStatus(error);
     if(/\/pay\/gift-card(?:\/challenge)?$/.test(c.req.path)&&unknownOutcome(error))safe.message_key='gift_challenge_unconfirmed';
-    const giftInvalid=c.req.method==='POST'&&c.req.path==='/gift-cards'&&status===404&&safe.code==='GIFT_CARD_NOT_FOUND';
+    const giftInvalid=c.req.method==='POST'&&c.req.path==='/gift-cards'&&status===404&&(safe.code==='GIFT_CARD_NOT_FOUND'||safe.code==='RESOURCE_NOT_FOUND');
     if(giftInvalid)safe.message_key='gift_card_invalid';
     if(safe.code==='INVALID_PAGE_ORIGIN')logLaunchInvalid('invalid_page_origin',safe.request_id);
     const errorField=safe.code==='EMAIL_ALREADY_USED'||safe.code==='INVALID_EMAIL'?(c.req.path.startsWith('/profile/email')?'new_email':'email'):safe.code==='PASSWORD_TOO_SHORT'?(c.req.path==='/sign-up'?'password':'new_password'):safe.code==='CURRENT_PASSWORD_INCORRECT'?'current_password':undefined;
@@ -190,11 +190,11 @@ export function createApp(deps:Dependencies){
       customerId=candidates.data[0]?.customer_id;
       if(!customerId){
         try{customerId=(await client.customers.create({email:current.email,name:current.name,external_reference_id:current.user_id},auth.merchant(identity.actionKey(`customer:${preflight.sandboxId}:${current.user_id}`)))).customer_id;}
-        catch(error){if(!(error&&typeof error==='object'&&'code'in error&&error.code==='CUSTOMER_EMAIL_ALREADY_USED'))throw error;customerId=(await client.customers.list({email:current.email},auth.merchant())).data[0]?.customer_id;}
+        catch(error){if(!(error&&typeof error==='object'&&'code'in error&&error.code==='ALREADY_EXISTS'))throw error;customerId=(await client.customers.list({email:current.email},auth.merchant())).data[0]?.customer_id;}
       }
     }
     if(!customerId||identity.customerBoundElsewhere(current.user_id,preflight.sandboxId,customerId))throw new LocalError('EMAIL_ALREADY_CONNECTED',409);
-    const request=await store.mutate(`${preflight.sandboxId}:${current.user_id}:verification`,'verify',{customer_id:customerId,email:current.email,previous:previous?.customer_verification_id??null},key=>client.customerVerifications.create({customer_id:customerId!,email:current.email,purpose:'link_guest_purchases',channel:'email'},auth.merchant(key)),nonce(c));
+    const request=await store.mutate(`${preflight.sandboxId}:${current.user_id}:verification`,'verify',{customer_id:customerId,email:current.email,previous:previous?.customer_verification_id??null},key=>client.customerVerifications.create({customer_id:customerId!,purpose:'link_guest_purchases',channel:'email'},auth.merchant(key)),nonce(c));
     identity.setPending(c.get('session'),{customer_verification_id:request.customer_verification_id,customer_id:request.customer_id,email:request.email,purpose:request.purpose,created_at:Date.now()});
     return finish(c,link?'/link-purchases':'/verify-email?next='+encodeURIComponent(next),{verification:{status:'code_sent'}});
   };
@@ -226,7 +226,7 @@ export function createApp(deps:Dependencies){
   const orderData=async(c:C)=>{
     const orderId=id(c.req.param('orderId')),order=await ownedOrder(c,orderId);
     const [payments,refunds,fulfillments,shipments,packages,events]=await Promise.all([
-      loaded(async()=>items('payment',await me(c,opts=>client.me.listPayments({order_id:orderId,page_size:100},opts)))),
+      loaded(async()=>items('payment',await me(c,opts=>client.me.listPaymentIntents({order_id:orderId,page_size:100},opts)))),
       loaded(async()=>items('refund',await me(c,opts=>client.me.listRefunds({order_id:orderId,page_size:100},opts)))),
       loaded(async()=>items('fulfillment',await me(c,opts=>client.me.listFulfillments({order_id:orderId,page_size:100},opts)))),
       loaded(async()=>items('shipment',await me(c,opts=>client.me.listShipments({order_id:orderId,page_size:100},opts)))),
@@ -261,10 +261,10 @@ export function createApp(deps:Dependencies){
     const lines:ReturnLineItemRequestInput[]=(raw as unknown[]).map(value=>{
       const row=object(value),lineId=id(row.order_line_item_id),fulfillmentId=id(row.fulfillment_id),quantity=required(row.requested_quantity,20),reason=id(row.return_reason_id),key=`${lineId}:${fulfillmentId}`;
       const eligible=data.eligibility.line_items.find(line=>line.order_line_item_id===lineId&&line.fulfillment_id===fulfillmentId);
-      if(seen.has(key)||!eligible||!eligible.is_self_service_enabled||eligible.eligibility.status==='ineligible'||!/^\d+$/.test(quantity)||BigInt(quantity)<1n||BigInt(quantity)>BigInt(eligible.eligibility.eligible_quantity)||!data.reasons.some(r=>r.return_reason_id===reason))throw new LocalError('RETURN_SELECTION_INVALID');
+      if(seen.has(key)||!eligible||!eligible.can_buyer_request||eligible.eligibility.status==='ineligible'||!/^\d+$/.test(quantity)||BigInt(quantity)<1n||BigInt(quantity)>BigInt(eligible.eligibility.eligible_quantity)||!data.reasons.some(r=>r.return_reason_id===reason))throw new LocalError('RETURN_SELECTION_INVALID');
       const buyerNote=row.buyer_note?text(row.buyer_note,500):undefined;
       if(data.reasons.find(r=>r.return_reason_id===reason)?.is_note_required&&!buyerNote)throw new LocalError('RETURN_REASON_NOTE_REQUIRED');
-      seen.add(key);return {order_line_item_id:lineId,fulfillment_id:fulfillmentId,requested_quantity:quantity,return_reason_id:reason,buyer_note:buyerNote};
+      seen.add(key);return {order_line_item_id:lineId,fulfillment_id:fulfillmentId,requested_quantity:quantity as `${bigint}`,return_reason_id:reason,buyer_note:buyerNote};
     });
     if(!lines.length)throw new LocalError('RETURN_SELECTION_REQUIRED');
     const created=await mutate(c,'create-return',`order:${orderId}`,{order_id:orderId,line_items:lines},opts=>client.me.createReturn({order_id:orderId,line_items:lines},opts));flash(c,'return_requested');return finish(c,`/returns/${created.return_id}`,{return:project('return',created)});
@@ -314,29 +314,31 @@ export function createApp(deps:Dependencies){
           const previous=store.checkout(current.user_id,preflight.sandboxId,type,resourceId);
           if(previous){
             try{const state=await engine.status(previous.checkout_ref);if(state.unknown||attemptOpen(state.attempt)||engine.unresolvedGift(previous))return previous;}
-            catch(error){if(!['INVALID_CHECKOUT_SESSION','CHECKOUT_SESSION_NOT_OPEN','CHECKOUT_SESSION_EXPIRED'].includes(appError(error).code))throw error;if(engine.unresolved(previous))throw new LocalError('UNKNOWN_PAYMENT_OUTCOME',409);}
+            catch(error){if(!checkoutSessionUnusable(error))throw error;if(engine.unresolved(previous))throw new LocalError('UNKNOWN_PAYMENT_OUTCOME',409);}
           }
           if(!canPay)return previous!;
           const resolutionId=type==='return'?('completion_blockers'in resource?resource.completion_blockers.find(blocker=>(blocker.code==='resolution_requires_action'||blocker.code==='resolution_pending')&&blocker.return_resolution_id)?.return_resolution_id:undefined):undefined;
           if(type==='return'&&!resolutionId)throw new LocalError('RETURN_PAYMENT_NOT_AVAILABLE',409);
-          const generation=(previous?.generation??0)+1,returnUrl=`${config.appOrigin}/${root}/${resourceId}/pay/return`,freshBody={surface:'embedded' as const,page_origin:config.appOrigin,redirects:{success_redirect_url:returnUrl}};
+          const generation=(previous?.generation??0)+1,returnUrl=`${config.appOrigin}/${root}/${resourceId}/pay/return`,freshBody={surface:'embedded' as const,page_origin:config.appOrigin,payment_return_url:returnUrl};
           const launchResource=`${preflight.sandboxId}:${current.user_id}:launch:${type}:${resourceId}`,launchNonce=`generation:${generation}`,actionId=createHash('sha256').update(`${launchResource}:launch:${launchNonce}`).digest('hex');
           const prior=store.get<ActionRecord>('SELECT * FROM actions WHERE action_id=?',actionId);
           const replay=prior&&(prior.status==='pending'||prior.status==='unknown')&&prior.body;
           const journalBody=replay?JSON.parse(prior.body!) as typeof freshBody&{generation:number;resolutionId?:string}:{...freshBody,generation,resolutionId};
           const {generation:storedGeneration,resolutionId:storedResolutionId,...body}=journalBody;
           const result=await store.mutate(launchResource,'launch',journalBody,async key=>{
-            const launched=await sessions.call(current,opts=>type==='invoice'?client.me.createInvoiceCheckoutSession(resourceId,body,opts):client.me.createReturnResolutionCheckoutSession(storedResolutionId!,body,opts),key);
-            return {...launched,checkout_session:{...launched.checkout_session,gift_card_challenge:undefined}};
+            const launched=await sessions.call<BuyerInvoiceCheckoutSessionResult|BuyerCheckoutSessionWithSecret>(current,opts=>type==='invoice'?client.me.createInvoiceCheckoutSession(resourceId,body,opts):client.me.createReturnResolutionCheckoutSession(storedResolutionId!,body,opts),key);
+            // An invoice launch wraps its session; a return resolution launch is the session itself.
+            const session='checkout_session'in launched?launched.checkout_session:launched;
+            return {checkout_session:{...session,gift_card_challenge:undefined},checkout_auth_token:launched.checkout_auth_token};
           },launchNonce);
-          if(!result.checkout_session.order_id||result.checkout_session.surface!=='embedded')throw new LocalError('CHECKOUT_LAUNCH_INVALID',503);
+          if(!result.checkout_session.order_id||result.checkout_session.surface!=='embedded'||!result.checkout_auth_token)throw new LocalError('CHECKOUT_LAUNCH_INVALID',503);
           if(!replay&&body.page_origin&&result.checkout_session.page_origin!==body.page_origin){logLaunchInvalid('page_origin_mismatch');throw new LocalError('CHECKOUT_LAUNCH_INVALID',503);}
           if(previous&&previous.checkout_session_id!==result.checkout_session.checkout_session_id)store.closeGiftChallenges(previous.checkout_ref);
           const ref=previous?.checkout_ref??randomUUID(),now=Date.now();
-          store.run(`INSERT INTO payment_checkouts(checkout_ref,user_id,sandbox_id,resource_type,resource_id,resolution_id,order_id,checkout_session_id,checkout_auth_token,generation,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,sandbox_id,resource_type,resource_id) DO UPDATE SET last_attempt_id=CASE WHEN payment_checkouts.order_id=excluded.order_id THEN payment_checkouts.last_attempt_id ELSE NULL END,order_id=excluded.order_id,checkout_session_id=excluded.checkout_session_id,checkout_auth_token=excluded.checkout_auth_token,resolution_id=excluded.resolution_id,generation=excluded.generation,updated_at=excluded.updated_at`,ref,current.user_id,preflight.sandboxId,type,resourceId,storedResolutionId??null,result.checkout_session.order_id,result.checkout_session.checkout_session_id,result.checkout_access.checkout_auth_token,storedGeneration,now,now);
+          store.run(`INSERT INTO payment_checkouts(checkout_ref,user_id,sandbox_id,resource_type,resource_id,resolution_id,order_id,checkout_session_id,checkout_auth_token,generation,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,sandbox_id,resource_type,resource_id) DO UPDATE SET last_attempt_id=CASE WHEN payment_checkouts.order_id=excluded.order_id THEN payment_checkouts.last_attempt_id ELSE NULL END,order_id=excluded.order_id,checkout_session_id=excluded.checkout_session_id,checkout_auth_token=excluded.checkout_auth_token,resolution_id=excluded.resolution_id,generation=excluded.generation,updated_at=excluded.updated_at`,ref,current.user_id,preflight.sandboxId,type,resourceId,storedResolutionId??null,result.checkout_session.order_id,result.checkout_session.checkout_session_id,result.checkout_auth_token,storedGeneration,now,now);
           return store.checkout(current.user_id,preflight.sandboxId,type,resourceId)!;
         });
-      }catch(error){const code=appError(error).code;if(code==='CHECKOUT_SURFACE_CHANGE_NOT_ALLOWED')launch='surface_conflict';else if(code==='ORDER_COLLECTION_IN_PROGRESS')launch='collection_in_progress';else throw error;}
+      }catch(error){const code=appError(error).code;if(code==='ACTION_NOT_ALLOWED')launch='surface_conflict';else if(code==='RESOURCE_IN_USE'||code==='PAYMENT_ATTEMPT_ACTIVE'||code==='OPERATION_IN_PROGRESS')launch='collection_in_progress';else throw error;}
     }
     let state=null;
     if(record&&launch==='ready'){
@@ -360,8 +362,8 @@ export function createApp(deps:Dependencies){
         if(!/^\d+$/.test(amount)||!/^[A-Z]{3}$/.test(currency))throw new LocalError('INVALID_INPUT');
         let credential:PayInput['credential'];if(body.credential){const value=object(body.credential),kind=value.kind;if(kind!=='confirmation_token'&&kind!=='payment_method_token'&&kind!=='saved_payment_method')throw new LocalError('INVALID_INPUT');credential={kind,value:required(value.value,2048)};}
         const collection=body.approved_collection_kind;if(collection!=='processor'&&collection!=='settlement')throw new LocalError('INVALID_INPUT');
-        let giftMoney:PayInput['approved_gift_card_money'];if(body.approved_gift_card_money){const value=object(body.approved_gift_card_money),giftAmount=required(value.amount,30),giftCurrency=required(value.currency,3);if(!/^\d+$/.test(giftAmount)||!/^[A-Z]{3}$/.test(giftCurrency))throw new LocalError('INVALID_INPUT');giftMoney={amount:giftAmount,currency:giftCurrency};}
-        payInput={approved_outstanding_money:{amount,currency},approved_collection_kind:collection,approved_order_revision:body.approved_order_revision===undefined?undefined:required(body.approved_order_revision,200),approved_gift_card_money:giftMoney,credential};
+        let giftMoney:PayInput['approved_gift_card_money'];if(body.approved_gift_card_money){const value=object(body.approved_gift_card_money),giftAmount=required(value.amount,30),giftCurrency=required(value.currency,3);if(!/^\d+$/.test(giftAmount)||!/^[A-Z]{3}$/.test(giftCurrency))throw new LocalError('INVALID_INPUT');giftMoney={amount:giftAmount as `${bigint}`,currency:giftCurrency};}
+        payInput={approved_outstanding_money:{amount:amount as `${bigint}`,currency},approved_collection_kind:collection,approved_order_revision:body.approved_order_revision===undefined?undefined:required(body.approved_order_revision,200),approved_gift_card_money:giftMoney,credential};
       }
       const result=kind==='submit'?await engine.start(record.checkout_ref,payInput!,nonce(c)):kind==='resume'?await engine.resume(record.checkout_ref,nonce(c)):kind==='cancel'?await engine.cancel(record.checkout_ref):await engine.status(record.checkout_ref);
       return c.json(await engine.view(record,result));
@@ -424,11 +426,11 @@ export function createApp(deps:Dependencies){
       if(cycles!==undefined&&(!Number.isSafeInteger(cycles)||cycles<1))throw new LocalError('PAUSE_DURATION_REQUIRED');
       result=await mutate(c,action,`subscription:${subscriptionId}`,{pause_duration_cycles:cycles},opts=>client.me.pauseSubscription(subscriptionId,{pause_duration_cycles:cycles},opts));
     }else if(action==='resume')result=await mutate(c,action,`subscription:${subscriptionId}`,{},opts=>client.me.resumeSubscription(subscriptionId,undefined,opts));
-    else if(action==='reactivate')result=await mutate(c,action,`subscription:${subscriptionId}`,{},opts=>client.me.reactivateSubscription(subscriptionId,undefined,opts));
+    else if(action==='reactivate')result=await mutate(c,action,`subscription:${subscriptionId}`,{},opts=>client.me.updateSubscription(subscriptionId,{cancel_at_period_end:false},opts));
     else if(action==='payment-method'){
       const methodId=id(body.payment_method_id),method=await me(c,opts=>client.me.getPaymentMethod(methodId,undefined,opts));
       if(method.status!=='active'||method.type!=='card'||method.usage!=='off_session')throw new LocalError('PAYMENT_METHOD_NOT_USABLE');
-      result=await mutate(c,action,`subscription:${subscriptionId}`,{payment_method_id:methodId},opts=>client.me.changeSubscriptionPaymentMethod(subscriptionId,{payment_method_id:methodId},opts));
+      result=await mutate(c,action,`subscription:${subscriptionId}`,{payment_method_id:methodId},opts=>client.me.updateSubscription(subscriptionId,{payment_method_id:methodId},opts));
     }else{
       if(!limiter.take(`retry:${currentKey(c)}`,10,60000))throw new LocalError('RATE_LIMITED',429);
       const retry=await mutate(c,action,`subscription:${subscriptionId}`,{},opts=>client.me.createSubscriptionPaymentRetry(subscriptionId,{},opts));
@@ -462,8 +464,8 @@ export function createApp(deps:Dependencies){
     const sequence=store.get<{n:number}>('SELECT COUNT(*) AS n FROM actions WHERE resource=?',resource)!.n;
     const result=await store.mutate(resource,'card-setup',{type:'card',generation:previous?.status==='pending'?sequence-1:sequence},key=>sessions.call(user(c),opts=>client.me.savePaymentMethod({type:'card'},opts),key),nonce(c));
     if(!result.client_setup?.stripe?.setup_intent?.client_secret)throw new LocalError('CARD_SETUP_UNAVAILABLE',503);
-    store.run('INSERT OR REPLACE INTO pending_cards VALUES(?,?,?,?,?)',user(c).user_id,preflight.sandboxId,result.payment_method.payment_method_id,returnPath(c.get('body').return_to,'/payment-methods'),Date.now());
-    return c.json({payment_method:{payment_method_id:result.payment_method.payment_method_id,status:result.payment_method.status},client_setup:{stripe:result.client_setup.stripe}});
+    store.run('INSERT OR REPLACE INTO pending_cards VALUES(?,?,?,?,?)',user(c).user_id,preflight.sandboxId,result.payment_method_id,returnPath(c.get('body').return_to,'/payment-methods'),Date.now());
+    return c.json({payment_method:{payment_method_id:result.payment_method_id,status:result.status},client_setup:{stripe:result.client_setup.stripe}});
   });
   const cardStatus=async(c:C)=>{
     const methodId=id(c.req.param('methodId')??c.get('body').payment_method_id),method=await me(c,opts=>client.me.getPaymentMethod(methodId,undefined,opts));
@@ -478,7 +480,8 @@ export function createApp(deps:Dependencies){
     const methodId=id(c.req.param('methodId'));c.set('errorReturn','/payment-methods');
     const method=await me(c,opts=>client.me.getPaymentMethod(methodId,undefined,opts));
     if(action==='default'&&(method.status!=='active'||method.usage!=='off_session'))throw new LocalError('PAYMENT_METHOD_NOT_USABLE');
-    const result=action==='default'?await mutate(c,action,`method:${methodId}`,{},opts=>client.me.setDefaultPaymentMethod(methodId,undefined,opts)):await mutate(c,action,`method:${methodId}`,{},opts=>client.me.removePaymentMethod(methodId,undefined,opts));
+    // The default is a customer field now; the card itself is unchanged by it.
+    const result=action==='default'?(await mutate(c,action,`method:${methodId}`,{},opts=>client.me.update({default_payment_method_id:methodId},opts)),method):await mutate(c,action,`method:${methodId}`,{},opts=>client.me.removePaymentMethod(methodId,undefined,opts));
     return finish(c,'/payment-methods',{payment_method:project('method',result)});
   };
   app.post('/payment-methods/:methodId/default',c=>cardAction(c,'default'));app.post('/payment-methods/:methodId/delete',c=>cardAction(c,'remove'));app.post('/payment-methods/:methodId/remove',c=>cardAction(c,'remove'));
@@ -551,7 +554,7 @@ export function createApp(deps:Dependencies){
   app.get('/addresses/:addressId/edit',async c=>page(c,'ac-address-form',{mode:'edit',address:project('address',await me(c,opts=>client.me.getAddress(id(c.req.param('addressId')),undefined,opts)))}));
   const addressInput=(body:Record<string,unknown>)=>{
     const a=body.address?object(body.address):body;
-    const address:PostalAddressInput={line1:required(a.line1),line2:a.line2?text(a.line2):undefined,city:required(a.city),state:required(a.state),postal_code:required(a.postal_code,30),country:required(a.country,2).toUpperCase()};
+    const address:AddressRequestInput={line1:required(a.line1),line2:a.line2?text(a.line2):undefined,city:required(a.city),state:required(a.state),postal_code:required(a.postal_code,30),country:required(a.country,2).toUpperCase()};
     if(!/^[A-Z]{2}$/.test(address.country))throw new LocalError('INVALID_INPUT');
     return {address,recipient_name:required(body.recipient_name),label:body.label?text(body.label):undefined,phone:body.phone?text(body.phone,40):undefined};
   };
@@ -564,13 +567,13 @@ export function createApp(deps:Dependencies){
     const addressId=id(c.req.param('addressId'));c.set('errorReturn',`/addresses/${addressId}/edit`);await me(c,opts=>client.me.getAddress(addressId,undefined,opts));const request=addressInput(c.get('body'));
     let address=await mutate(c,'address-update',`address:${addressId}`,request,opts=>client.me.updateAddress(addressId,request,opts));
     const shipping=bool(c.get('body').is_default_shipping),billing=bool(c.get('body').is_default_billing);
-    if(shipping||billing){const defaultFor=shipping&&billing?'both' as const:shipping?'shipping' as const:'billing' as const;address=await mutate(c,'address-default',`address:${addressId}`,{default_for:defaultFor},opts=>client.me.setDefaultAddress(addressId,{default_for:defaultFor},opts));}
+    if(shipping||billing){const defaults={...(shipping?{is_default_shipping:true}:{}),...(billing?{is_default_billing:true}:{})};address=await mutate(c,'address-default',`address:${addressId}`,{default_for:shipping&&billing?'both':shipping?'shipping':'billing'},opts=>client.me.updateAddress(addressId,defaults,opts));}
     flash(c,'address_saved');return finish(c,'/addresses',{address:project('address',address)});
   });
   app.post('/addresses/:addressId/default',async c=>{
     c.set('errorReturn','/addresses');const addressId=id(c.req.param('addressId')),defaultFor=c.get('body').default_for??c.get('body').purpose??c.get('body').kind;
     if(defaultFor!=='shipping'&&defaultFor!=='billing'&&defaultFor!=='both')throw new LocalError('INVALID_INPUT');
-    await me(c,opts=>client.me.getAddress(addressId,undefined,opts));const address=await mutate(c,'address-default',`address:${addressId}`,{default_for:defaultFor},opts=>client.me.setDefaultAddress(addressId,{default_for:defaultFor},opts));return finish(c,'/addresses',{address:project('address',address)});
+    await me(c,opts=>client.me.getAddress(addressId,undefined,opts));const defaults={...(defaultFor!=='billing'?{is_default_shipping:true}:{}),...(defaultFor!=='shipping'?{is_default_billing:true}:{})},address=await mutate(c,'address-default',`address:${addressId}`,{default_for:defaultFor},opts=>client.me.updateAddress(addressId,defaults,opts));return finish(c,'/addresses',{address:project('address',address)});
   });
   app.post('/addresses/:addressId/delete',async c=>{
     c.set('errorReturn','/addresses');const addressId=id(c.req.param('addressId'));await me(c,opts=>client.me.getAddress(addressId,undefined,opts));await mutate(c,'address-delete',`address:${addressId}`,{},opts=>client.me.deleteAddress(addressId,undefined,opts));return finish(c,'/addresses');

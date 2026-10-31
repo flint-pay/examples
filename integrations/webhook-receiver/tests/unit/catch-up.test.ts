@@ -15,7 +15,7 @@ const listed = (id: string): WebhookEvent => ({
   webhook_event_id: id,
   event_type: 'order.paid',
   created_at: '2026-10-15T12:00:00Z',
-  event_origin: 'business_event',
+  api_version: '2026-09-07',
   test: false,
   resource_type: 'order',
 }) as WebhookEvent;
@@ -30,7 +30,7 @@ function eventsClient(pages: WebhookEvent[][], payloads: Record<string, unknown>
         listCalls.push(params);
         for (const data of pages) yield { data };
       },
-      get: async (id: string) => (reads.push(id), { ...listed(id), payload: payloads[id] }),
+      get: async (id: string) => (reads.push(id), { ...listed(id), ...(payloads[id] as object ?? {}) }),
     },
   } as unknown as Client;
   return { client, listCalls, reads };
@@ -48,7 +48,7 @@ test('catch-up records missed events from their stored payloads and skips events
     const result = await catchUp({ client, auth, inbox, endpointId: 'we_example', lookbackHours: 72 }, now);
 
     assert.deepEqual(result, { listed: 3, recorded: 1, unavailable: 1, since: '2026-10-12T13:00:00.000Z' });
-    assert.deepEqual(listCalls, [{ page_size: 100, created_after: '2026-10-12T13:00:00.000Z', event_type: 'order.paid', webhook_endpoint_id: 'we_example' }]);
+    assert.deepEqual(listCalls, [{ page_size: 100, created_after: '2026-10-12T13:00:00.000Z', event_type: ['order.paid'], webhook_endpoint_id: 'we_example' }]);
     assert.deepEqual(reads, ['whev_example_missed', 'whev_example_hidden'], 'only events missing here are read by ID');
     assert.equal(inbox.event('whev_example_missed')?.source, 'catch_up');
     assert.equal(inbox.event('whev_example_missed')?.status, 'pending');

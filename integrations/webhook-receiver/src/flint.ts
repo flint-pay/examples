@@ -36,7 +36,7 @@ export type Auth = ReturnType<typeof createAuth>;
 
 /** Confirms the key reaches a test sandbox, and the one in FLINT_SANDBOX_ID when it is set. */
 export async function preflight(client: Client, auth: Auth, sandboxGuard?: string): Promise<{ sandboxId: string }> {
-  const response = await client.capabilities.listWithResponse({ capability: 'accept_card_payments' }, auth.merchant());
+  const response = await client.merchants.getWithResponse(undefined, auth.merchant());
   const headers = response.meta.headers;
   if (headers['flint-mode'] === 'live') throw new Error('Live API responses are refused');
   const sandboxId = headers['flint-sandbox-id'];

@@ -20,13 +20,15 @@ export async function POST(request: Request) {
   const eventId = request.headers.get('webhook-id');
   if (!eventId || typeof event.event_type !== 'string') return Response.json({ error: 'invalid_event' }, { status: 400 });
   const type = event.event_type;
+  // Current events (payload_version 2) carry the resource in data.object; an event queued before that keeps its flat data.
   const data = record(event.data);
-  const objectId = data[`${type.split('.')[0]}_id`];
+  const resource = event.payload_version === 1 ? data : record(data.object);
+  const objectId = resource[`${type.split('.')[0]}_id`];
   store.transaction(() => {
     const inserted = store.run('INSERT OR IGNORE INTO webhook_events VALUES(?,?,?,?)', eventId, type, typeof objectId === 'string' ? objectId : null, Date.now());
     if (inserted.changes !== 1) return;
-    if (type === 'order.paid' && typeof data.order_id === 'string') store.run('INSERT OR IGNORE INTO order_signals VALUES(?,?)', data.order_id, Date.now());
-    if (type === 'checkout_session.invalidated' && typeof data.checkout_session_id === 'string') store.run('UPDATE checkouts SET needs_replacement=1 WHERE checkout_session_id=?', data.checkout_session_id);
+    if (type === 'order.paid' && typeof resource.order_id === 'string') store.run('INSERT OR IGNORE INTO order_signals VALUES(?,?)', resource.order_id, Date.now());
+    if (type === 'checkout_session.invalidated' && typeof resource.checkout_session_id === 'string') store.run('UPDATE checkouts SET needs_replacement=1 WHERE checkout_session_id=?', resource.checkout_session_id);
   });
   return Response.json({ received: true });
 }

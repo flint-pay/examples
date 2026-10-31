@@ -353,7 +353,7 @@ export function TipSection() {
   const state = snap.state;
   const visible = logic.tipVisible(state);
   const choice = logic.tipChoice(state);
-  const custom = state.order.requested_tip?.amount_money;
+  const custom = logic.requestedTip(state)?.amount_money;
   const [selected, setSelected] = useState<string>(choice);
   const [amount, setAmount] = useState(custom ? minorToDecimal(custom.amount, custom.currency) : '');
   useEffect(() => setSelected(choice), [choice]);

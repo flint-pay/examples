@@ -16,7 +16,7 @@ function ordersClient(read: (orderId: string) => Promise<Partial<Order>>) {
 }
 
 function recordOrderPaid(inbox: Inbox, id: string, orderId: string, now = Date.now()) {
-  const event = envelope({ webhook_event_id: id, data: { order_id: orderId } });
+  const event = envelope({ webhook_event_id: id, data: { object: { order_id: orderId } } });
   inbox.record({ webhookEventId: id, eventType: 'order.paid', source: 'delivery', test: false, payload: JSON.stringify(event), process: true }, now);
 }
 
@@ -144,4 +144,16 @@ test('retry delays grow from about 30 seconds to at most about an hour', () => {
   assert.equal(retryDelay(2, () => 0.5), 60_000);
   assert.equal(retryDelay(20, () => 0.5), 3_600_000);
   assert.ok(retryDelay(1, () => 0) >= 24_000 && retryDelay(1, () => 1) <= 36_000);
+});
+
+test('previously stored order.paid payloads still fulfill after an SDK upgrade', async () => {
+  const inbox = new Inbox(':memory:');
+  try {
+    const event = envelope({ data: { order_id: 'ord_example_one' } });
+    inbox.record({ webhookEventId: event.webhook_event_id, eventType: event.event_type, source: 'delivery', test: false, payload: JSON.stringify(event), process: true });
+    const { client, reads } = ordersClient(async orderId => ({ order_id: orderId, payment_status: 'paid' }));
+    await processNext(inbox, { client, auth });
+    assert.deepEqual(reads, ['ord_example_one']);
+    assert.equal(inbox.event(event.webhook_event_id)?.status, 'processed');
+  } finally { inbox.close(); }
 });

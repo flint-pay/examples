@@ -20,7 +20,7 @@ function signedHarness(envelope: unknown, orderId = 'ord_UNIT_1') {
     request: { post: async (_url: string, options: { data: string; headers: Record<string, string> }) => {
       try {
         const verified = new Client().verifyWebhook(Buffer.from(options.data), options.headers, secret);
-        verifiedOrders.push((verified.event as Webhook_order_paid_merchant).data.order_id); deliveries.push(options.headers['webhook-id']!);
+        verifiedOrders.push((verified.event as Webhook_order_paid_merchant).data.object.order_id); deliveries.push(options.headers['webhook-id']!);
         return { status: () => 200 };
       } catch { return { status: () => 400 }; }
     } },
@@ -44,7 +44,13 @@ function signedHarness(envelope: unknown, orderId = 'ord_UNIT_1') {
   return { driver, secret, deliveries, reads, verifiedOrders };
 }
 function envelope() {
-  return { api_version: '2026-07-22', webhook_event_id: 'evt_UNIT_1', event_type: 'order.paid', payload_version: 1, mode: 'test', merchant_id: 'merchant-unit', created_at: new Date().toISOString(), request: null, data: { order_id: 'ord_UNIT_1', line_items: [], order_payment_intent_ids: [], outstanding_money: { amount: 0, currency: 'USD' }, paid_money: { amount: 100, currency: 'USD' }, total_money: { amount: 100, currency: 'USD' }, payment_status: 'paid', status: 'open' } } satisfies Webhook_order_paid_merchant;
+  const zero = { amount: '0' as const, currency: 'USD' }, total = { amount: '100' as const, currency: 'USD' };
+  return { api_version: '2026-09-07', webhook_event_id: 'evt_UNIT_1', event_type: 'order.paid', payload_version: 2, test: false, mode: 'test', merchant_id: 'merchant-unit', created_at: new Date().toISOString(), request: null, data: { object: {
+    order_id: 'ord_UNIT_1', version: '1', buyer_actions: [], charges: [], checkout_session_ids: [], discounts: [], fulfillments: [], gift_card_settlements: [], gift_card_tender_enabled: true, gift_cards: [], governing_delivery_selection_id: null, line_items: [], payment_intent_ids: [], refund_ids: [], return_credit_settlements: [], tips: [],
+    pricing_amounts: { charge_money: zero, discount_money: zero, requested_tip_money: zero, subtotal_money: total, tax_money: zero, additive_tax_money: zero, inclusive_tax_money: zero, total_money: total },
+    settlement_amounts: { balance_money: zero, outstanding_money: zero, paid_money: total, credit_money: zero, net_collected_money: total, refunded_money: zero, settled_tip_money: zero, written_off_money: zero },
+    tax: { enabled: false, mode: 'automatic', status: 'not_required' }, payment_status: 'paid', refund_status: 'none', status: 'open',
+  } } } satisfies Webhook_order_paid_merchant;
 }
 function useSecret(secret: string, t: TestContext) {
   const previous = process.env.E2E_WEBHOOK_SECRET; process.env.E2E_WEBHOOK_SECRET = secret;

@@ -147,12 +147,12 @@ export class FakeCheckout {
     this.order = baseOrder(this.config);
     this.session = {
       status: 'open',
-      recovery_mode: false,
+      is_in_recovery: false,
       delivery_selection_required: this.config.needsDelivery,
       merchant_support: { email: 'support@example.test', phone: '555-0100', url: 'https://example.test/help' },
       promotion_config: { codes_enabled: true },
-      save_payment_method_offered: ['card', 'signedin', 'returning'].includes(this.scenario) || this.scenario === 'pickup' || this.guest,
-      save_payment_method_phone_offered: this.guest,
+      can_save_payment_method: ['card', 'signedin', 'returning'].includes(this.scenario) || this.scenario === 'pickup' || this.guest,
+      can_save_payment_method_with_phone: this.guest,
       save_payment_method_requires_verification: this.scenario === 'returning' || this.guest,
       problems: [],
     };
@@ -194,7 +194,7 @@ export class FakeCheckout {
     if (s === 'taxset') this.billing = { line1: '1 Cedar St', city: 'Austin', state: 'TX', postal_code: '78701', country: 'US' };
     if (s === 'expired') this.session.status = 'expired';
     if (s === 'recovery') {
-      this.session.recovery_mode = true;
+      this.session.is_in_recovery = true;
       this.attempt = this.makeAttempt('requires_action', { is_resumable: true, pending_actions: [stripePending('payment_intent')] });
       this.pendingBehavior = '3ds';
     }
@@ -242,7 +242,7 @@ export class FakeCheckout {
       mode: 'payment',
       is_resumable: false,
       expected_outstanding_money: this.order.settlement_amounts?.outstanding_money ?? usd(0),
-      failure_code: extra.failure_code,
+      last_payment_error: extra.failure_code ? { code: extra.failure_code, message: 'fixture' } : undefined,
       pending_actions: extra.pending_actions,
       payment_intents: [
         {
@@ -264,15 +264,15 @@ export class FakeCheckout {
     this.order.settlement_amounts = { outstanding_money: usd(0), paid_money: total };
     this.attempt = this.makeAttempt('succeeded', { is_resumable: false });
     const gift = this.order.gift_card_estimate;
-    this.order.gift_card_settlements = gift ? [{ amount_money: gift.gift_card_money, last_characters: '4821' }] : [];
+    this.order.gift_card_settlements = gift ? [{ amount_money: gift.gift_card_money, last4: '4821' }] : [];
     if (this.config.kind === 'subscription') {
       this.order.subscription_id = 'sub_fixture_1';
       this.subscription = {
         subscription_id: 'sub_fixture_1',
         status: this.config.trial ? 'trialing' : 'active',
-        trial_end: '2026-10-21',
+        trial_end_at: '2026-10-21',
         next_billing_at: '2026-10-21',
-        recurring_amount_money: usd(2200),
+        recurring_subtotal_money: usd(2200),
         subscription_plan: { name: this.session.subscription_terms.plan_name },
         payment_method: { card: { brand: 'visa', last4: '4242' } },
       };
@@ -286,10 +286,10 @@ export class FakeCheckout {
     let subtotal = 0n;
     for (const line of o.line_items) subtotal += big(line.total_money);
     let discount = 0n;
-    o.applied_discounts = [];
+    o.discounts = [];
     if (this.discountCode) {
       discount = this.discountCode === 'FREE100' ? subtotal : (subtotal * 10n) / 100n;
-      o.applied_discounts = [{ order_discount_id: 'disc_fixture_1', customer_facing_name: '10 percent off', promotion_code: this.discountCode, applied_money: usd(discount) }];
+      o.discounts = [{ order_discount_id: 'disc_fixture_1', status: 'redeemed', customer_facing_name: '10 percent off', promotion_code: this.discountCode, applied_money: usd(discount) }];
     }
     const charge = this.selection ? big(this.selection.amount_money) : 0n;
     o.charges = this.selection && charge > 0n ? [{ name: 'Standard shipping', applied_money: usd(charge) }] : [];
@@ -297,7 +297,7 @@ export class FakeCheckout {
     let tipMoney = 0n;
     if (this.tip?.percent) tipMoney = (base * BigInt(this.tip.percent)) / 100n;
     if (this.tip?.amount_money) tipMoney = big(this.tip.amount_money);
-    o.requested_tip = this.tip;
+    o.tips = this.tip ? [{ ...this.tip, status: 'requested' }] : [];
     const needsBilling = ['taxneeded', 'subtrialtax'].includes(this.scenario) && !this.billing;
     const needsLocation = (this.config.needsDelivery && !this.selection) || needsBilling;
     const taxable = base + charge;
@@ -328,13 +328,13 @@ export class FakeCheckout {
     if (this.giftCode) {
       const available = this.giftCode === 'FULLCARD' ? total : 2500n;
       const applied = available > total ? total : available;
-      o.gift_cards = [{ gift_card_id: 'gc_fixture_1', last_characters: '4821', available_money: usd(available) }];
+      o.gift_cards = [{ gift_card_id: 'gc_fixture_1', last4: '4821', available_money: usd(available) }];
       o.gift_card_estimate = { can_pay: true, gift_card_money: usd(applied), processor_money: usd(total - applied), gift_cards: [{ gift_card_id: 'gc_fixture_1', amount_money: usd(applied) }] };
     } else {
       o.gift_cards = [];
       o.gift_card_estimate = null;
     }
-    o.order_revision = String(Number(o.order_revision ?? 3) + 0);
+    o.version = String(Number(o.version ?? 3) + 0);
   }
 
   // ----- Projection -----
@@ -565,7 +565,7 @@ export class FakeCheckout {
     // A ZIP code the tax service cannot place, so the page shows the error and keeps the form.
     if (body.postal_code === '00000') return fail(422, 'validation', 'TAX_LOCATION_INVALID', 'generic_error', this.project());
     this.billing = body;
-    this.order.order_revision = String(Number(this.order.order_revision ?? 3) + 1);
+    this.order.version = String(Number(this.order.version ?? 3) + 1);
     this.recalc();
     return this.ok();
   }
@@ -710,7 +710,7 @@ export class FakeCheckout {
     if (!body.approved_outstanding_money || body.approved_outstanding_money.amount !== outstanding.amount) {
       return this.paymentReply({ error: { kind: 'conflict', code: 'ORDER_CHANGED_REFRESH_REQUIRED', message_key: 'total_changed', request_id: 'req_fixture' } });
     }
-    if (this.order.gift_cards.length && (String(body.approved_order_revision) !== String(this.order.order_revision) || !body.approved_gift_card_money)) {
+    if (this.order.gift_cards.length && (String(body.approved_order_version) !== String(this.order.version) || !body.approved_gift_card_money)) {
       return this.paymentReply({ error: { kind: 'conflict', code: 'ORDER_CHANGED_REFRESH_REQUIRED', message_key: 'gift_card_changed', request_id: 'req_fixture' } });
     }
     if (this.session.delivery_selection_required && !this.selection) return fail(409, 'conflict', 'FULFILLMENT_SELECTION_REQUIRED', 'fulfillment_selection_required', this.project());

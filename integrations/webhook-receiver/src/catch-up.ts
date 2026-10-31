@@ -30,7 +30,7 @@ export async function catchUp(deps: CatchUpDeps, now = Date.now()): Promise<Catc
     const params = {
       page_size: PAGE_SIZE,
       created_after: since,
-      event_type: eventType,
+      event_type: [eventType],
       ...(deps.endpointId ? { webhook_endpoint_id: deps.endpointId } : {}),
     };
     let pages = 0;
@@ -51,7 +51,7 @@ async function recordMissing({ client, auth, inbox }: CatchUpDeps, item: Webhook
   if (existing && existing.status !== 'unavailable') return;
 
   const detail = await client.webhookEvents.get(item.webhook_event_id, {}, auth.merchant());
-  const event = parseEnvelope(detail.payload);
+  const event = parseEnvelope(detail.data ? detail : undefined);
   if (!event || event.webhook_event_id !== item.webhook_event_id) {
     // Flint omits the payload when the key can't read the event's resource, and after 14 days.
     if (inbox.recordUnavailable({
@@ -70,7 +70,7 @@ async function recordMissing({ client, auth, inbox }: CatchUpDeps, item: Webhook
     eventType: event.event_type,
     source: 'catch_up',
     test: event.test,
-    payload: JSON.stringify(detail.payload),
+    payload: JSON.stringify(detail),
     createdAt: event.created_at,
     process: route.process,
     ignoredReason: route.process ? undefined : route.reason,

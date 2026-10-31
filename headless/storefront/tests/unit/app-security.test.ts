@@ -38,7 +38,8 @@ test('webhook route stays unavailable without a signing secret',async()=>{
 });
 test('signed test webhooks deduplicate and cannot turn an unverified browser order into paid',async()=>{
   const key=randomBytes(32);const app=runtime('whsec_'+key.toString('base64'));
-  const event={api_version:'2026-07-22',webhook_event_id:'local-event',event_type:'order.paid',payload_version:1,mode:'test',merchant_id:'merchant-unit',created_at:new Date().toISOString(),request:null,data:{order_id:'local-order',line_items:[],order_payment_intent_ids:[],outstanding_money:{amount:0,currency:'USD'},paid_money:{amount:100,currency:'USD'},total_money:{amount:100,currency:'USD'},payment_status:'paid',status:'open'}} satisfies Webhook_order_paid_merchant;
+  // Current events carry the order in data.object, as its GET returns it.
+  const event={api_version:'2026-09-07',webhook_event_id:'local-event',event_type:'order.paid',payload_version:2,mode:'test',merchant_id:'merchant-unit',created_at:new Date().toISOString(),test:false,request:null,data:{object:{order_id:'local-order',payment_status:'paid',status:'open'}}} as unknown as Webhook_order_paid_merchant;
   try{
     assert.equal((await deliverWebhook(app,key,event,false)).status,400);assert.equal((await deliverWebhook(app,key,{...event,mode:'live'})).status,400);assert.equal(app.store.all('SELECT * FROM webhook_events').length,0);
     assert.equal((await deliverWebhook(app,key,event)).status,200);assert.equal((await deliverWebhook(app,key,event)).status,200);
@@ -46,9 +47,17 @@ test('signed test webhooks deduplicate and cannot turn an unverified browser ord
     assert.equal(app.store.get<{object_id:string}>('SELECT object_id FROM webhook_events')?.object_id,'local-order');
   }finally{app.store.close();app.identity.close();}
 });
+test('an order.paid event queued before payload version 2 still reads its flat data',async()=>{
+  const key=randomBytes(32);const app=runtime('whsec_'+key.toString('base64'));
+  const event={api_version:'2026-09-07',webhook_event_id:'queued-event',event_type:'order.paid',payload_version:1,mode:'test',merchant_id:'merchant-unit',created_at:new Date().toISOString(),test:false,request:null,data:{order_id:'queued-order',payment_status:'paid',status:'open'}} as unknown as Webhook_order_paid_merchant;
+  try{
+    assert.equal((await deliverWebhook(app,key,event)).status,200);
+    assert.ok(app.store.get('SELECT * FROM order_signals WHERE order_id=?','queued-order'));assert.equal(app.store.get<{object_id:string}>('SELECT object_id FROM webhook_events')?.object_id,'queued-order');
+  }finally{app.store.close();app.identity.close();}
+});
 test('published checkout invalidation data targets its session and deduplicates delivery',async()=>{
   const key=randomBytes(32);const app=runtime('whsec_'+key.toString('base64')),now=Date.now();
-  const event={api_version:'2026-07-22',webhook_event_id:'local-invalidation',event_type:'checkout_session.invalidated',payload_version:1,mode:'test',merchant_id:'merchant-unit',created_at:new Date().toISOString(),request:null,data:{checkout_session_id:'local-checkout-session',order_id:'local-order',reason:'order_mutated',resource_updated_at:new Date().toISOString(),status:'invalidated'}} satisfies Webhook_checkout_session_invalidated_merchant;
+  const event={api_version:'2026-09-07',webhook_event_id:'local-invalidation',event_type:'checkout_session.invalidated',payload_version:2,mode:'test',merchant_id:'merchant-unit',created_at:new Date().toISOString(),test:false,request:null,data:{object:{checkout_session_id:'local-checkout-session',order_id:'local-order',terminal_reason:'order_mutated',status:'invalidated'}}} as unknown as Webhook_checkout_session_invalidated_merchant;
   try{
     for(const [ref,session] of [['owned-checkout','local-checkout-session'],['other-checkout','other-checkout-session']])app.store.run('INSERT INTO checkouts(checkout_ref,session_hash,kind,checkout_session_id,order_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?)',ref!,'unit-session','order',session!,'local-order',now,now);
     assert.equal((await deliverWebhook(app,key,event,false)).status,400);assert.equal((await deliverWebhook(app,key,{...event,mode:'live'})).status,400);

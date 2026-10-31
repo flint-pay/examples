@@ -136,15 +136,15 @@ function subscriptionBody(ctx: PageContext<CompleteData>, state: CheckoutState, 
   const sub = state.subscription!;
   const plan = sub.subscription_plan?.name ?? state.session.subscription_terms?.plan_name ?? state.order.subscription_plan?.name ?? '';
   const card = sub.payment_method?.card;
-  const next = sub.next_billing_at ?? sub.trial_end;
+  const next = sub.next_billing_at ?? sub.trial_end_at;
   const statusText = sub.status === 'trialing' ? copy.complete.statusTrialing : sub.status === 'active' ? copy.complete.statusActive : fill(copy.complete.statusOther, { status: sub.status.replace(/_/g, ' ') });
   return html`<dl class="facts">
     <div><dt>${copy.complete.plan}</dt><dd>${plan}</dd></div>
     <div><dt>${copy.complete.status}</dt><dd data-testid="sf-subscription-status" data-status="${sub.status}">${statusText}</dd></div>
     ${trialing
-      ? html`<div><dt>${copy.complete.trialEnds}</dt><dd>${formatDay(sub.trial_end, true)}</dd></div>
-        <div><dt>${copy.complete.firstCharge}</dt><dd>${money(sub.recurring_amount_money ?? null, formatMoney(sub.recurring_amount_money))}${sub.next_billing_at ? html` on ${formatDay(sub.next_billing_at, true)}` : ''}</dd></div>`
-      : html`<div><dt>${copy.complete.nextCharge}</dt><dd>${next ? html`${money(sub.recurring_amount_money ?? null, formatMoney(sub.recurring_amount_money))} on ${formatDay(next, true)}` : ''}</dd></div>`}
+      ? html`<div><dt>${copy.complete.trialEnds}</dt><dd>${formatDay(sub.trial_end_at, true)}</dd></div>
+        <div><dt>${copy.complete.firstCharge}</dt><dd>${money(sub.recurring_subtotal_money ?? null, formatMoney(sub.recurring_subtotal_money))}${sub.next_billing_at ? html` on ${formatDay(sub.next_billing_at, true)}` : ''}</dd></div>`
+      : html`<div><dt>${copy.complete.nextCharge}</dt><dd>${next ? html`${money(sub.recurring_subtotal_money ?? null, formatMoney(sub.recurring_subtotal_money))} on ${formatDay(next, true)}` : ''}</dd></div>`}
     ${card ? html`<div><dt>${copy.complete.paymentMethod}</dt><dd>${fill(copy.complete.cardEnding, { brand: card.brand.charAt(0).toUpperCase() + card.brand.slice(1), last4: card.last4 })}</dd></div>` : ''}
   </dl>
   ${ctx.accountOrigin ? html`<p><a class="button" href="${ctx.accountOrigin}/subscriptions/${encodeURIComponent(sub.subscription_id)}" data-testid="sf-account-link">${copy.complete.manage}</a></p>` : ''}`;

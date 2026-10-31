@@ -4,6 +4,7 @@ import {headers} from 'next/headers';
 import {redirect} from 'next/navigation';
 import {revalidatePath} from 'next/cache';
 import {LocalError,appError} from './flint/errors.ts';
+import type {ErrorScope} from './flint/errors.ts';
 import {normalizeEmail,verifyPassword} from './identity/index.ts';
 import {returnPath} from './security/paths.ts';
 import {viewPath} from './flint/view-data.ts';
@@ -25,15 +26,15 @@ async function changeRequest():Promise<Visitor>{
   return found;
 }
 
-function toError(error:unknown):ActionError{
-  const mapped=appError(error);
+function toError(error:unknown,scope?:ErrorScope):ActionError{
+  const mapped=appError(error,scope);
   if(!(error instanceof LocalError)&&!(error&&typeof error==='object'&&'kind'in error))console.error(error);
   return {code:mapped.code,message_key:mapped.message_key,...(mapped.request_id?{request_id:mapped.request_id}:{})};
 }
 
 function cartError(error:unknown):ActionError{
   const mapped=toError(error);
-  return ['CHECKOUT_PAYMENT_RESOLVING','PAYMENT_ATTEMPT_IN_PROGRESS'].includes(mapped.code)?{...mapped,message_key:'cart_locked_payment'}:mapped;
+  return ['CHECKOUT_PAYMENT_RESOLVING','PAYMENT_ATTEMPT_IN_PROGRESS','ORDER_PAYMENT_ATTEMPT_ACTIVE','OPERATION_IN_PROGRESS'].includes(mapped.code)?{...mapped,message_key:'cart_locked_payment'}:mapped;
 }
 
 function cartCount(found:Visitor):number{
@@ -170,7 +171,7 @@ export async function confirmEmailCode(_previous:FormState,form:FormData):Promis
     const found=await changeRequest();
     linked=await found.rt.binding.confirm(requireUser(found),found.session,text(field(form,'code'),6));
   }catch(error){
-    const mapped=toError(error);
+    const mapped=toError(error,'verification');
     if(mapped.code==='SESSION_ENDED')redirect(`/sign-in?next=${encodeURIComponent(next)}`);
     return {error:mapped,fieldErrors:mapped.code==='CUSTOMER_VERIFICATION_CODE_INVALID'?{code:'customer_verification_code_invalid'}:undefined,at:Date.now()};
   }

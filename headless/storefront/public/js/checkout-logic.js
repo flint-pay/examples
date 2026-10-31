@@ -150,7 +150,7 @@ export function buttonKind(state) {
 export function declineCode(state) {
   const attempt = state.attempt;
   if (!attempt) return null;
-  if (attempt.failure_code) return String(attempt.failure_code);
+  if (attempt.last_payment_error?.code) return attempt.last_payment_error.code;
   for (const intent of attempt.payment_intents ?? []) {
     if (intent.last_payment_error?.code) return intent.last_payment_error.code;
   }
@@ -193,7 +193,7 @@ function hasAffirmAction(state) {
  */
 export function derivePaymentState(state) {
   if (isExpired(state)) return 'expired';
-  if (state.session.recovery_mode) return 'recovery';
+  if (state.session.is_in_recovery) return 'recovery';
   const attempt = state.attempt;
   // The app can hold an unresolved payment request before Flint shows any attempt. Treat it as resolving.
   if (!attempt && state.next === 'resume') return 'resuming';
@@ -214,7 +214,7 @@ export function derivePaymentState(state) {
       case 'pay_remaining':
         return 'pay_remaining';
       case 'new_payment':
-        if (attempt.status === 'failed' || attempt.failure_code) return 'declined';
+        if (attempt.status === 'failed' || attempt.last_payment_error) return 'declined';
         break;
       default:
         break;
@@ -358,11 +358,19 @@ export function tipVisible(state) {
 }
 
 /**
+ * The tip the buyer asked for, which settles when the order is paid.
+ * @param {CheckoutState} state
+ */
+export function requestedTip(state) {
+  return state.order.tips?.find((tip) => tip.status === 'requested');
+}
+
+/**
  * @param {CheckoutState} state
  * @returns {'none'|'10'|'15'|'20'|'custom'}
  */
 export function tipChoice(state) {
-  const tip = state.order.requested_tip;
+  const tip = requestedTip(state);
   if (tip?.percent !== undefined && tip.percent !== null) {
     const asString = String(tip.percent);
     if (asString === '10' || asString === '15' || asString === '20') return asString;
