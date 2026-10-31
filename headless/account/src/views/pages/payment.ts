@@ -162,11 +162,11 @@ function invoiceSummary(summary: InvoicePaySummary, state: PaymentState | null, 
 function returnSummary(summary: ReturnPaySummary, state: PaymentState | null): Html {
   const due = state?.approved_outstanding_money ?? summary.return.financial_summary.due_from_buyer_money;
   const credits = state?.order.return_credit_settlements ?? [];
-  const creditTotal = credits.reduce<MoneyValue | null>((total, credit) => (total ? addMoney(total, credit.amount_money) : credit.amount_money), null);
+  const creditTotal = credits.reduce<{ amount: string; currency: string } | null>((total, credit) => (total ? addMoney(total, credit.amount_money) : credit.amount_money), null);
   return html`<h2>${pay.balanceTitle}</h2>
     <div data-testid="ac-return-pay-summary">
       ${state && state.order.line_items.length ? html`<h3>${pay.itemsComing}</h3>${lineItems(state.order.line_items, 'ac-return-pay-item')}` : ''}
-      ${creditTotal && !isZero(creditTotal) ? html`<dl class="amounts"><div class="amount-row"><dt>${pay.creditApplied}</dt><dd>-${money(creditTotal, { testid: 'ac-return-pay-credit' })}</dd></div></dl>` : ''}
+      ${creditTotal && !isZero(creditTotal) ? html`<dl class="amounts"><div class="amount-row"><dt>${pay.creditApplied}</dt><dd>-${money(creditTotal as MoneyValue, { testid: 'ac-return-pay-credit' })}</dd></div></dl>` : ''}
       <dl class="facts"><div class="fact fact-strong"><dt>${pay.amountDueNow}</dt><dd>${money(due, { testid: 'ac-return-pay-amount', className: 'money-large' })}</dd></div></dl>
     </div>`;
 }

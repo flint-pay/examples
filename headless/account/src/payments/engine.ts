@@ -1,6 +1,6 @@
-import type {Client,MoneyValue,Order,OrderPaymentAttempt,PayOrderRequestInput,OrderGiftCardAllocationAcceptanceInput} from '@flintpay/node';
+import type {Client,PaymentSourceCredentialInput,MoneyValue,Order,OrderPaymentAttempt,PayOrderRequestInput,OrderGiftCardAllocationAcceptanceInput} from '@flintpay/node';
 import type {Auth} from '../flint/auth.ts';
-import {LocalError,unknownOutcome,appError} from '../flint/errors.ts';
+import {LocalError,unknownOutcome,appError,checkoutSessionUnusable} from '../flint/errors.ts';
 import {Store} from '../store/db.ts';
 import type {CheckoutRecord,ActionRecord,GiftChallengeRecord} from '../store/db.ts';
 import {createHash} from 'node:crypto';
@@ -20,14 +20,14 @@ export function collectionKind(order:Order):'processor'|'settlement'|'unavailabl
 }
 export function approvalMatches(order:Order,input:PayInput):boolean{
   if(!input.approved_outstanding_money||!moneyEqual(order.settlement_amounts.outstanding_money,input.approved_outstanding_money)||collectionKind(order)!==input.approved_collection_kind)return false;
-  if(order.gift_cards?.length&&(!order.gift_card_estimate?.can_pay||input.approved_order_revision!==order.order_revision||!input.approved_gift_card_money||!moneyEqual(input.approved_gift_card_money,order.gift_card_estimate.gift_card_money)))return false;
+  if(order.gift_cards?.length&&(!order.gift_card_estimate?.can_pay||input.approved_order_revision!==order.version||!input.approved_gift_card_money||!moneyEqual(input.approved_gift_card_money,order.gift_card_estimate.gift_card_money)))return false;
   return true;
 }
 export function acceptedAllocation(order:Order):OrderGiftCardAllocationAcceptanceInput|undefined{
   const estimate=order.gift_card_estimate;
   if(!order.gift_cards?.length)return undefined;
   if(!estimate?.can_pay||estimate.gift_card_money.currency!=='USD'||estimate.processor_money.currency!=='USD'||estimate.gift_cards.some(card=>card.amount_money.currency!=='USD'))throw new LocalError('GIFT_CARD_ALLOCATION_CHANGED',409);
-  return {order_revision:estimate.order_revision,gift_card_money:{amount:estimate.gift_card_money.amount,currency:'USD'},processor_money:{amount:estimate.processor_money.amount,currency:'USD'},gift_cards:estimate.gift_cards.map(card=>({gift_card_id:card.gift_card_id,amount_money:{amount:card.amount_money.amount,currency:'USD'}}))};
+  return {order_version:estimate.order_version,gift_card_money:{amount:estimate.gift_card_money.amount,currency:'USD'},processor_money:{amount:estimate.processor_money.amount,currency:'USD'},gift_cards:estimate.gift_cards.map(card=>({gift_card_id:card.gift_card_id,amount_money:{amount:card.amount_money.amount,currency:'USD'}}))};
 }
 export class PaymentEngine {
   client:Client;auth:Auth;store:Store;delay:(ms:number)=>Promise<void>;
@@ -41,7 +41,7 @@ export class PaymentEngine {
   reconcileGift(record:CheckoutRecord,order:Order):void{
     const pending=this.unresolvedGift(record);if(!pending)return;
     const revision=pending.body?(JSON.parse(pending.body) as {order_revision?:string}).order_revision:undefined,deadline=pending.retry_after||pending.created_at+GIFT_SETTLE_MS;
-    if(!revision||order.order_revision!==revision||Date.now()>=deadline){
+    if(!revision||order.version!==revision||Date.now()>=deadline){
       this.store.run("UPDATE actions SET status='rejected',body=NULL WHERE action_id=? AND status IN ('pending','unknown')",pending.action_id);this.store.closeGiftChallenges(record.checkout_ref);
     }
   }
@@ -49,7 +49,7 @@ export class PaymentEngine {
     if(this.unresolved(record))throw new LocalError('PAYMENT_ATTEMPT_IN_PROGRESS',409);
     const order=await this.read(record);this.reconcileGift(record,order);if(attemptOpen(await this.attempt(record,order)))throw new LocalError('PAYMENT_ATTEMPT_IN_PROGRESS',409);
     const session=await this.client.checkoutSessions.get(record.checkout_session_id,undefined,this.auth.checkout(record));
-    if(session.status!=='open'||session.recovery_mode)throw new LocalError('CHECKOUT_SESSION_NOT_OPEN',409);
+    if(session.status!=='open'||session.is_in_recovery)throw new LocalError('CHECKOUT_SESSION_NOT_OPEN',409);
     if(order.gift_card_tender_enabled!==true||order.settlement_amounts.paid_money&&BigInt(order.settlement_amounts.paid_money.amount)!==0n)throw new LocalError('GIFT_CARDS_NOT_EDITABLE',409);
     return order;
   }
@@ -84,7 +84,7 @@ export class PaymentEngine {
         const saved=pending.body?JSON.parse(pending.body) as {code_hash:string;order_revision:string}:undefined;
         if(pending.kind!=='gift_apply'||saved?.code_hash!==hash)throw new LocalError('GIFT_CARD_CHANGE_UNCONFIRMED',409);
         this.store.abandonGiftChallenges(ref,resource);
-        try{await this.store.replayAction(pending,async key=>{const result=await this.client.orders.applyGiftCard(record.order_id,{gift_card_code:giftCardCode,order_revision:saved!.order_revision},this.auth.checkout(record,key));return {order_id:result.order_id,order_revision:result.order_revision};},error=>challengeFromError(error,expectedOrigin)?'challenge':undefined,true);}
+        try{await this.store.replayAction(pending,async key=>{const result=await this.client.orders.applyGiftCard(record.order_id,{code:giftCardCode,expected_version:saved!.order_revision as `${bigint}`},this.auth.checkout(record,key));return {order_id:result.order_id,order_revision:result.version};},error=>challengeFromError(error,expectedOrigin)?'challenge':undefined,true);}
         catch(error){return this.giftOutcome(record,pending,error,expectedOrigin);}
         return;
       }
@@ -94,11 +94,11 @@ export class PaymentEngine {
       const previous=this.store.get<ActionRecord>('SELECT * FROM actions WHERE action_id=?',actionId);
       const saved=previous?.body?JSON.parse(previous.body) as {code_hash:string;order_revision:string}:undefined;
       if(saved&&saved.code_hash!==hash)throw new LocalError('ACTION_BODY_MISMATCH',409);
-      const revision=saved?.order_revision??order.order_revision;if(!revision)throw new LocalError('ORDER_CHANGED_REFRESH_REQUIRED',409);
+      const revision=saved?.order_revision??order.version;if(!revision)throw new LocalError('ORDER_CHANGED_REFRESH_REQUIRED',409);
       const body={code_hash:hash,order_revision:revision};
       this.store.abandonGiftChallenges(ref,resource);
       try{
-        await this.store.mutate(resource,'gift_apply',body,async key=>{const result=await this.client.orders.applyGiftCard(record.order_id,{gift_card_code:giftCardCode,order_revision:body.order_revision},this.auth.checkout(record,key));return {order_id:result.order_id,order_revision:result.order_revision};},nonce,error=>challengeFromError(error,expectedOrigin)?'challenge':undefined,true);
+        await this.store.mutate(resource,'gift_apply',body,async key=>{const result=await this.client.orders.applyGiftCard(record.order_id,{code:giftCardCode,expected_version:body.order_revision as `${bigint}`},this.auth.checkout(record,key));return {order_id:result.order_id,order_revision:result.version};},nonce,error=>challengeFromError(error,expectedOrigin)?'challenge':undefined,true);
       }catch(error){const action=this.store.get<ActionRecord>('SELECT * FROM actions WHERE action_id=?',actionId);if(!action)throw error;return this.giftOutcome(record,action,error,expectedOrigin);}
     });
   }
@@ -114,11 +114,11 @@ export class PaymentEngine {
       const action=this.store.get<ActionRecord>('SELECT * FROM actions WHERE action_id=?',row.action_id),saved=action?.body?JSON.parse(action.body) as {code_hash:string;order_revision:string}:undefined;
       if(action?.kind!=='gift_apply'||action.status!=='challenge'||saved?.code_hash!==createHash('sha256').update(giftCardCode).digest('hex'))reject('GIFT_CHALLENGE_CODE_CHANGED');
       let order:Order;try{order=await this.giftReady(record);}catch(error){this.store.closeGiftChallenges(ref);throw error;}
-      if(order.order_revision!==saved!.order_revision)reject('GIFT_CHALLENGE_ORDER_CHANGED');
+      if(order.version!==saved!.order_revision)reject('GIFT_CHALLENGE_ORDER_CHANGED');
       this.store.claimGiftChallenge(row);
       try{
         const result=await applyWithProof(this.client,this.auth,record,giftCardCode,saved!.order_revision,action!.idempotency_key,proof);
-        this.store.run("UPDATE actions SET status='succeeded',result=? WHERE action_id=?",JSON.stringify({order_id:result.order_id,order_revision:result.order_revision}),action!.action_id);this.store.closeGiftChallenges(ref);logGiftChallenge({outcome:'retry_applied',checkout_ref:ref});
+        this.store.run("UPDATE actions SET status='succeeded',result=? WHERE action_id=?",JSON.stringify({order_id:result.order_id,order_revision:result.version}),action!.action_id);this.store.closeGiftChallenges(ref);logGiftChallenge({outcome:'retry_applied',checkout_ref:ref});
       }catch(error){
         const status=challengeFromError(error,expectedOrigin)?'challenge':unknownOutcome(error)?'unknown':'rejected';this.store.run('UPDATE actions SET status=?,body=CASE WHEN ? THEN body ELSE NULL END WHERE action_id=?',status,status==='unknown'||status==='challenge'?1:0,action!.action_id);
         return this.giftOutcome(record,action!,error,expectedOrigin,true);
@@ -133,7 +133,7 @@ export class PaymentEngine {
         const saved=pending.body?JSON.parse(pending.body) as {gift_card_id:string;order_revision:string}:undefined;
         if(pending.kind!=='gift_remove'||saved?.gift_card_id!==giftCardId)throw new LocalError('GIFT_CARD_CHANGE_UNCONFIRMED',409);
         this.store.abandonGiftChallenges(ref,resource);
-        await this.store.replayAction(pending,async key=>{const result=await this.client.orders.removeGiftCard(record.order_id,giftCardId,{order_revision:saved!.order_revision},this.auth.checkout(record,key));return {order_id:result.order_id,order_revision:result.order_revision};},undefined,true);return;
+        await this.store.replayAction(pending,async key=>{const result=await this.client.orders.removeGiftCard(record.order_id,giftCardId,{expected_version:saved!.order_revision as `${bigint}`},this.auth.checkout(record,key));return {order_id:result.order_id,order_revision:result.version};},undefined,true);return;
       }
       // Keep concurrent checks bound to the change they started while it was unresolved.
       if(observedPending&&this.store.get<ActionRecord>('SELECT * FROM actions WHERE action_id=?',observedPending.action_id)?.status==='succeeded')throw new LocalError('ACTION_IN_PROGRESS',409);
@@ -141,10 +141,10 @@ export class PaymentEngine {
       const prior=this.store.get<ActionRecord>('SELECT * FROM actions WHERE action_id=?',actionId),saved=prior?.body?JSON.parse(prior.body) as {gift_card_id:string;order_revision:string}:undefined;
       if(saved&&saved.gift_card_id!==giftCardId)throw new LocalError('ACTION_BODY_MISMATCH',409);
       if(!saved&&!order.gift_cards?.some(card=>card.gift_card_id===giftCardId))throw new LocalError('NOT_FOUND',404);
-      const revision=saved?.order_revision??order.order_revision;if(!revision)throw new LocalError('ORDER_CHANGED_REFRESH_REQUIRED',409);
+      const revision=saved?.order_revision??order.version;if(!revision)throw new LocalError('ORDER_CHANGED_REFRESH_REQUIRED',409);
       const body={gift_card_id:giftCardId,order_revision:revision};
       this.store.abandonGiftChallenges(ref,resource);
-      await this.store.mutate(resource,'gift_remove',body,async key=>{const result=await this.client.orders.removeGiftCard(record.order_id,giftCardId,{order_revision:body.order_revision},this.auth.checkout(record,key));return {order_id:result.order_id,order_revision:result.order_revision};},nonce,undefined,true);
+      await this.store.mutate(resource,'gift_remove',body,async key=>{const result=await this.client.orders.removeGiftCard(record.order_id,giftCardId,{expected_version:body.order_revision as `${bigint}`},this.auth.checkout(record,key));return {order_id:result.order_id,order_revision:result.version};},nonce,undefined,true);
     });
   }
   async attempt(record:CheckoutRecord,order:Order):Promise<OrderPaymentAttempt|undefined>{
@@ -186,14 +186,16 @@ export class PaymentEngine {
         const response=job.kind==='cancel'
           ?await this.client.orders.cancelPaymentAttempt(record.order_id,job.attempt_id??record.last_attempt_id!,{cancellation_reason:'abandoned'},this.auth.checkout(record,job.idempotency_key))
           :await this.client.orders.pay({order_id:record.order_id,body:JSON.parse(job.body) as PayOrderRequestInput},this.auth.checkout(record,job.idempotency_key));
-        assertOwnership();this.complete(job,response.payment_attempt);this.remember(record,response.payment_attempt);
-        try{return await this.reconcile(this.record(record.checkout_ref));}catch{return {order:response.order,attempt:response.payment_attempt,unknown:false};}
+        assertOwnership();this.complete(job,response.order_payment_attempt);this.remember(record,response.order_payment_attempt);
+        try{return await this.reconcile(this.record(record.checkout_ref));}catch{return {order:response.order,attempt:response.order_payment_attempt,unknown:false};}
       }catch(error){
         if(!unknownOutcome(error)){
           this.store.run("UPDATE actions SET status='rejected',body=NULL WHERE action_id=?",job.action_id);
           const code=error&&typeof error==='object'&&'code'in error?String(error.code):'';
-          if(['ORDER_PAYMENT_ATTEMPT_ACTIVE','PAYMENT_ATTEMPT_STILL_PROCESSING','PAYMENT_ATTEMPT_NOT_RESUMABLE','CHECKOUT_RECOVERY_RESTRICTED'].includes(code))return this.reconcile(record);
-          if(['ORDER_CHANGED_REFRESH_REQUIRED','GIFT_CARD_ALLOCATION_CHANGED','GIFT_CARD_INSUFFICIENT_VALUE'].includes(code))return {...await this.reconcile(record),totalChanged:true};
+          // An attempt already running, not resumable, or a session restricted to recovery: show the current state.
+          if(['PAYMENT_ATTEMPT_ACTIVE','ACTION_NOT_ALLOWED'].includes(code)||checkoutSessionUnusable(error))return this.reconcile(record);
+          // A stale order version or gift card allocation: the total changed, so ask the buyer to review it.
+          if(['VERSION_CONFLICT','CONCURRENT_MODIFICATION'].includes(code))return {...await this.reconcile(record),totalChanged:true};
           throw error;
         }
         this.store.run("UPDATE actions SET status='unknown',retry_after=? WHERE action_id=?",Date.now()+5000,job.action_id);
@@ -215,17 +217,17 @@ export class PaymentEngine {
       if(collectionKind(order)==='unavailable')throw new LocalError('PAYMENTS_UNAVAILABLE',503);
       const session=await this.client.checkoutSessions.get(record.checkout_session_id,undefined,this.auth.checkout(record));
       if(session.status!=='open')return {order,attempt,unknown:false,expired:true};
-      if(session.recovery_mode)return {order,attempt,unknown:false,recovery:true};
+      if(session.is_in_recovery)return {order,attempt,unknown:false,recovery:true};
       const allocation=acceptedAllocation(order),processorAmount=allocation?.processor_money.amount??order.settlement_amounts.outstanding_money.amount;
-      let source:{confirmation_token:string}|{token:string}|{payment_method_id:string}|undefined;
+      let source:PaymentSourceCredentialInput|undefined;
       if(BigInt(processorAmount)>0n){
         const credential=input.credential;if(!credential)throw new LocalError('PAYMENT_SOURCE_REQUIRED');
         if(credential.kind==='saved_payment_method'){
           const methods=await this.client.paymentMethods.list(undefined,this.auth.checkout(record));
           if(!methods.data.some(method=>method.payment_method_id===credential.value&&method.status==='active'))throw new LocalError('PAYMENT_SOURCE_UNAVAILABLE');
-          source={payment_method_id:credential.value};
-        }else if(credential.kind==='confirmation_token'&&/^ctoken_[A-Za-z0-9_]+$/.test(credential.value))source={confirmation_token:credential.value};
-        else if(credential.kind==='payment_method_token'&&/^pm_[A-Za-z0-9_]+$/.test(credential.value))source={token:credential.value};
+          source={credential_type:'payment_method',payment_method_id:credential.value};
+        }else if(credential.kind==='confirmation_token'&&/^ctoken_[A-Za-z0-9_]+$/.test(credential.value))source={credential_type:'stripe_confirmation_token',stripe:{confirmation_token:credential.value}};
+        else if(credential.kind==='payment_method_token'&&/^pm_[A-Za-z0-9_]+$/.test(credential.value))source={credential_type:'token',token:credential.value};
         else throw new LocalError('PAYMENT_SOURCE_REQUIRED');
       }
       const body:PayOrderRequestInput={action:'pay',...(source?{payment_source:source}:{}),expected_outstanding_money:input.approved_outstanding_money,...(allocation?{accepted_gift_card_allocation:allocation}:{})};
@@ -260,7 +262,7 @@ export class PaymentEngine {
       const current=await this.reconcile(record);
       if(!current.attempt||!attemptOpen(current.attempt)||current.attempt.status==='processing'&&!current.attempt.is_resumable)return current;
       const session=await this.client.checkoutSessions.get(record.checkout_session_id,undefined,this.auth.checkout(record));
-      if(session.recovery_mode||session.status!=='open')return {...current,recovery:session.recovery_mode,expired:!session.recovery_mode};
+      if(session.is_in_recovery||session.status!=='open')return {...current,recovery:session.is_in_recovery,expired:!session.is_in_recovery};
       record.last_attempt_id=current.attempt.order_payment_attempt_id;
       return this.execute(record,this.job(record,'cancel',{cancellation_reason:'abandoned'},`cancel:${record.last_attempt_id}`),assertOwnership);
     });
@@ -273,16 +275,16 @@ export class PaymentEngine {
       if(!options.has(leg.payment_intent_id)){const intent=await this.client.paymentIntents.get(leg.payment_intent_id,undefined,this.auth.checkout(record));if(intent.selected_payment_option)options.set(leg.payment_intent_id,intent.selected_payment_option);}
     }
     let sessionOpen=false;
-    try{const session=await this.client.checkoutSessions.get(record.checkout_session_id,undefined,this.auth.checkout(record));sessionOpen=session.status==='open';result.recovery=session.recovery_mode;result.expired=session.status!=='open'&&!session.recovery_mode&&result.order.payment_status!=='paid';}
-    catch(error){if(!['INVALID_CHECKOUT_SESSION','CHECKOUT_SESSION_NOT_OPEN','CHECKOUT_SESSION_EXPIRED','CHECKOUT_RECOVERY_RESTRICTED'].includes(appError(error).code))throw error;result.recovery=attemptOpen(result.attempt);result.expired=!result.recovery;}
+    try{const session=await this.client.checkoutSessions.get(record.checkout_session_id,undefined,this.auth.checkout(record));sessionOpen=session.status==='open';result.recovery=session.is_in_recovery;result.expired=session.status!=='open'&&!session.is_in_recovery&&result.order.payment_status!=='paid';}
+    catch(error){if(!checkoutSessionUnusable(error))throw error;result.recovery=attemptOpen(result.attempt);result.expired=!result.recovery;}
     const failedLeg=result.attempt?.payment_intents?.find(leg=>leg.last_payment_error);
-    const declineCode=failedLeg?.last_payment_error?.code??result.attempt?.failure_code;
+    const declineCode=failedLeg?.last_payment_error?.code??result.attempt?.last_payment_error?.code;
     const unresolved=this.unresolved(record);
     const next=result.unknown?(unresolved&&unresolved.retry_after<=Date.now()?'resume':'wait'):result.order.payment_status==='paid'?'done':nextStep(result.attempt,options);
     const collection=collectionKind(result.order),paid=result.order.settlement_amounts.paid_money;
     const canCheck=sessionOpen&&!result.expired&&!result.recovery&&!result.unknown&&!unresolved&&!attemptOpen(result.attempt)&&result.order.gift_card_tender_enabled===true&&(!paid||BigInt(paid.amount)===0n),pendingGift=this.unresolvedGift(record);
     const savedGift=pendingGift?.body?JSON.parse(pendingGift.body) as {gift_card_id?:string}:undefined;
-    const giftUnconfirmed=pendingGift?(pendingGift.kind==='gift_remove'?{kind:'remove' as const,gift_card_id:savedGift!.gift_card_id!,last_characters:result.order.gift_cards?.find(card=>card.gift_card_id===savedGift?.gift_card_id)?.last_characters??null,can_check:canCheck}:{kind:'apply' as const,can_check:canCheck}):null;
+    const giftUnconfirmed=pendingGift?(pendingGift.kind==='gift_remove'?{kind:'remove' as const,gift_card_id:savedGift!.gift_card_id!,last_characters:result.order.gift_cards?.find(card=>card.gift_card_id===savedGift?.gift_card_id)?.last4??null,can_check:canCheck}:{kind:'apply' as const,can_check:canCheck}):null;
     const giftEditable=canCheck&&!pendingGift;
     const methods=collection==='processor'&&['new_payment','pay_remaining'].includes(next)&&!result.expired?(await this.client.paymentMethods.list(undefined,this.auth.checkout(record))).data.map(safeMethod):[];
     const pending=result.attempt?.status==='requires_action'?result.attempt.pending_actions?.[0]:undefined;

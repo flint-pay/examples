@@ -146,11 +146,11 @@ export function subscription(overrides: Partial<Subscription> = {}): Subscriptio
     billing_schedule_owner: 'flint',
     billing_interval: 'monthly',
     billing_interval_count: 1,
-    current_period_end: '2026-11-01T17:00:00Z',
+    current_period_end_at: '2026-11-01T17:00:00Z',
     next_billing_at: '2026-11-01T17:00:00Z',
-    recurring_amount_money: usd(2200),
+    recurring_subtotal_money: usd(2200),
     subscription_plan: { name: 'Coffee club, monthly', billing_interval: 'monthly', billing_interval_count: 1, currency: 'USD', status: 'active', subscription_plan_id: 'plan_example_001' },
-    payment_method: card(),
+    payment_method_id: ids.method,
     line_items: [{ name: 'Coffee club, monthly', quantity: 1, subtotal_money: usd(2200), unit_price_money: usd(2200), base_subtotal_money: usd(2200), modifier_total_money: usd(0) }],
     buyer_actions: [
       action('cancel', true),
@@ -230,8 +230,8 @@ export function eligibility(): ReturnEligibilityCheck {
     selection: { selection_type: 'all_remaining_fulfilled' },
     policy_evaluation: { line_items: [], reason: 'eligible_under_policy', reason_message: 'Eligible.', status: 'eligible' },
     line_items: [
-      { order_line_item_id: ids.line, fulfillment_id: ids.fulfillment, name: 'House blend coffee, 12 oz', is_self_service_enabled: true, eligibility: eligible, suggested_return_reasons: [{ return_reason_id: 'rr_1', handle: 'changed-mind', name: 'Changed my mind', is_note_required: false }, { return_reason_id: 'rr_2', handle: 'damaged', name: 'Arrived damaged', is_note_required: true }], bundle_components: [], modifiers: [], selected_options: [] },
-      { order_line_item_id: 'oli_example_002', fulfillment_id: ids.fulfillment, name: 'Stoneware mug', is_self_service_enabled: true, eligibility: { ...eligible, eligible_quantity: '0', status: 'ineligible', reason: 'return_window_expired' }, suggested_return_reasons: [], bundle_components: [], modifiers: [], selected_options: [] },
+      { order_line_item_id: ids.line, fulfillment_id: ids.fulfillment, name: 'House blend coffee, 12 oz', can_buyer_request: true, eligibility: eligible, suggested_return_reasons: [{ return_reason_id: 'rr_1', handle: 'changed-mind', name: 'Changed my mind', is_note_required: false }, { return_reason_id: 'rr_2', handle: 'damaged', name: 'Arrived damaged', is_note_required: true }], bundle_components: [], modifiers: [], selected_options: [] },
+      { order_line_item_id: 'oli_example_002', fulfillment_id: ids.fulfillment, name: 'Stoneware mug', can_buyer_request: true, eligibility: { ...eligible, eligible_quantity: '0', status: 'ineligible', reason: 'return_window_expired' }, suggested_return_reasons: [], bundle_components: [], modifiers: [], selected_options: [] },
     ],
   } as unknown as ReturnEligibilityCheck;
 }
@@ -257,7 +257,7 @@ export const address: CustomerAddress = {
 export const giftCard: BuyerGiftCard = {
   gift_card_id: ids.giftCard,
   merchant_id: 'mer_example_001',
-  last_characters: 'WXYZ',
+  last4: 'WXYZ',
   currency: 'USD',
   status: 'active',
   balance_money: usd(2500),
@@ -508,7 +508,7 @@ export function pageContext(pageId: PageId, variant: Variant = 'default'): Rende
       if (variant === 'past_due')
         return context({ subscription: subscription({ status: 'past_due', buyer_actions: [action('cancel', true), action('pause', false, { unavailable_reason: 'not_in_state' }), action('resume', false), action('reactivate', false), action('update_payment_method', true, { is_required: true }), action('retry_payment', true, { is_required: true })] }), ...base });
       if (variant === 'retrying') return context({ subscription: subscription({ status: 'past_due', buyer_actions: [action('retry_payment', false), action('update_payment_method', true)] }), retry: retry({ status: 'processing' }), ...base });
-      if (variant === 'retry_failed') return context({ subscription: subscription({ status: 'past_due', buyer_actions: [action('retry_payment', true), action('update_payment_method', true)] }), retry: retry({ status: 'failed', failure: { code: 'card_declined', message: 'Your card was declined.' } }), ...base });
+      if (variant === 'retry_failed') return context({ subscription: subscription({ status: 'past_due', buyer_actions: [action('retry_payment', true), action('update_payment_method', true)] }), retry: retry({ status: 'failed', last_payment_error: { code: 'card_declined', message: 'Your card was declined.', failed_at: '2026-10-30T17:00:00Z', remediation: null } }), ...base });
       if (variant === 'retry_succeeded') return context({ subscription: subscription(), retry: retry({ status: 'succeeded' }), ...base });
       if (variant === 'scheduled_cancel') return context({ subscription: subscription({ cancel_at_period_end: true, buyer_actions: [action('cancel', false), action('pause', false), action('resume', false), action('reactivate', true), action('update_payment_method', true), action('retry_payment', false)] }), ...base });
       if (variant === 'paused') return context({ subscription: subscription({ status: 'paused', buyer_actions: [action('cancel', true), action('pause', false), action('resume', true), action('reactivate', false), action('update_payment_method', true), action('retry_payment', false)] }), ...base });

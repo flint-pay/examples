@@ -1,14 +1,14 @@
-import type {Client,CustomerSession,RequestOptions} from '@flintpay/node';
+import type {Client,CustomerSessionWithSecret,RequestOptions} from '@flintpay/node';
 import type {Config} from '../config.ts';
 import {IdentityStore,digest} from '../identity/index.ts';
 import type {User,CustomerVault} from '../identity/index.ts';
 import {ResourceLocks} from '../store/db.ts';
 import type {Auth} from './auth.ts';
-import {LocalError} from './errors.ts';
+import {LocalError,credentialRejected,sdkReason} from './errors.ts';
 export class CustomerSessions {
   identity:IdentityStore;client:Client;auth:Auth;config:Config;sandboxId:string;locks:ResourceLocks;
   constructor(identity:IdentityStore,client:Client,auth:Auth,config:Config,sandboxId:string){this.identity=identity;this.client=client;this.auth=auth;this.config=config;this.sandboxId=sandboxId;this.locks=new ResourceLocks(identity.db);identity.db.exec('CREATE TABLE IF NOT EXISTS account_customer_session_generation(user_id TEXT NOT NULL,sandbox_id TEXT NOT NULL,generation INTEGER NOT NULL DEFAULT 1,PRIMARY KEY(user_id,sandbox_id)); CREATE TABLE IF NOT EXISTS account_pending_revocations(customer_session_id TEXT PRIMARY KEY,user_id TEXT NOT NULL,sandbox_id TEXT NOT NULL,idempotency_key TEXT NOT NULL,created_at INTEGER NOT NULL)');}
-  save(user:User,session:CustomerSession):CustomerVault {
+  save(user:User,session:CustomerSessionWithSecret):CustomerVault {
     if(session.customer_id!==user.flint_customer_id)throw new LocalError('INVALID_CUSTOMER_SESSION',401);
     const vault={user_id:user.user_id,sandbox_id:this.sandboxId,customer_session_id:session.customer_session_id,secret:session.secret,refresh_token:session.refresh_token,expires_at:Date.parse(session.expires_at),refresh_expires_at:Date.parse(session.refresh_token_expires_at)};
     if(!Number.isFinite(vault.expires_at)||!Number.isFinite(vault.refresh_expires_at))throw new LocalError('INVALID_CUSTOMER_SESSION',401);
@@ -26,37 +26,40 @@ export class CustomerSessions {
       return this.handle(user,error);
     });
   }
-  async handle(user:User,error:unknown):Promise<never>{
-    const code=error&&typeof error==='object'&&'code'in error?String(error.code):'';
-    if(code==='CUSTOMER_SESSION_REFRESH_REUSED'){
+  async handle(user:User,error:unknown,refreshing=false,merchantCall=false):Promise<never>{
+    // Flint answers every rejected customer credential with INVALID_CREDENTIAL; a revoked refresh token means it was reused.
+    if(refreshing&&credentialRejected(error)&&sdkReason(error)==='revoked'){
       // The binding comes from verified local identity, never a caller's customer selector.
       await this.client.customers.revokeSessions(user.flint_customer_id!,undefined,this.auth.merchant(this.identity.actionKey(`revoke-reused:${user.user_id}:${digest(this.identity.vault(user.user_id,this.sandboxId)?.refresh_token??'')}`))).catch(()=>{});
       console.warn(JSON.stringify({event:'customer_session_refresh_reused'}));
     }
-    if(['CUSTOMER_SESSION_REFRESH_REUSED','CUSTOMER_SESSION_REFRESH_EXPIRED','INVALID_CUSTOMER_SESSION','CUSTOMER_SESSION_NOT_FOUND'].includes(code)){this.invalidate(user);throw new LocalError('SESSION_ENDED',401);}
+    // A rejected merchant key says nothing about the buyer's session, so only customer authority ends it.
+    if(!merchantCall&&credentialRejected(error)||error instanceof LocalError&&error.code==='CUSTOMER_SESSION_REFRESH_EXPIRED'){this.invalidate(user);throw new LocalError('SESSION_ENDED',401);}
     throw error;
   }
   async vault(user:User,forceSecret?:string):Promise<CustomerVault>{
     if(!this.identity.isBound(this.identity.user(user.user_id),this.sandboxId))throw new LocalError('SESSION_ENDED',401);
     return this.locks.locked(`customer-session:${this.sandboxId}:${user.user_id}`,async assertOwnership=>{
       const vault=this.identity.vault(user.user_id,this.sandboxId);
+      let refreshing=false;
       try{
         assertOwnership();
         if(!vault){
           this.identity.db.prepare('INSERT OR IGNORE INTO account_customer_session_generation VALUES(?,?,1)').run(user.user_id,this.sandboxId);
           const generation=(this.identity.db.prepare('SELECT generation FROM account_customer_session_generation WHERE user_id=? AND sandbox_id=?').get(user.user_id,this.sandboxId) as {generation:number}).generation;
           const key=this.identity.actionKey(`session-create:${this.sandboxId}:${user.user_id}:${generation}`);
-          const session=await this.client.customerSessions.create({customer_id:user.flint_customer_id!,expires_in_seconds:String(this.config.sessionTtl)},this.auth.merchant(key));
+          const session=await this.client.customerSessions.create({customer_id:user.flint_customer_id!,expires_in_seconds:BigInt(this.config.sessionTtl)},this.auth.merchant(key));
           return this.save(user,session);
         }
         if(vault.refresh_expires_at<=Date.now())throw new LocalError('CUSTOMER_SESSION_REFRESH_EXPIRED',401);
         if(vault.expires_at>Date.now()+60000&&(!forceSecret||forceSecret!==vault.secret))return vault;
         const key=this.identity.actionKey(`session-refresh:${this.sandboxId}:${digest(vault.refresh_token)}`);
+        refreshing=true;
         const session=await this.client.customerSessions.refresh({refresh_token:vault.refresh_token},{idempotencyKey:key});
         assertOwnership();return this.save(user,session);
       }catch(error){
-        if(!vault){const deletions=await this.client.customerDeletionRequests.list({customer_id:user.flint_customer_id!,status:'completed'},this.auth.merchant()).catch(()=>null);if(deletions?.data.length){this.identity.db.prepare("UPDATE users SET status='closed' WHERE user_id=?").run(user.user_id);this.invalidate(user);throw new LocalError('ACCOUNT_CLOSED',401);}}
-        return this.handle(user,error);}
+        if(!vault){const deletions=await this.client.customerDeletionRequests.list({customer_id:user.flint_customer_id!,status:['completed']},this.auth.merchant()).catch(()=>null);if(deletions?.data.length){this.identity.db.prepare("UPDATE users SET status='closed' WHERE user_id=?").run(user.user_id);this.invalidate(user);throw new LocalError('ACCOUNT_CLOSED',401);}}
+        return this.handle(user,error,refreshing,!vault);}
     });
   }
   async call<T>(user:User,fn:(options:RequestOptions<'customer'>)=>Promise<T>,key?:string):Promise<T>{
@@ -64,13 +67,12 @@ export class CustomerSessions {
     let generation=this.generation(user);
     try{return await fn(key?this.auth.customer(vault.secret,key):this.auth.customer(vault.secret));}
     catch(error){
-      const code=error&&typeof error==='object'&&'code'in error?error.code:undefined;
-      if(code==='CUSTOMER_SESSION_EXPIRED'||['INVALID_CUSTOMER_SESSION','CUSTOMER_SESSION_NOT_FOUND'].includes(String(code))){
-        vault=code==='CUSTOMER_SESSION_EXPIRED'?await this.vault(user,vault.secret):await this.replacementAfterFailure(user,vault,generation,error);
+      if(credentialRejected(error)){
+        // An expired secret refreshes in place; any other rejection means the session itself is gone.
+        vault=sdkReason(error)==='expired'?await this.vault(user,vault.secret):await this.replacementAfterFailure(user,vault,generation,error);
         generation=this.generation(user);
         try{return await fn(key?this.auth.customer(vault.secret,key):this.auth.customer(vault.secret));}catch(retryError){
-          const retryCode=retryError&&typeof retryError==='object'&&'code'in retryError?String(retryError.code):'';
-          if(['INVALID_CUSTOMER_SESSION','CUSTOMER_SESSION_NOT_FOUND'].includes(retryCode)){await this.replacementAfterFailure(user,vault,generation,retryError);throw new LocalError('SESSION_ENDED',401);}
+          if(credentialRejected(retryError)){await this.replacementAfterFailure(user,vault,generation,retryError);throw new LocalError('SESSION_ENDED',401);}
           return this.handle(user,retryError);
         }
       }
