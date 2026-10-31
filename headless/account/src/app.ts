@@ -338,7 +338,7 @@ export function createApp(deps:Dependencies){
           store.run(`INSERT INTO payment_checkouts(checkout_ref,user_id,sandbox_id,resource_type,resource_id,resolution_id,order_id,checkout_session_id,checkout_auth_token,generation,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,sandbox_id,resource_type,resource_id) DO UPDATE SET last_attempt_id=CASE WHEN payment_checkouts.order_id=excluded.order_id THEN payment_checkouts.last_attempt_id ELSE NULL END,order_id=excluded.order_id,checkout_session_id=excluded.checkout_session_id,checkout_auth_token=excluded.checkout_auth_token,resolution_id=excluded.resolution_id,generation=excluded.generation,updated_at=excluded.updated_at`,ref,current.user_id,preflight.sandboxId,type,resourceId,storedResolutionId??null,result.checkout_session.order_id,result.checkout_session.checkout_session_id,result.checkout_auth_token,storedGeneration,now,now);
           return store.checkout(current.user_id,preflight.sandboxId,type,resourceId)!;
         });
-      }catch(error){const code=appError(error).code;if(code==='ACTION_NOT_ALLOWED')launch='surface_conflict';else if(code==='PAYMENT_ATTEMPT_ACTIVE'||code==='OPERATION_IN_PROGRESS')launch='collection_in_progress';else throw error;}
+      }catch(error){const code=appError(error).code;if(code==='ACTION_NOT_ALLOWED')launch='surface_conflict';else if(code==='RESOURCE_IN_USE'||code==='PAYMENT_ATTEMPT_ACTIVE'||code==='OPERATION_IN_PROGRESS')launch='collection_in_progress';else throw error;}
     }
     let state=null;
     if(record&&launch==='ready'){

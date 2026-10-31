@@ -195,7 +195,7 @@ export class PaymentEngine {
           // An attempt already running, not resumable, or a session restricted to recovery: show the current state.
           if(['PAYMENT_ATTEMPT_ACTIVE','ACTION_NOT_ALLOWED'].includes(code)||checkoutSessionUnusable(error))return this.reconcile(record);
           // A stale order version or gift card allocation: the total changed, so ask the buyer to review it.
-          if(['VERSION_CONFLICT','CONCURRENT_MODIFICATION'].includes(code))return {...await this.reconcile(record),totalChanged:true};
+          if(['VERSION_CONFLICT','CONCURRENT_MODIFICATION','LIMIT_EXCEEDED'].includes(code))return {...await this.reconcile(record),totalChanged:true};
           throw error;
         }
         this.store.run("UPDATE actions SET status='unknown',retry_after=? WHERE action_id=?",Date.now()+5000,job.action_id);
