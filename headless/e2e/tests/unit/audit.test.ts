@@ -23,7 +23,7 @@ function driver(dir: string): Driver { return new Driver(config(dir), {} as any,
 
 test('audit preserves SDK responses and exports resource IDs without authentication authority', async () => temp(async dir => {
   const entries: Record<string, unknown>[] = [];
-  const payload = { data: { customer_session_id: 'cses_PLACEHOLDER', customer_id: 'cus_PLACEHOLDER', secret: 'flint_cses_PLACEHOLDER', refresh_token: 'flint_cref_PLACEHOLDER', expires_at: '2000-02-01T00:00:00Z' } };
+  const payload = { data: {supported_actions:[], customer_session_id: 'cses_PLACEHOLDER', customer_id: 'cus_PLACEHOLDER', secret: 'flint_cses_PLACEHOLDER', refresh_token: 'flint_cref_PLACEHOLDER', expires_at: '2000-02-01T00:00:00Z' } };
   const response = Response.json(payload, { headers: { 'x-request-id': 'req_PLACEHOLDER' } });
   const transport = auditedFetch(async () => response, async e => { entries.push(e); await writePrivateText(join(dir, 'app-audit.jsonl'), lines(...entries)); });
   const received = await transport(`${API_ORIGIN}/v1/customer-sessions`, { method: 'POST', headers: { authorization: 'Bearer flint_test_PLACEHOLDER', 'idempotency-key': 'key_PLACEHOLDER' }, body: JSON.stringify({ customer_id: 'cus_PLACEHOLDER' }) });
@@ -44,7 +44,7 @@ test('audit rejects production, private routes, first-party headers, live keys a
 });
 test('customer and nested creation paths require a key while read-like previews remain usable', async () => {
   let calls = 0; const transport = auditedFetch(async () => { calls++; return Response.json({ data: {} }); }, async () => {});
-  for (const path of ['/v1/me/addresses', '/v1/me/returns', '/v1/me/invoices/inv_PLACEHOLDER/checkout-session', '/v1/me/subscriptions/sub_PLACEHOLDER/payment-retries', '/v1/customer-sessions/refresh', '/v1/checkout-sessions/cks_PLACEHOLDER/delivery-selections']) {
+  for (const path of ['/v1/me/addresses', '/v1/me/returns', '/v1/me/checkout-sessions', '/v1/me/subscriptions/sub_PLACEHOLDER/payment-retries', '/v1/customer-sessions/refresh', '/v1/delivery-selections']) {
     assert.ok(creationTypes(path).size); await assert.rejects(() => transport(API_ORIGIN + path, { method: 'POST' }), { message: 'APP_CREATION_DURABLE_KEY_REQUIRED' });
   }
   assert.equal(calls, 0); await transport(`${API_ORIGIN}/v1/me/return-previews`, { method: 'POST' }); assert.equal(calls, 1);
@@ -58,7 +58,7 @@ test('unknown app mutation outcome fails final reconciliation and exact replay r
   fail = false; await transport(`${API_ORIGIN}/v1/orders`, request); await consumeAppFeed(d, 'accountA', lines(...events), true);
 }));
 test('feed handles partial writes and repeated reads without reusing old logout evidence', async () => temp(async dir => {
-  const d = driver(dir), ready = lines({ kind: 'READY' }), revoked = lines({ kind: 'REVOCATION_ALL', customerId: 'cus_PLACEHOLDER', count: '1' });
+  const d = driver(dir), ready = lines({ kind: 'READY' }), revoked = lines({ kind: 'REVOCATION_ALL', customerId: 'cus_PLACEHOLDER', count: 1 });
   await consumeAppFeed(d, 'accountA', ready + revoked.slice(0, -2)); assert.equal(d.revocations.length, 0);
   await consumeAppFeed(d, 'accountA', ready + revoked); assertFreshRevocation(d, 0, 'accountA', { customerId: 'cus_PLACEHOLDER' });
   const checkpoint = d.revocations.length; await consumeAppFeed(d, 'accountA', ready + revoked);
@@ -91,7 +91,7 @@ test('durable responses redact credentials and restart replays the original key 
 test('private checkout response fields leave a clean journal and replay before known or interrupted reconciliation', async t => {
   for (const phase of ['known', 'unknown'] as const) await t.test(phase, async () => temp(async dir => {
     const ledger = new Ledger(join(dir, 'ledger.json'), run), keys: string[] = [];
-    const args = ['inv_PLACEHOLDER', { surface: 'embedded' }];
+    const args = ['inv_PLACEHOLDER', { surface: 'headless' }];
     const response = { invoice_id: 'inv_PLACEHOLDER', checkout_session: { checkout_session_id: 'cs_PLACEHOLDER', order_id: 'ord_PLACEHOLDER', recovery: [{ superseding_checkout_session_id: 'cs_NEXT_PLACEHOLDER', recovery_payment_attempt_id: 'pat_PLACEHOLDER' }] } };
     const send = async (key: string) => { keys.push(key); return response; };
     const initial = ledger.action('invoice-session', 'A', 'invoices.createCheckoutSession', args, send, async received => {
@@ -134,7 +134,23 @@ test('raw browser checkout DTOs and registered credentials remain forbidden', ()
 test('gift apply audit records checkout authority and proof presence without the code or header value',async()=>{
  const entries:Record<string,unknown>[]=[],proof='gccp_'+ 'X'.repeat(30),code='GIFT-FIXTURE-SECRET';let calls=0;
  const transport=auditedFetch(async()=>{calls++;return Response.json({data:{order_id:'ord_PLACEHOLDER'}});},async entry=>{entries.push(entry);});
- await transport(`${API_ORIGIN}/v1/orders/ord_PLACEHOLDER/gift-cards`,{method:'POST',headers:{'X-Checkout-Session-ID':'cs_PLACEHOLDER','X-Checkout-Session-Secret':'ckat_PLACEHOLDER','Flint-Gift-Card-Challenge':proof,'idempotency-key':'key_PLACEHOLDER'},body:JSON.stringify({gift_card_code:code,order_revision:'1'})});
+ await transport(`${API_ORIGIN}/v1/orders/ord_PLACEHOLDER/gift-cards`,{method:'POST',headers:{'X-Checkout-Session-ID':'cs_PLACEHOLDER','X-Checkout-Session-Secret':'ckat_PLACEHOLDER','Flint-Gift-Card-Challenge':proof,'idempotency-key':'key_PLACEHOLDER'},body:JSON.stringify({gift_card_code:code,order_revision:1})});
  const entry=entries.find(entry=>entry.kind==='MUTATION');assert.equal(entry?.operation,'ORDER_APPLY_GIFT_CARD');assert.equal(entry?.authMode,'checkout');assert.equal(entry?.challengeProof,true);assert.equal(entry?.targetId,'ord_PLACEHOLDER');for(const value of [proof,code,'ckat_PLACEHOLDER'])assert.equal(JSON.stringify(entries).includes(value),false);
  await assert.rejects(()=>transport(`${API_ORIGIN}/v1/orders/ord_PLACEHOLDER/gift-cards`,{method:'POST',headers:{authorization:'Bearer flint_test_PLACEHOLDER'},body:'{}'}),{code:'APP_GIFT_APPLY_MERCHANT_AUTH'});assert.equal(calls,1);
 });
+
+test('audit exports numeric revoke-all counters and preserves fresh revocation evidence',async()=>temp(async dir=>{
+  for(const count of [0,1,Number.MAX_SAFE_INTEGER,'1',-1,1.5,Number.MAX_SAFE_INTEGER+1,null]){
+    const entries:Record<string,unknown>[]=[];
+    const transport=auditedFetch(async()=>Response.json({data:{customer_id:'cus_PLACEHOLDER',revoked_count:count}}),async entry=>{entries.push(entry);});
+    await transport(`${API_ORIGIN}/v1/customers/cus_PLACEHOLDER/sessions/revoke`,{method:'POST',body:'{}'});
+    const valid=typeof count==='number'&&Number.isSafeInteger(count)&&count>=0;
+    const revocation=entries.find(entry=>entry.kind==='REVOCATION_ALL');
+    assert.equal(!!revocation,valid);
+    if(valid){
+      assert.equal(revocation!.count,count);
+      const d=driver(dir);await consumeAppFeed(d,'accountA',lines({kind:'READY'},...entries));
+      assert.equal(d.revocations.length,count>0?1:0);
+    }
+  }
+}));

@@ -1,3 +1,4 @@
+import type {PendingPaymentAction,StripePaymentClientAction} from '@flintpay/node';
 import type {CheckoutSession,Order,OrderPaymentAttempt} from '@flintpay/node';
 import type {SourcedOrder} from '../payments/engine.ts';
 import {Model} from '@flintpay/node';
@@ -23,4 +24,19 @@ export function safeOrder(order:SourcedOrder):unknown {
 }
 export function safeSession(session:CheckoutSession):unknown {
   return buyerSafe({...session,gift_card_challenge:undefined,page_origin:undefined,url:undefined,redirects:undefined,payment_return_url:undefined,customer:undefined,merchant_id:undefined,active_payment_attempt:safeAttempt(session.active_payment_attempt)});
+}
+
+/** Action authority is returned only by payment JSON jobs, never embedded in HTML. */
+export type BrowserClientAction =
+  | {type:'url';url:string;expiresAt:string}
+  | {type:'stripe';stripe:StripePaymentClientAction;expiresAt:string};
+export function projectClientAction(pending:PendingPaymentAction|undefined):BrowserClientAction|undefined {
+  if(!pending)return undefined;
+  const action=pending.client_action;
+  if(action.type==='url'&&'url'in action&&typeof action.url==='string')return {type:'url',url:action.url,expiresAt:pending.expires_at};
+  if(action.type!=='stripe'||!('stripe'in action)||!action.stripe)return undefined;
+  const stripe=action.stripe as StripePaymentClientAction;
+  return {type:'stripe',expiresAt:pending.expires_at,stripe:{account_id:stripe.account_id,publishable_key:stripe.publishable_key,
+    ...(stripe.payment_intent?{payment_intent:{client_secret:stripe.payment_intent.client_secret,stripe_js_call:stripe.payment_intent.stripe_js_call}}:{}),
+    ...(stripe.setup_intent?{setup_intent:{client_secret:stripe.setup_intent.client_secret,stripe_js_call:stripe.setup_intent.stripe_js_call}}:{})}};
 }

@@ -1,7 +1,8 @@
+import {errors} from '@flintpay/node';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import type {Client,CheckoutSession,Order,RequestOptions} from '@flintpay/node';
+import type {Client,CheckoutSession,Order,OrderPaymentAttempt,PayOrderRequestInput,RequestOptions} from '@flintpay/node';
 import {SdkError} from '@flintpay/node';
 import {flintError} from './support/flint-error.ts';
 import {Checkouts} from '../../src/flint/checkouts.ts';
@@ -12,6 +13,7 @@ import type {ActionRecord} from '../../src/store/db.ts';
 import {Carts} from '../../src/store/cart.ts';
 import type {Catalog} from '../../src/flint/catalog.ts';
 import {IdentityStore} from '../../src/identity/index.ts';
+import {projectClientAction} from '../../src/flint/projection.ts';
 import {PaymentEngine} from '../../src/payments/engine.ts';
 
 // Flint publishes shared codes and tells the refusals apart by reason and resource.
@@ -22,14 +24,14 @@ function fixture(){
   const store=new Store(':memory:'),identity=new IdentityStore(':memory:');
   const config=readConfig({FLINT_API_KEY:'flint_test_FIXTURE',FLINT_API_BASE_URL:'https://api.staging.withflintpay.com',APP_ORIGIN:'http://localhost:4100',PORT:'4100'});
   const money={amount:'1000',currency:'USD'};
-  const order={order_id:'ord_fixture',status:'open',payment_status:'unpaid',version:'1',line_items:[{order_line_item_id:'line_initial',variant_id:'variant_initial',quantity:'1'}],settlement_amounts:{outstanding_money:money,paid_money:{amount:'0',currency:'USD'}}} as unknown as Order;
+  const order={order_id:'ord_fixture',status:'open',payment_status:'unpaid',version:1,line_items:[{order_line_item_id:'line_initial',variant_id:'variant_initial',quantity:1}],settlement_amounts:{outstanding_money:money,paid_money:{amount:'0',currency:'USD'}}} as unknown as Order;
   let session={checkout_session_id:'cs_initial',order_id:order.order_id,status:'open',page_origin:config.appOrigin} as CheckoutSession;
   const launches:{body:Record<string,unknown>;key:string|undefined}[]=[],reads:string[]=[],blocked:string[]=[],updates:{id:string;body:Record<string,unknown>;key:string|undefined;authMode:string|undefined}[]=[];
   let failUpdate:Error|undefined;
   const client={
-    orders:{get:async()=>order,addLineItems:async(_id:string,body:{line_items:{type:'variant';variant_id:string;quantity:string}[]})=>{
+    orders:{get:async()=>order,createLineItems:async(_id:string,body:{line_items:{type:'variant';variant_id:string;quantity:number}[]})=>{
       order.line_items.push(...body.line_items.map(line=>({order_line_item_id:'line_added',...line}) as unknown as Order['line_items'][number]));
-      order.version='2';session={...session,status:'invalidated',terminal_reason:'order_mutated'};return order;
+      order.version=2;session={...session,status:'invalidated',terminal_reason:'order_mutated'};return order;
     }},
     checkoutSessions:{get:async(_id:string,_params:unknown,options:RequestOptions)=>{
       reads.push(options.checkoutToken?'checkout':'merchant');
@@ -40,13 +42,13 @@ function fixture(){
       updates.push({id,body,key:options.idempotencyKey,authMode:options.checkoutToken?'checkout':undefined});
       if(failUpdate){const error=failUpdate;failUpdate=undefined;throw error;}
       session={...session,buyer_contact:{...session.buyer_contact,...body.buyer_contact}} as CheckoutSession;return session;
-    },getCurrentDeliverySelection:async()=>{if(session.is_in_recovery){blocked.push('delivery_selection');throw restricted();}return {};},createDeliveryQuote:async()=>{blocked.push('delivery_quote');throw restricted();},create:async(body:Record<string,unknown>,options:RequestOptions)=>{
+    },create:async(body:Record<string,unknown>,options:RequestOptions)=>{
       launches.push({body,key:options.idempotencyKey});
       if(body.replace_checkout_session_id&&session.status!=='open')throw inUse();
       if(session.status==='open')assert.equal(body.replace_checkout_session_id,session.checkout_session_id);
       session={...session,checkout_session_id:'cs_fresh',status:'open',page_origin:body.page_origin as string};
       return {...session,checkout_auth_token:'fixture checkout credential'};
-    }},
+    }},deliverySelections:{get:async()=>{if(session.is_in_recovery){blocked.push('delivery_selection');throw restricted();}return {};}},deliveryQuotes:{create:async()=>{blocked.push('delivery_quote');throw restricted();}},
   } as unknown as Client;
   const auth=createAuth(config.apiKey),carts=new Carts(store,{} as Catalog),cart=carts.current(identity.createSession().session);
   store.run('INSERT INTO cart_lines VALUES(?,?,?,?,?)','line_initial',cart.cart_id,'product_initial','variant_initial',1);
@@ -56,7 +58,7 @@ function fixture(){
   const endSession=(status:CheckoutSession['status']='invalidated')=>{session={...session,status};store.run('UPDATE checkouts SET needs_replacement=1 WHERE checkout_ref=?','chk_fixture');};
   const saveContact=(contact:unknown)=>{const details=app.details(record());details.contact=contact as typeof details.contact;details.delivery_quote={delivery_quote_id:'quote_old'} as typeof details.delivery_quote;app.saveDetails(record(),details);};
   // The backend keeps an expired session open in recovery mode while a 3DS attempt is active, and allows only reads there.
-  const enterRecovery=()=>{session={...session,status:'open',is_in_recovery:true} as CheckoutSession;order.active_payment_attempt={order_payment_attempt_id:'attempt_fixture',status:'requires_action',is_resumable:true,pending_actions:[]} as unknown as Order['active_payment_attempt'];};
+  const enterRecovery=()=>{session={...session,status:'open',is_in_recovery:true} as CheckoutSession;order.active_payment_attempt={order_id:'ord_example',supported_actions:[],order_payment_attempt_id:'attempt_fixture',status:'requires_action',is_resumable:true,pending_actions:[]} as unknown as Order['active_payment_attempt'];};
   return {store,identity,app,cart,order,launches,reads,blocked,updates,enterRecovery,record,endSession,saveContact,failNextUpdate(error:Error){failUpdate=error;},client,close(){store.close();identity.close();}};
 }
 async function use(fn:(f:ReturnType<typeof fixture>)=>Promise<void>){const f=fixture();try{await fn(f);}finally{f.close();}}
@@ -123,7 +125,7 @@ test('a failed authoritative session read cannot turn replacement into creation'
   await assert.rejects(()=>f.app.read('chk_fixture'),/Fixture merchant read unavailable/);assert.equal(f.launches.length,0);
 }));
 
-const lost=()=>new SdkError('transport','Fixture transport lost','unknown',true,{status:0,headers:{},attempts:1,durationMs:1});
+const lost=()=>new errors.ConnectionError('Fixture transport lost',{outcome:'unknown',retryAllowed:true,...({status:0,headers:{},attempts:1,durationMs:1})});
 const sessionContact=(read:{session:unknown})=>(read.session as {buyer_contact?:unknown}).buyer_contact;
 
 for(const [label,end] of [['an invalidated',true],['a still-open',false]] as const)test(`${label} replacement restores explicitly saved contact, including cleared fields`,async()=>use(async f=>{
@@ -202,11 +204,31 @@ test('a recovery-mode read leaves a pending contact restoration pending for the 
 
 test('a normal open session still restores pending contact and reads its delivery selection',async()=>use(async f=>{
   const selection={delivery_selection_id:'selection_fixture',status:'active'};
-  Object.assign(f.client.checkoutSessions,{getCurrentDeliverySelection:async()=>({delivery_selection:selection})});
+  Object.assign(f.order,{governing_delivery_selection_id:selection.delivery_selection_id});Object.assign(f.client.deliverySelections,{get:async()=>selection});
   const key=journalContact(f,{email:'buyer@example.com',phone:null});
   const read=await f.app.read('chk_fixture');
   assert.equal(f.updates.length,1);assert.deepEqual(f.updates[0],{id:'cs_initial',body:{buyer_contact:{email:'buyer@example.com',phone:null}},key,authMode:'checkout'});
   assert.deepEqual(sessionContact(read),{email:'buyer@example.com',phone:null});
   assert.equal(f.store.get<ActionRecord>('SELECT * FROM actions WHERE action_id=?',key)?.status,'succeeded');
   assert.deepEqual(f.app.details(read.record).delivery_selection,selection);assert.equal(f.launches.length,0);
+}));
+
+test('checkout status read resumes a durable Stripe fallback after the refusal read failed',async()=>use(async f=>{
+  const sent:{body:PayOrderRequestInput;key?:string}[]=[];
+  const get=f.client.orders.get.bind(f.client.orders);let failRead=false;
+  f.client.orders.get=(async(...args:Parameters<typeof get>)=>{if(failRead){failRead=false;throw new Error('refusal read failed');}return get(...args);}) as typeof get;
+  f.client.orders.pay=(async(_id:string,body:PayOrderRequestInput,options:RequestOptions)=>{
+    sent.push({body,key:options.idempotencyKey});
+    if(sent.length===1){f.enterRecovery();failRead=true;throw flintError(409,'ACTION_NOT_ALLOWED',{reason:'provider_action_unsupported'});}
+    f.order.active_payment_attempt={...f.order.active_payment_attempt,pending_actions:[{pending_action_id:'action_fixture',expires_at:'2099-01-01T00:00:00Z',client_action:{type:'stripe',stripe:{publishable_key:'pk_example',payment_intent:{client_secret:'pi_example_secret',stripe_js_call:'handle_next_action'}}}}]} as unknown as OrderPaymentAttempt;
+    return {order:f.order,order_payment_attempt:f.order.active_payment_attempt};
+  }) as typeof f.client.orders.pay;
+  const engine=f.app.payments,row=f.record(),job=engine.job(row,'pay',{action:'pay',client_action_type:'url',payment_source:{credential_type:'stripe_confirmation_token',stripe:{confirmation_token:'ctoken_example'}}});
+  await assert.rejects(()=>engine.execute(row,job,()=>{}),/refusal read failed/);
+  const read=await f.app.read(row.checkout_ref);
+  assert.equal(read.result.unknown,false);assert.equal(engine.next(read.result),'authenticate');
+  assert.equal(projectClientAction(read.result.attempt?.pending_actions?.[0])?.type,'stripe');
+  assert.deepEqual(sent[1]!.body,{action:'resume',order_payment_attempt_id:read.result.attempt!.order_payment_attempt_id,client_action_type:'stripe'});
+  assert.equal(sent[1]!.key,`${sent[0]!.key}-stripe`);
+  await f.app.read(row.checkout_ref);assert.equal(sent.length,2);
 }));

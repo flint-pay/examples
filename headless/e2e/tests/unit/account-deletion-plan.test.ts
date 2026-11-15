@@ -115,8 +115,8 @@ function deletionHarness(reads: DeletionRead[]) {
         if (buyer === 'd') remoteSessionRevoked = true;
         events.push(`${buyer}:decision:${step.args[1].decision}`);
       },
-      clients: { clients: { A: { customers: { getDeletionRequest: async (customerId: string, requestId: string) => {
-        assert.equal(customerId, buyers.d.customerId); assert.equal(requestId, 'cdr_d_PLACEHOLDER');
+      clients: { clients: { A: { customerDeletionRequests: { get: async (requestId: string) => {
+        assert.equal(requestId, 'cdr_d_PLACEHOLDER');
         assert.equal(remoteSessionRevoked, true); assert.equal(localVault, true); assert.equal(signInAttempts, 0);
         const value = reads[publicReads++];
         if (!value) throw pollContinued;

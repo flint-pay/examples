@@ -26,12 +26,12 @@ test('app process environments contain only their narrow keys with separate sand
 });
 test('operator and app contexts are verified independently and privileged app scopes fail', async () => {
   const c = loadConfig(environment()), f = { readiness: { A: { ...c.pins.A, mode: 'test' }, B: { ...c.pins.B, mode: 'test' } } } as unknown as Fixtures;
-  const clients = new VerifiedClients(c, f), context = { environment: 'sandbox', auth_type: 'api_key', merchant_id: c.pins.A.merchantId, sandbox_id: c.pins.A.sandboxId, scopes: [] as string[] };
-  const seen: string[] = []; clients.clients.A = { developer: { getAuthContext: async () => { seen.push('operator'); return context; } } } as any;
-  clients.appClients.A = { developer: { getAuthContext: async () => { seen.push('app'); return context; } } } as any;
+  const clients = new VerifiedClients(c, f), context = { mode: 'test', auth_type: 'api_key', merchant_id: c.pins.A.merchantId, sandbox_id: c.pins.A.sandboxId, scopes: [] as string[] };
+  const seen: string[] = []; clients.clients.A = { authContext: { get: async () => { seen.push('operator'); return context; } } } as any;
+  clients.appClients.A = { authContext: { get: async () => { seen.push('app'); return context; } } } as any;
   await clients.verifyContext('A'); assert.deepEqual(seen, ['operator', 'app']);
-  clients.appClients.A = { developer: { getAuthContext: async () => ({ ...context, scopes: ['commerce.gift_cards.secrets.write'] }) } } as any;
+  clients.appClients.A = { authContext: { get: async () => ({ ...context, scopes: ['commerce.gift_cards.secrets.write'] }) } } as any;
   await assert.rejects(() => clients.verifyContext('A'), { message: 'APP_PRIVILEGED_GIFT_SCOPE_FORBIDDEN' });
-  clients.appClients.A = { developer: { getAuthContext: async () => ({ ...context, sandbox_id: 'test_UNIT_FOREIGN' }) } } as any;
+  clients.appClients.A = { authContext: { get: async () => ({ ...context, sandbox_id: 'test_UNIT_FOREIGN' }) } } as any;
   await assert.rejects(() => clients.verifyContext('A'), { message: 'APP_CREDENTIAL_CONTEXT_MISMATCH' });
 });

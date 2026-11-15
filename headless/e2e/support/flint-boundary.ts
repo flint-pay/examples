@@ -145,7 +145,14 @@ export class BrowserGuard {
       if (/json/.test(contentType) && (/\/(?:pay|resume|attempt)$/.test(u.pathname) || u.origin === this.accountOrigin && /^\/(?:invoices|returns)\/[^/]+\/pay\/submit$/.test(u.pathname) || /\/payment-methods\/new\/(?:setup|confirm|state)$/.test(u.pathname))) {
         try {
           const b = JSON.parse(text);
-          providerJob = b.state?.attempt?.status === 'requires_action' || b.state?.next === 'authenticate' || !!b.client_setup && b.payment_method?.status === 'pending';
+          const requiresAction=b.state?.attempt?.status==='requires_action'||b.state?.next==='authenticate';
+          if(requiresAction&&b.client_action?.type==='stripe'){
+            this.scanner.scan(JSON.stringify(b.client_action.stripe),'body',{providerJob:true});
+            const {stripe,...action}=b.client_action;
+            this.scanner.scan(JSON.stringify({...b,client_action:action}),'body');
+            return;
+          }
+          providerJob = !!b.client_setup && b.payment_method?.status === 'pending';
         } catch { /* malformed app JSON remains scanned */ }
       }
       this.scanner.scan(text, 'body', { providerJob });

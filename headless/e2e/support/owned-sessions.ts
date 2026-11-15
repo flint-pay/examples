@@ -10,7 +10,7 @@ export async function exerciseOwnSessionRefresh(operator: Operator, customerId: 
   invariant(operator.ledger.state.resources.some(r => r.sandbox === 'A' && r.type === 'customer' && r.resource === customerId && r.owned), 'DISPOSABLE_SESSION_CUSTOMER_AUTHORITY_REQUIRED');
   invariant((await operator.clients.clients.A.customers.get(customerId)).customer_id === customerId, 'SESSION_CUSTOMER_CONTEXT_MISMATCH');
   const reviewAt = new Date(operator.runDate() + 86400_000).toISOString();
-  const minted = await operator.execute({ name: 'own-session-mint', sandbox: 'A', operation: 'customerSessions.create', args: [{ customer_id: customerId, expires_in_seconds: '300' }], creates: [{ path: 'customer_session_id', type: 'customer_session', cleanup: 'customer_session', reviewAt }], purpose: 'own-public-refresh-family' });
+  const minted = await operator.execute({ name: 'own-session-mint', sandbox: 'A', operation: 'customerSessions.create', args: [{ customer_id: customerId, expires_in_seconds: 300 }], creates: [{ path: 'customer_session_id', type: 'customer_session', cleanup: 'customer_session', reviewAt }], purpose: 'own-public-refresh-family' });
   const first = minted.data; invariant(first.secret && first.refresh_token, 'OWN_SESSION_AUTHORITY_REQUIRED');
   const args = [{ credential_source: 'A:own-session-mint', customer_session_id: first.customer_session_id, generation: 'superseded' }];
   const second = await operator.ledger.action('own-session-refresh', 'A', 'customerSessions.refresh', args, async key => {

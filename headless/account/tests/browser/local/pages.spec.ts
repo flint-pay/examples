@@ -17,7 +17,7 @@ const variants: Partial<Record<PageId, string[]>> = {
   'ac-return': ['default', 'approved', 'awaiting_payment', 'completed', 'canceled'],
   'ac-invoices': ['default', 'empty', 'error'],
   'ac-invoice': ['default', 'overdue', 'processing', 'paid', 'closed', 'awaiting'],
-  'ac-invoice-pay': ['default', 'declined', 'saved', 'surface_conflict', 'collection_in_progress', 'unavailable', 'expired', 'waiting', 'recovery', 'authenticate', 'affirm_incomplete', 'pay_remaining', 'bank_processing', 'total_changed'],
+  'ac-invoice-pay': ['default', 'declined', 'saved', 'surface_conflict', 'collection_in_progress', 'unavailable', 'expired', 'waiting', 'recovery', 'authenticate', 'affirm_incomplete', 'url_pending', 'returned_declined', 'returned_waiting', 'pay_remaining', 'bank_processing', 'total_changed'],
   'ac-return-pay': ['default', 'declined', 'surface_conflict'],
   'ac-subscriptions': ['default', 'empty', 'error'],
   'ac-subscription': ['default', 'past_due', 'retrying', 'retry_failed', 'retry_succeeded', 'scheduled_cancel', 'paused', 'store_policy', 'cancel_error', 'end_of_period'],

@@ -1,3 +1,4 @@
+import {errors} from '@flintpay/node';
 import { SdkError } from '@flintpay/node';
 import type { Client } from '@flintpay/node';
 import type { Auth } from './flint.ts';
@@ -78,7 +79,7 @@ export function routing(event: Pick<Envelope, 'event_type' | 'test'>): { process
 
 function permanent(error: unknown): boolean {
   if (error instanceof PermanentError) return true;
-  return error instanceof SdkError && ['not_found', 'validation', 'protocol'].includes(error.kind);
+  return error instanceof SdkError && (error instanceof errors.NotFoundError || error instanceof errors.InvalidRequestError || error instanceof errors.UnexpectedResponseError);
 }
 
 /** Processes one due event. Returns false when nothing was due. */

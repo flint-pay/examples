@@ -1,3 +1,4 @@
+import {errors} from '@flintpay/node';
 import test from 'node:test';
 import {readdirSync,readFileSync} from 'node:fs';
 import assert from 'node:assert/strict';
@@ -8,7 +9,7 @@ import {readConfig} from '../../src/config.ts';
 import {securityHeaders} from '../../src/security/headers.ts';
 import {redact} from '../../src/security/log.ts';
 const origin='https://checkout.staging.withflintpay.com',url=`${origin}/gift-card-challenge/gccf_fixture.token`;
-const error=(details:Record<string,unknown>,status=400,code='GIFT_CARD_CHALLENGE_REQUIRED')=>new SdkError('validation','fixture refusal','response',false,{status,headers:{},attempts:1,durationMs:1},code,details as never);
+const error=(details:Record<string,unknown>,status=400,code='GIFT_CARD_CHALLENGE_REQUIRED')=>new errors.InvalidRequestError('fixture refusal',{outcome:'response',retryAllowed:false,...({status,headers:{},attempts:1,durationMs:1}),code:code,details:(details as never as any)?.details??[],param:(details as never as any)?.param,remediation:(details as never as any)?.remediation,body:details as never});
 const errorObject=(code='GIFT_CARD_CHALLENGE_REQUIRED',extra:object={})=>({type:'conflict_error',code,message:'fixture refusal',doc_url:`https://developers.withflintpay.com/docs/errors#${code.toLowerCase()}`,error_source:'integration',remediation:null,request_id:`req_${'0'.repeat(26)}`,...extra});
 const reasoned=(reason:string,remediation:object|null=null)=>errorObject('GIFT_CARD_CHALLENGE_REQUIRED',{details:[{code:'GIFT_CARD_CHALLENGE_REQUIRED',message:'fixture refusal',reason,...(remediation?{remediation}:{})}]});
 const details=(reason='proof_required',urls=[url],actionType='complete_gift_card_challenge')=>reasoned(reason,{retry:'none',next_actions:urls.map(url=>({action_type:actionType,url}))});

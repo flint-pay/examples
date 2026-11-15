@@ -2,7 +2,7 @@ import { expect } from '@playwright/test';
 import type { Driver } from '../support/driver.ts';
 import type { Scenario } from './storefront.ts';
 import { providerSteps, bank } from './provider.ts';
-import { invariant, apiFailure, emit } from '../support/safe.ts';
+import { invariant, nonnegativeSafeInteger, apiFailure, emit } from '../support/safe.ts';
 import { equalMoney, money, assertOneCharge } from '../support/money.ts';
 import { createBuyerClient, buyerInvoiceLaunch, hostedInvoiceLaunch, beginHostedAuthentication } from '../support/public-actions.ts';
 import { exerciseOwnSessionRefresh } from '../support/owned-sessions.ts';
@@ -118,12 +118,12 @@ export const account: Record<string, Scenario> = {
     invariant(firstOrderNumber === secondOrderNumber, 'INVOICE_RELAUNCH_CHANGED_ORDER');
     const buyer = await createBuyerClient(d, 'invoice-buyer-authority', d.fixtures.buyers.b1.customerId!);
     const sessions = await d.operator.clients.clients.A.checkoutSessions.list({ order_id: invoice.order_id, status: ['open'], page_size: 100 });
-    invariant(sessions.data.length === 1 && !sessions.next_page_token && sessions.data[0]!.surface === 'embedded', 'INVOICE_SESSION_NOT_REUSED');
+    invariant(sessions.data.length === 1 && !sessions.next_page_token && sessions.data[0]!.surface === 'headless', 'INVOICE_SESSION_NOT_REUSED');
     const reused = await buyerInvoiceLaunch(d, buyer, 'invoice-reuse', invoice.invoice_id); invariant(reused.checkout_session.checkout_session_id === sessions.data[0]!.checkout_session_id, 'INVOICE_SESSION_NOT_REUSED');
     invariant(reused.checkout_session.order_id === invoice.order_id, 'INVOICE_RELAUNCH_CHANGED_ORDER');
     const idle = await d.operator.issueInvoice('idle-invoice', d.fixtures.buyers.b1.customerId!, d.fixtures.buyers.b1.email);
     const hosted = await hostedInvoiceLaunch(d, 'idle-hosted', idle.invoice_id); const embedded = await buyerInvoiceLaunch(d, buyer, 'idle-embedded-replace', idle.invoice_id);
-    invariant(embedded.checkout_session.surface === 'embedded' && hosted.checkout_session.checkout_session_id !== embedded.checkout_session.checkout_session_id, 'HOSTED_IDLE_NOT_REPLACED');
+    invariant(embedded.checkout_session.surface === 'headless' && hosted.checkout_session.checkout_session_id !== embedded.checkout_session.checkout_session_id, 'HOSTED_IDLE_NOT_REPLACED');
     const conflict = await d.operator.issueInvoice('conflict-invoice', d.fixtures.buyers.b1.customerId!, d.fixtures.buyers.b1.email);
     const pending = await hostedInvoiceLaunch(d, 'conflict-hosted', conflict.invoice_id); await beginHostedAuthentication(d, 'conflict-hosted-pay', pending);
     await d.goto(page, d.config.origins.accountA, `/invoices/${conflict.invoice_id}/pay`); await expect(page.getByTestId('ac-payment')).toHaveAttribute('data-state', 'surface_conflict');
@@ -282,7 +282,7 @@ export const account: Record<string, Scenario> = {
         const customerId = d.fixtures.buyers.d.customerId!, requestId = request.customer_deletion_request_id;
         // Approval revokes the buyer's session, so completion is read through merchant authority.
         await expect.poll(async () => {
-          const deletion = await d.operator.clients.clients.A.customers.getDeletionRequest(customerId, requestId);
+          const deletion = await d.operator.clients.clients.A.customerDeletionRequests.get(requestId);
           return deletion.customer_id === customerId && deletion.customer_deletion_request_id === requestId && deletion.status === 'completed' && typeof deletion.resolved_at === 'string' && Number.isFinite(Date.parse(deletion.resolved_at));
         }, { timeout: 60_000 }).toBe(true);
         await page.reload();
@@ -332,7 +332,7 @@ export async function replayAppRefresh(d: Driver, anonymous: Pick<Client, 'custo
     invariant(false, 'SUPERSEDED_REFRESH_ACCEPTED');
   }
   if (ledger.state.actions['A:ac15-superseded-refresh-replay'].phase === 'unknown') {
-    await ledger.action('ac15-replay-reconcile', 'A', 'customers.revokeSessions', [customerId, {}], async key => (await d.operator.clients.writable('A', true)).customers.revokeSessions(customerId, {}, { idempotencyKey: key }), async response => { invariant(typeof response.revoked_count === 'string' && /^(0|[1-9]\d*)$/.test(response.revoked_count), 'SESSION_RECONCILIATION_FAILED'); });
+    await ledger.action('ac15-replay-reconcile', 'A', 'customers.revokeSessions', [customerId, {}], async key => (await d.operator.clients.writable('A', true)).customers.revokeSessions(customerId, {}, { idempotencyKey: key }), async response => { invariant(nonnegativeSafeInteger(response.revoked_count), 'SESSION_RECONCILIATION_FAILED'); });
     await ledger.abandonUnreplayable('A:ac15-superseded-refresh-replay', 'A:ac15-replay-reconcile');
     invariant(false, 'REPLAY_OUTCOME_UNKNOWN');
   }

@@ -41,7 +41,7 @@ test('webhook APIs against the configured sandbox', { timeout: 120_000 }, async 
     await t.test('a test event is sent to the configured endpoint', { skip: !config.endpointId && 'FLINT_WEBHOOK_ENDPOINT_ID is not set' }, async () => {
       const action = await sendTestEvent({ client, auth }, config.endpointId!, 'order.paid');
       assert.ok(action.webhook_event_id);
-      assert.ok(['queued', 'sending', 'delivered', 'failed'].includes(action.attempt_status));
+      assert.ok(['pending', 'delivered', 'failed'].includes(action.attempt_status));
     });
   } finally {
     inbox.close();

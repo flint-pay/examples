@@ -13,7 +13,7 @@ test('merchant readiness gates card and requested Affirm checks within the payme
     const clients = {
       verifyContext: async () => {}, verified: new Set(),
       fixtures: { readiness: { A: { cards: true, affirm: requested } } },
-      clients: { A: { merchants: { get: async () => ({ readiness: { capabilities: [
+      clients: { A: { merchant: { get: async () => ({ readiness: { capabilities: [
         { domain, capability: 'accept_card_payments', status: card },
         { domain, capability: 'accept_affirm_payments', status: affirm },
       ] } }) } } },

@@ -1,5 +1,6 @@
+import {counter} from './security/money.ts';
 import 'server-only';
-import {SdkError} from '@flintpay/node';
+import {SdkError,errors} from '@flintpay/node';
 import type {CreateCheckoutSessionCustomerVerificationRequestInput,CreateCustomerAddressRequestInput,DeliveryAddressRequestInput,OrderTaxLocationFullAddressRequestInput,UpdateCustomerAddressRequestInput} from '@flintpay/node';
 import {LocalError,condition,facts} from './flint/errors.ts';
 import type {Quote,Details} from './flint/checkouts.ts';
@@ -58,7 +59,7 @@ export const postVerification=job(async ctx=>{
   const address=confirming||!input.email?undefined:email(input.email);
   try{
     await checkouts.mutate(ref(ctx),'checkout_verification',{purpose,channel,email:address},async(record,key)=>{
-      const verified=await client.checkoutSessions.createCustomerVerification({checkout_session_id:record.checkout_session_id!,body:{purpose,channel,...(address?{email:address}:{})} as CreateCheckoutSessionCustomerVerificationRequestInput},auth.checkout(record,key));
+      const verified=await client.checkoutSessions.createCustomerVerification(record.checkout_session_id!,{purpose,channel,...(address?{email:address}:{})} as CreateCheckoutSessionCustomerVerificationRequestInput,auth.checkout(record,key));
       const details=checkouts.details(record);details.verification={customer_verification_id:verified.checkout_session_customer_verification_id,status:'code_sent',purpose,channel:verified.channel,email:verified.email,phone_last_digits:verified.phone_last_digits};checkouts.saveDetails(record,details);
     });
   }catch(error){throw verificationRefusal(error,{confirming,channel});}
@@ -108,7 +109,7 @@ export const postDeliveryQuote=job(async ctx=>{
   const {client,auth,checkouts}=ctx.rt;const input=await ctx.body();
   const destination:DeliveryAddressRequestInput=Object.fromEntries(Object.entries(asRecord(input.destination_address)).filter(([key])=>['line1','line2','city','state','postal_code','country'].includes(key)).map(([key,value])=>[key,text(value,200)]));
   await checkouts.mutate(ref(ctx),'delivery_quote',{destination_address:destination},async(record,key,context)=>{
-    const details=checkouts.details(record);const response=await client.checkoutSessions.createDeliveryQuote(record.checkout_session_id!,{expected_delivery_selection_id:context.delivery_selection_id,destination_address:destination},auth.checkout(record,key));
+    const details=checkouts.details(record);const response=await client.deliveryQuotes.create({checkout_session_id:record.checkout_session_id!,expected_delivery_selection_id:context.delivery_selection_id,destination_address:destination},auth.checkout(record,key));
     details.delivery_quote=response as Quote;details.quote_input={destination_address:destination};details.quote_basis={selection_id:context.delivery_selection_id};
     checkouts.saveDetails(record,details);
   });
@@ -137,7 +138,7 @@ async function pickupSelect(ctx:RouteContext,pickupLocationId:string,recipient:R
     const reusable=current.quote_input?.pickup_location_id===pickupLocationId&&!!quoted&&Date.parse(quoted.expires_at)>Date.now()&&current.quote_basis?.selection_id===(current.delivery_selection?.delivery_selection_id??null);
     if(!reusable)await checkouts.mutate(id,'delivery_quote',{pickup_location_id:pickupLocationId},async(record,key,context)=>{
       const details=checkouts.details(record);if(!known(details))throw new LocalError('INVALID_DELIVERY_SELECTION');
-      details.delivery_quote=await client.checkoutSessions.createDeliveryQuote(record.checkout_session_id!,{expected_delivery_selection_id:context.delivery_selection_id,pickup_location_id:pickupLocationId},auth.checkout(record,key)) as Quote;
+      details.delivery_quote=await client.deliveryQuotes.create({checkout_session_id:record.checkout_session_id!,expected_delivery_selection_id:context.delivery_selection_id,pickup_location_id:pickupLocationId},auth.checkout(record,key)) as Quote;
       details.quote_input={pickup_location_id:pickupLocationId};details.quote_basis={selection_id:context.delivery_selection_id};checkouts.saveDetails(record,details);
     });
   }
@@ -162,7 +163,7 @@ async function pickupSelect(ctx:RouteContext,pickupLocationId:string,recipient:R
     return {pickup_location_id:pickupLocationId,recipient,request:sent};
   };
   await checkouts.mutate(id,'delivery_select',build,async(record,key)=>{
-    const request=sent!;const response=await client.checkoutSessions.createDeliverySelection(record.checkout_session_id!,{choices:request.choices,recipient,delivery_quote_id:request.delivery_quote_id,expected_delivery_selection_id:request.expected_delivery_selection_id},auth.checkout(record,key));
+    const request=sent!;const response=await client.deliverySelections.create({choices:request.choices,recipient,delivery_quote_id:request.delivery_quote_id,expected_delivery_selection_id:request.expected_delivery_selection_id},auth.checkout(record,key));
     const details=checkouts.details(record);details.delivery_selection=(response as {delivery_selection:Details['delivery_selection']}).delivery_selection;checkouts.saveDetails(record,details);
   });
 }
@@ -177,7 +178,7 @@ export const postDeliverySelect=job(async ctx=>{
     const details=checkouts.details(record);const quoted=details.delivery_quote;if(!quoted)throw new LocalError('DELIVERY_QUOTE_STALE',409);
     if(new Date(quoted.expires_at).getTime()<Date.now())throw new LocalError('DELIVERY_QUOTE_EXPIRED',409);
     if(choices.length!==new Set(choices.map(choice=>choice.delivery_choice_group_id)).size||choices.some(choice=>!quoted.choice_groups.some(group=>group.delivery_choice_group_id===choice.delivery_choice_group_id&&group.options.some(option=>option.delivery_option_id===choice.delivery_option_id)))||quoted.choice_groups.some(group=>group.availability_status==='ready'&&!choices.some(choice=>choice.delivery_choice_group_id===group.delivery_choice_group_id)))throw new LocalError('INVALID_DELIVERY_SELECTION');
-    const response=await client.checkoutSessions.createDeliverySelection(record.checkout_session_id!,{choices,recipient,delivery_quote_id:context.delivery_quote_id!,expected_delivery_selection_id:context.delivery_selection_id},auth.checkout(record,key));
+    const response=await client.deliverySelections.create({choices,recipient,delivery_quote_id:context.delivery_quote_id!,expected_delivery_selection_id:context.delivery_selection_id},auth.checkout(record,key));
     details.delivery_selection=(response as {delivery_selection:Details['delivery_selection']}).delivery_selection;checkouts.saveDetails(record,details);
   });
 });
@@ -264,7 +265,7 @@ export const postPay=route(async ctx=>{
   const contact=raw.buyer_contact?asRecord(raw.buyer_contact):undefined;
   const input:PayInput={approved_outstanding_money:approvedMoney(raw.approved_outstanding_money),approved_collection_kind:raw.approved_collection_kind as PayInput['approved_collection_kind'],
     ...(credential?{credential:{kind:credential.kind as NonNullable<PayInput['credential']>['kind'],value:text(credential.value,400)}}:{}),
-    ...(raw.approved_order_version?{approved_order_version:text(raw.approved_order_version,20)}:{}),
+    ...(raw.approved_order_version?{approved_order_version:counter(raw.approved_order_version)}:{}),
     ...(raw.approved_gift_card_money?{approved_gift_card_money:approvedMoney(raw.approved_gift_card_money)}:{}),
     ...(contact?{buyer_contact:{email:email(contact.email),...(contact.phone?{phone:phone(contact.phone)!}:{})}}:{}),
     save_payment_method:raw.save_payment_method===true,save_payment_method_phone:raw.save_payment_method_phone?phone(raw.save_payment_method_phone)??undefined:undefined};

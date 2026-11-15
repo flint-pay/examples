@@ -117,7 +117,7 @@ export interface RenderContext<D = unknown> {
   data: D;
   notices: Notice[];
   error?: PageError;
-  /** From merchants.get. Shown in the footer and in states that tell the buyer to contact the store. */
+  /** From merchant.get. Shown in the footer and in states that tell the buyer to contact the store. */
   support?: MerchantSupport | null;
   /** True when preflight found customer_account is not merchant_hosted at APP_ORIGIN. */
   setupNeeded?: boolean;
@@ -401,12 +401,12 @@ export type GiftUnconfirmed =
   | { kind: 'remove'; gift_card_id: string; last_characters: string | null; can_check: boolean };
 
 export interface PaymentOrderView {
-  order_revision?: string;
+  order_revision?: number;
   gift_card_tender_enabled?: boolean;
   gift_cards?: { gift_card_id: string; last_characters: string; available_money: MoneyValue | null }[];
   gift_card_estimate?: {
     can_pay: boolean;
-    order_revision: string;
+    order_revision: number;
     gift_card_money: MoneyValue;
     processor_money: MoneyValue;
     gift_cards: { gift_card_id: string; amount_money: MoneyValue }[];
@@ -472,13 +472,13 @@ export interface PaymentJobError {
 
 /** Response of POST submit, POST resume, GET attempt. */
 export type PaymentJobResponse =
-  | { state: PaymentState; next: PaymentNext; client_action?: StripePaymentClientAction }
+  | { state: PaymentState; next: PaymentNext; client_action?: import('../flint/projection.ts').BrowserClientAction }
   | { error: PaymentJobError; state?: PaymentState; next?: PaymentNext };
 
 export interface InvoicePaySummary {
   invoice: Pick<
     BuyerInvoice,
-    'invoice_id' | 'invoice_number' | 'due_at' | 'status' | 'is_overdue' | 'currently_due_money' | 'outstanding_money' | 'memo'
+    'invoice_id' | 'invoice_number' | 'due_date' | 'status' | 'is_overdue' | 'settlement_amounts' | 'memo'
   >;
 }
 
@@ -515,7 +515,7 @@ export interface PaymentSubmitRequest {
   };
   approved_outstanding_money: MoneyValue;
   approved_collection_kind: 'processor' | 'settlement';
-  approved_order_revision?: string;
+  approved_order_revision?: number;
   approved_gift_card_money?: MoneyValue;
 }
 

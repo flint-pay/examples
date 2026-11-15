@@ -620,9 +620,9 @@ function paymentSection(ctx: Ctx): Html {
       <p class="hint" data-gift-split data-testid="sf-gift-card-split"${splitText(state) ? raw('') : raw(' hidden')}>${splitText(state)}</p>
       ${termsBlock(state)}
       <div data-panel="affirm" hidden class="panel">
-        <p>${message('affirm_incomplete')}</p>
+        <p data-incomplete-text data-affirm-text="${message('affirm_incomplete')}" data-action-text="${message('payment_action_incomplete')}">${message('affirm_incomplete')}</p>
         <div class="actions">
-          <button class="button button-primary" type="button" data-affirm-continue data-testid="sf-affirm-continue">${copy.checkout.continueAffirm}</button>
+          <button class="button button-primary" type="button" data-affirm-continue data-affirm-label="${copy.checkout.continueAffirm}" data-action-label="${copy.checkout.continueAction}" data-testid="sf-affirm-continue">${copy.checkout.continueAffirm}</button>
           <button class="button" type="button" data-pay-another-way data-testid="sf-pay-another-way">${copy.checkout.payAnotherWay}</button>
         </div>
       </div>
@@ -646,10 +646,10 @@ function paymentSection(ctx: Ctx): Html {
     <dialog id="affirm-dialog" aria-labelledby="affirm-dialog-title" data-testid="sf-affirm-dialog">
       <form method="dialog" class="stack">
         <h3 id="affirm-dialog-title">${copy.checkout.dialogTitle}</h3>
-        <p>${copy.checkout.dialogBody}</p>
+        <p data-dialog-body data-affirm-text="${copy.checkout.dialogBody}" data-action-text="${copy.checkout.actionDialogBody}">${copy.checkout.dialogBody}</p>
         <div class="actions">
-          <button class="button button-primary" type="submit" value="confirm" data-testid="sf-affirm-dialog-confirm">${copy.checkout.dialogConfirm}</button>
-          <button class="button" type="submit" value="cancel">${copy.checkout.dialogCancel}</button>
+          <button class="button button-primary" type="submit" value="confirm" data-dialog-confirm data-affirm-label="${copy.checkout.dialogConfirm}" data-action-label="${copy.checkout.actionDialogConfirm}" data-testid="sf-affirm-dialog-confirm">${copy.checkout.dialogConfirm}</button>
+          <button class="button" type="submit" value="cancel" data-dialog-cancel data-affirm-label="${copy.checkout.dialogCancel}" data-action-label="${copy.checkout.actionDialogCancel}">${copy.checkout.dialogCancel}</button>
         </div>
       </form>
     </dialog>`
@@ -681,6 +681,7 @@ function bootstrapJson(ctx: Ctx): Html {
       savedMethod: copy.checkout.savedMethod,
       stateWaiting: copy.checkout.stateWaiting,
       stateResuming: copy.checkout.stateResuming,
+      stateRedirecting: copy.checkout.stateRedirecting,
       stateAuthenticating: copy.checkout.stateAuthenticating,
       amountDue: copy.checkout.amountDue,
     },

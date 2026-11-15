@@ -10,13 +10,21 @@
 // authenticating, resuming, waiting, bank_processing, declined, pay_remaining, total_changed,
 // affirm_incomplete, recovery, expired, succeeded.
 //
+// A pending action arrives as { type: 'url' | 'stripe', ... } (see client-action.js). A url action is
+// opened as a top-level redirect to the Flint-hosted page, and the buyer comes back through this
+// app's return route, which only reads the payment. A url action opens on its own only right after the
+// buyer submitted a payment on this page. Any other load (a return, Back, a reload) never sends the
+// buyer on again by itself: it shows affirm_incomplete, and the buyer chooses Continue or Pay another way.
+// A stripe action keeps the Stripe.js handleNextAction flow.
+//
 // When gift cards cover the whole amount (collection_kind settlement) there is no payment form and
 // Stripe.js is not loaded. The buyer confirms, and the page sends the amounts they saw and no credential.
 
+import { isActionExpired, runClientAction } from './client-action.js';
 import { newActionId, readBoot, requestJson, sleep } from './http.js';
 import { announce } from './live.js';
 import { formatMoney, stripeAmount } from './money.js';
-import { acceptsNewPayment, derivePhase, hasGiftCards, isSettlement, payBlocker, processorMoney, shouldDropAffirm, workFor } from './payment-phase.js';
+import { acceptsNewPayment, derivePhase, hasGiftCards, hasOpenAffirmLeg, isSettlement, payBlocker, processorMoney, shouldDropAffirm, workFor } from './payment-phase.js';
 import { appearance, createStripe, whenStripeReady } from './stripe-loader.js';
 
 /** @typedef {import('../../src/views/types.ts').PaymentState} PaymentState */
@@ -91,6 +99,16 @@ async function run(root, boot) {
   /** @type {number | null} */
   let lastElementsAmount = null;
   const handledActions = new Set();
+  /** True only after the buyer submitted a payment on this page: then a url action may open by itself. */
+  let openedBySubmit = false;
+  /** The action waits for the buyer's choice: they came back unfinished, or the action cannot be opened. */
+  let actionIncomplete = false;
+  /** False when Continue could not change anything, such as an action of an unknown type. */
+  let continueUsable = true;
+  /** How many times a cancel is tried before the buyer is asked to try again themselves. */
+  const CANCEL_TRIES = 3;
+  /** A url action is about to leave this page. */
+  let redirecting = false;
 
   const money = (/** @type {any} */ value) => formatMoney(value);
   /** The page is rendered for one kind of collection. A change of kind needs a fresh render. */
@@ -113,8 +131,17 @@ async function run(root, boot) {
     if (local === 'authenticating') return 'authenticating';
     if (local === 'resuming') return 'resuming';
     if (local === 'waiting') return derivePhase(state) === 'recovery' ? 'recovery' : 'waiting';
-    return derivePhase(state);
+    return restingPhase();
   };
+
+  /** The phase the state implies, with an unfinished redirect shown as affirm_incomplete. */
+  function restingPhase() {
+    const phase = derivePhase(state);
+    return phase === 'authenticating' && actionIncomplete ? 'affirm_incomplete' : phase;
+  }
+
+  /** Affirm keeps its own wording. Any other unfinished action uses the generic wording. */
+  const incompleteText = () => (hasOpenAffirmLeg(state) ? ui.affirmIncomplete : ui.actionIncomplete);
 
   // ---- Messages ----------------------------------------------------------
 
@@ -257,10 +284,32 @@ async function run(root, boot) {
     }
   }
 
+  /**
+   * A return opens as "Finishing your payment" with help that matches its controls. When the controls change
+   * (Continue cannot help, or the buyer is back at the form), the heading and help change with them.
+   */
+  function syncHeader() {
+    const formTitle = root.dataset.formTitle;
+    const lede = document.querySelector('.page-header .lede');
+    if (!formTitle || !(lede instanceof HTMLElement)) return;
+    const resting = restingPhase();
+    if (resting === 'affirm_incomplete') {
+      lede.textContent = continueUsable ? ui.returnedActionHelp : ui.returnedActionBlockedHelp;
+      lede.hidden = false;
+      return;
+    }
+    if (local !== 'idle' || !acceptsNewPayment(derivePhase(state))) return;
+    const title = document.getElementById('page-title');
+    if (title) title.textContent = formTitle;
+    lede.textContent = ui.returnedDeclinedHelp;
+    lede.hidden = resting !== 'declined';
+  }
+
   function render() {
     const phase = currentPhase();
     root.dataset.state = phase;
-    root.dataset.phase = derivePhase(state);
+    root.dataset.phase = restingPhase();
+    syncHeader();
     if (phase === 'loading') root.setAttribute('aria-busy', 'true');
     else root.removeAttribute('aria-busy');
 
@@ -274,6 +323,10 @@ async function run(root, boot) {
     if (walletsBox instanceof HTMLElement && (!showForm || isSettlement(state))) walletsBox.hidden = true;
     if (payActions instanceof HTMLElement) payActions.hidden = !showForm;
     if (affirmBox instanceof HTMLElement) affirmBox.hidden = phase !== 'affirm_incomplete';
+    if (affirmContinue instanceof HTMLButtonElement && phase === 'affirm_incomplete') {
+      affirmContinue.textContent = hasOpenAffirmLeg(state) ? ui.continueAffirm : ui.continueAction;
+      affirmContinue.hidden = !continueUsable;
+    }
     if (affirmBilling instanceof HTMLElement) affirmBilling.hidden = !showForm || !affirmActive();
     for (const field of [affirmCountry, affirmPostal]) {
       if (field instanceof HTMLInputElement || field instanceof HTMLSelectElement) field.disabled = !accepting || !affirmActive();
@@ -283,7 +336,9 @@ async function run(root, boot) {
     if (progress instanceof HTMLElement) {
       const text =
         phase === 'authenticating'
-          ? ui.authenticating
+          ? redirecting
+            ? ui.redirecting
+            : ui.authenticating
           : phase === 'resuming' || phase === 'recovery'
             ? ui.resuming
             : phase === 'waiting'
@@ -377,7 +432,7 @@ async function run(root, boot) {
       return false;
     }
     teardownElements();
-    stripe = createStripe(StripeFactory, guidance.publishable_key, guidance.account_id);
+    stripe = createStripe(StripeFactory, guidance.publishable_key, guidance.account_id ?? undefined);
     const types = guidance.elements.payment_method_types.filter(
       (/** @type {string} */ type) => !['apple_pay', 'google_pay'].includes(type) && !(dropAffirm && type === 'affirm'),
     );
@@ -539,14 +594,23 @@ async function run(root, boot) {
           render();
           return;
         }
-        if (derivePhase(state) === 'affirm_incomplete') {
-          // The buyer chooses: continue with Affirm or pay another way.
+        if (clientAction && isActionExpired(clientAction)) {
+          // Past its expiry the action is not worth offering: close the attempt and let the buyer try again.
+          await abandonAction(copy.declines.payment_action_expired ?? copy.errors.generic_error);
+          return;
+        }
+        if (derivePhase(state) === 'affirm_incomplete' || (!openedBySubmit && clientAction?.type === 'url')) {
+          // Only a payment submitted on this page sends the buyer to the hosted page by itself. A return,
+          // Back, or a reload never does: they choose to continue or to pay another way.
           local = 'idle';
+          actionIncomplete = true;
+          continueUsable = true;
+          openedBySubmit = false;
           pendingAffirmAction = clientAction;
           presentIdle();
           return;
         }
-        await runAction(clientAction);
+        if ((await runAction(clientAction)) !== 'done') return;
         local = 'resuming';
         render();
         const resumed = await post(endpoints.resume, {}, newActionId());
@@ -588,25 +652,119 @@ async function run(root, boot) {
   /** @type {any} */
   let pendingAffirmAction = null;
 
-  /** @param {any} clientAction */
+  /**
+   * Opens the pending action by its type. A stripe action runs handleNextAction and the caller then
+   * resumes. A url action leaves the page, so the caller stops. An expired, unknown, or unusable action
+   * is not opened: the buyer sees a message and the way to try again.
+   * @param {any} clientAction
+   * @returns {Promise<'done' | 'redirected' | 'stopped'>}
+   */
   async function runAction(clientAction) {
     const pendingId = state.pending_action_id;
-    if (pendingId && handledActions.has(pendingId)) return;
-    if (pendingId) handledActions.add(pendingId);
-    local = 'authenticating';
-    render();
-    try {
-      StripeFactory = StripeFactory ?? (await whenStripeReady());
-      const authority = clientAction?.payment_intent;
-      if (!authority?.client_secret) return;
-      const sameAccount =
-        stripe && state.payment_collection?.stripe?.publishable_key === clientAction.publishable_key && state.payment_collection?.stripe?.account_id === clientAction.account_id;
-      const actionStripe = sameAccount ? stripe : createStripe(StripeFactory, clientAction.publishable_key, clientAction.account_id);
-      // Resume follows whether or not Stripe reports an error. The server decides the outcome.
-      await actionStripe.handleNextAction({ clientSecret: authority.client_secret });
-    } catch {
-      /* the resume that follows reads the true outcome */
+    if (pendingId && handledActions.has(pendingId)) return 'done';
+    if (isActionExpired(clientAction)) {
+      await abandonAction(copy.declines.payment_action_expired ?? copy.errors.generic_error);
+      return 'stopped';
     }
+    local = 'authenticating';
+    redirecting = clientAction?.type === 'url';
+    render();
+    const outcome = await runClientAction(clientAction, {
+      loadStripe: async (publishableKey, accountId) => {
+        StripeFactory = StripeFactory ?? (await whenStripeReady());
+        const sameAccount = stripe && state.payment_collection?.stripe?.publishable_key === publishableKey && state.payment_collection?.stripe?.account_id === accountId;
+        return sameAccount ? stripe : createStripe(StripeFactory, publishableKey, accountId);
+      },
+      navigate: (url) => window.location.assign(url),
+      onInvoke: () => {
+        if (pendingId) handledActions.add(pendingId);
+      },
+    });
+    redirecting = false;
+    if (outcome.status === 'redirected') {
+      redirecting = true;
+      render();
+      return 'redirected';
+    }
+    if (outcome.status === 'expired') {
+      await abandonAction(copy.declines.payment_action_expired ?? copy.errors.generic_error);
+      return 'stopped';
+    }
+    if (outcome.status === 'unsupported' || outcome.status === 'unavailable') {
+      // Nothing ran. Say so plainly and stop: no resume, no new request that could not change the outcome.
+      // The buyer keeps a way out: Pay another way closes the attempt. Continue stays only when trying
+      // again could help, which it cannot for an action of an unknown type.
+      local = 'idle';
+      actionIncomplete = true;
+      continueUsable = outcome.status === 'unavailable';
+      openedBySubmit = false;
+      render();
+      showMessage(outcome.status === 'unavailable' ? copy.errors.stripe_unavailable : copy.errors.generic_error);
+      return 'stopped';
+    }
+    // Resume follows whether or not Stripe reports an error. The server decides the outcome.
+    return 'done';
+  }
+
+  /**
+   * Asks the server to close the attempt. Returns true once it is closed.
+   * `post` already retries a lost response or a 5xx with its own pauses, so this loop only goes again for an
+   * answer `post` does not retry, such as a 409 while the attempt is changing. With the three tries at most this
+   * stays near three cancels, not three tries of four.
+   */
+  async function closeAttempt() {
+    for (let attempt = 0; attempt < CANCEL_TRIES; attempt += 1) {
+      if (attempt > 0) await sleep(500 * 2 ** (attempt - 1));
+      const result = await post(endpoints.cancel_attempt, {}, undefined);
+      if (result) readJob(result);
+      if (result && state.next !== 'authenticate') return true;
+      // No answer or a server error after post's own tries: stop here, the buyer decides what happens next.
+      if (!result || result.status >= 500) return false;
+    }
+    return false;
+  }
+
+  /**
+   * True when the cancel found the payment already finished. The buyer paid before the cancel landed, so the
+   * page goes on to the invoice or return instead of offering another payment.
+   */
+  function finishedAfterCancel() {
+    if (state.next !== 'done' && state.next !== 'bank_processing') return false;
+    complete();
+    return true;
+  }
+
+  /** The attempt ended in a state that takes a new payment, but the form was never mounted. */
+  async function reopenForm() {
+    if (acceptsNewPayment(derivePhase(state)) && !paymentElement && !isSettlement(state)) {
+      const mounted = await mountElements();
+      if (!mounted) state = { ...state, payment_collection: null };
+    }
+  }
+
+  /**
+   * Gives up an action that can no longer be opened, and returns to the form with the reason.
+   * When the attempt cannot be closed, the buyer keeps the reason and a manual way to try again.
+   * @param {string} text
+   */
+  async function abandonAction(text) {
+    local = 'resuming';
+    actionIncomplete = false;
+    pendingAffirmAction = null;
+    render();
+    const closed = await closeAttempt();
+    local = 'idle';
+    if (!closed) {
+      actionIncomplete = true;
+      continueUsable = false;
+      render();
+      showMessage(`${text} ${copy.errors.generic_error}`);
+      return;
+    }
+    if (finishedAfterCancel()) return;
+    await reopenForm();
+    presentIdle();
+    showMessage(text);
   }
 
   async function waitLoop() {
@@ -642,7 +800,7 @@ async function run(root, boot) {
       window.location.assign(endpoints.page);
       return;
     }
-    const phase = derivePhase(state);
+    const phase = restingPhase();
     clearMessage();
     showBanner('');
     const giftChanged = (state.notices ?? []).includes('gift_card_changed');
@@ -668,7 +826,7 @@ async function run(root, boot) {
     } else if (phase === 'expired') {
       showBanner(ui.expired);
     } else if (phase === 'affirm_incomplete') {
-      showBanner(ui.affirmIncomplete);
+      showBanner(incompleteText());
     }
     render();
   }
@@ -679,6 +837,7 @@ async function run(root, boot) {
   async function pay(source) {
     if (local !== 'idle') return;
     if (source === 'card' && blockerMessage()) return;
+    openedBySubmit = true;
     local = 'submitting';
     clearMessage();
     showBanner('');
@@ -808,10 +967,13 @@ async function run(root, boot) {
     affirmContinue.addEventListener('click', async () => {
       const action = pendingAffirmAction;
       pendingAffirmAction = null;
+      actionIncomplete = false;
+      continueUsable = true;
+      openedBySubmit = true;
       local = 'authenticating';
       render();
       handledActions.clear();
-      await runAction(action ?? (await readAttempt())?.client_action);
+      if ((await runAction(action ?? (await readAttempt())?.client_action)) !== 'done') return;
       local = 'resuming';
       render();
       const resumed = await post(endpoints.resume, {}, newActionId());
@@ -822,13 +984,31 @@ async function run(root, boot) {
     affirmOther.addEventListener('click', async () => {
       local = 'resuming';
       render();
-      const result = await post(endpoints.cancel_attempt, {}, undefined);
-      if (result) readJob(result);
+      const closed = await closeAttempt();
       local = 'idle';
       pendingAffirmAction = null;
+      if (!closed) {
+        // Still open on the server. Keep the choice on screen so the buyer can try again.
+        actionIncomplete = true;
+        continueUsable = false;
+        render();
+        showMessage(copy.errors.generic_error);
+        return;
+      }
+      if (finishedAfterCancel()) return;
+      actionIncomplete = false;
+      continueUsable = true;
+      openedBySubmit = false;
+      await reopenForm();
       presentIdle();
     });
   }
+
+  // A page restored from the back-forward cache after a redirect would still say it is redirecting.
+  // Loading it again reads the attempt as a fresh page, which never opens the hosted page on its own.
+  window.addEventListener('pageshow', (event) => {
+    if (event.persisted && redirecting) window.location.reload();
+  });
 
   // ---- Start -------------------------------------------------------------
 

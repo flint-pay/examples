@@ -1,3 +1,4 @@
+import {errors} from '@flintpay/node';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {SdkError} from '@flintpay/node';
@@ -22,18 +23,16 @@ const option=(locationId:string,name:string)=>({delivery_option_id:`opt_${locati
 
 function fixture(){
   const remote={previews:[] as {input:Record<string,unknown>;options:Record<string,unknown>|undefined}[],quotes:[] as {input:Record<string,unknown>;key?:string}[],selections:[] as {input:Record<string,any>;key?:string}[],selection:undefined as unknown,selectionError:undefined as SdkError|undefined,lostResponse:undefined as SdkError|undefined,byKey:new Map<string,unknown>()};
-  const order={order_id:'fixture-order',status:'open',payment_status:'unpaid',version:'1',settlement_amounts:{outstanding_money:{amount:'2400',currency:'USD'}},payment_collection:{stripe:{}}} as unknown as Order;
-  const session={checkout_session_id:'fixture-session',status:'open',buyer_fields:{require_email:true}} as unknown as CheckoutSession;
+  const order={order_id:'fixture-order',status:'open',payment_status:'unpaid',version:1,settlement_amounts:{outstanding_money:{amount:'2400',currency:'USD'}},payment_collection:{stripe:{}}} as unknown as Order;
+  const session={checkout_session_id:'fixture-session',status:'open',buyer_fields:{require_email:true as const}} as unknown as CheckoutSession;
   const client={
-    orders:{get:async()=>order},
+    orders:{get:async()=>({...order,governing_delivery_selection_id:(remote.selection as {delivery_selection_id?:string}|undefined)?.delivery_selection_id??null})},
     deliveryPreviews:{create:async(input:Record<string,unknown>,options?:Record<string,unknown>)=>{remote.previews.push({input,options});return preview;}},
     checkoutSessions:{
-      get:async()=>session,getCurrentDeliverySelection:async()=>({delivery_selection:remote.selection}),
-      createDeliveryQuote:async(_id:string,input:Record<string,unknown>,options:{idempotencyKey?:string})=>{
-        remote.quotes.push({input,key:options.idempotencyKey});
-        return {delivery_quote_id:`quote_${remote.quotes.length}`,status:'open',...(input.destination_address?{destination_address:input.destination_address}:{}),expires_at:new Date(Date.now()+60_000).toISOString(),input_requirements:[],choice_groups:[{delivery_choice_group_id:'grp_pickup',availability_status:'ready',method_types:['pickup'],input_requirements:[],options:[option('loc_near','Congress roastery')]}]};
-      },
-      createDeliverySelection:async(_id:string,input:Record<string,any>,options:{idempotencyKey?:string})=>{
+      get:async()=>session,
+
+
+    },deliverySelections:{get:async()=>(remote.selection),create:async(input:Record<string,any>,options:{idempotencyKey?:string})=>{
         remote.selections.push({input,key:options.idempotencyKey});
         if(remote.selectionError)throw remote.selectionError;
         if(options.idempotencyKey&&remote.byKey.has(options.idempotencyKey)){return {delivery_selection:remote.byKey.get(options.idempotencyKey)};}
@@ -42,8 +41,10 @@ function fixture(){
         // A lost response happens after the selection exists remotely.
         if(remote.lostResponse){const lost=remote.lostResponse;remote.lostResponse=undefined;throw lost;}
         return {delivery_selection:remote.selection};
-      },
-    },
+      }},deliveryQuotes:{create:async(input:Record<string,unknown>,options:{idempotencyKey?:string})=>{
+        remote.quotes.push({input,key:options.idempotencyKey});
+        return {delivery_quote_id:`quote_${remote.quotes.length}`,status:'open',...(input.destination_address?{destination_address:input.destination_address}:{}),expires_at:new Date(Date.now()+60_000).toISOString(),input_requirements:[],choice_groups:[{delivery_choice_group_id:'grp_pickup',availability_status:'ready',method_types:['pickup'],input_requirements:[],options:[option('loc_near','Congress roastery')]}]};
+      }},
   } as unknown as Client;
   const config:Config={apiKey:'local-pickup-fixture',apiBaseUrl:'https://api.staging.withflintpay.com',giftChallengeOrigin:'https://checkout.staging.withflintpay.com',appOrigin:origin,port:4100,identityDatabasePath:':memory:',appDatabasePath:':memory:',cookieName:'pickup_session',checkoutTtl:3600,storeName:'Example store'};
   const runtime=createApp({config,client,preflight:{sandboxId:'fixture-sandbox',cards:'enabled'},store:new Store(':memory:'),identity:new IdentityStore(':memory:')});
@@ -59,7 +60,7 @@ function fixture(){
 test('pickup search uses the checkout-authorized preview and projects only selectable locations',async()=>{
   const app=fixture();try{
     const response=await app.search();assert.equal(response.status,200);
-    assert.deepEqual(app.remote.previews,[{input:{body:{mode:'pickup_locations',checkout_session_id:'fixture-session',buyer_location:{type:'address',address:{postal_code:'78701',country:'US'}}}},options:{checkoutToken:'local-checkout-fixture'}}]);
+    assert.deepEqual(app.remote.previews,[{input:{mode:'pickup_locations',checkout_session_id:'fixture-session',buyer_location:{type:'address',address:{postal_code:'78701',country:'US'}}},options:{checkoutToken:'local-checkout-fixture'}}]);
     assert.equal(app.remote.quotes.length,0);
     const {state}=await response.json();
     assert.deepEqual(state.pickup_search,{postal_code:'78701'});
@@ -73,7 +74,7 @@ test('choosing a searched location quotes it by id with the current selection au
   const app=fixture();try{
     assert.equal((await app.search()).status,200);
     const response=await app.choose('loc_near');assert.equal(response.status,200);
-    assert.deepEqual(app.remote.quotes.map(quote=>quote.input),[{expected_delivery_selection_id:null,pickup_location_id:'loc_near'}]);
+    assert.deepEqual(app.remote.quotes.map(quote=>quote.input),[{checkout_session_id:'fixture-session',expected_delivery_selection_id:null,pickup_location_id:'loc_near'}]);
     assert.equal(app.remote.selections.length,1);
     assert.deepEqual(app.remote.selections[0]!.input,{choices:[{delivery_choice_group_id:'grp_pickup',delivery_option_id:'opt_loc_near'}],recipient:{name:'Example buyer'},delivery_quote_id:'quote_1',expected_delivery_selection_id:null});
     const {state}=await response.json();assert.equal(state.delivery_selection.delivery_selection_id,'selection_1');assert.equal(state.delivery_selection.choices[0].pickup.location.name,'Congress roastery');
@@ -96,7 +97,7 @@ test('a location outside the stored preview is rejected before any quote or sele
 test('retrying an unknown selection outcome replays the selection without a second quote',async()=>{
   const app=fixture();try{
     assert.equal((await app.search()).status,200);
-    app.remote.selectionError=new SdkError('transport','fixture lost response','unknown',true);
+    app.remote.selectionError=new errors.ConnectionError('fixture lost response',{outcome:'unknown',retryAllowed:true});
     assert.equal((await app.choose('loc_near')).status,503);
     assert.equal((await app.search()).status,409);
     app.remote.selectionError=undefined;
@@ -110,7 +111,7 @@ test('retrying an unknown selection outcome replays the selection without a seco
 test('retrying after the selection exists remotely but the response was lost replays the journaled request',async()=>{
   const app=fixture();try{
     assert.equal((await app.search()).status,200);
-    app.remote.lostResponse=new SdkError('transport','fixture lost response','unknown',true);
+    app.remote.lostResponse=new errors.ConnectionError('fixture lost response',{outcome:'unknown',retryAllowed:true});
     assert.equal((await app.choose('loc_near')).status,503);
     assert.equal(app.remote.selection&&(app.remote.selection as {delivery_selection_id:string}).delivery_selection_id,'selection_1');
     // Reading the checkout now observes the real selection, which no longer matches the quote's basis.
@@ -126,7 +127,7 @@ test('retrying after the selection exists remotely but the response was lost rep
 test('an unknown selection replays its journaled quote after the quote expires locally',async()=>{
   const app=fixture();try{
     assert.equal((await app.search()).status,200);
-    app.remote.lostResponse=new SdkError('transport','fixture lost response','unknown',true);
+    app.remote.lostResponse=new errors.ConnectionError('fixture lost response',{outcome:'unknown',retryAllowed:true});
     assert.equal((await app.choose('loc_near')).status,503);
     const row=app.store.get<{details:string}>("SELECT details FROM checkouts WHERE checkout_ref='chk_fixture'")!;const details=JSON.parse(row.details);details.delivery_quote.expires_at=new Date(Date.now()-60_000).toISOString();
     app.store.run("UPDATE checkouts SET details=? WHERE checkout_ref='chk_fixture'",JSON.stringify(details));
@@ -142,7 +143,7 @@ test('an unknown selection replays its journaled quote after the quote expires l
 test('an unknown selection is not replayed for a different location or recipient',async()=>{
   const app=fixture();try{
     assert.equal((await app.search()).status,200);
-    app.remote.lostResponse=new SdkError('transport','fixture lost response','unknown',true);
+    app.remote.lostResponse=new errors.ConnectionError('fixture lost response',{outcome:'unknown',retryAllowed:true});
     assert.equal((await app.choose('loc_near')).status,503);
     const other=await app.post('/delivery/select',{pickup_location_id:'loc_near',recipient:{name:'Someone else'}});assert.equal(other.status,409);assert.equal((await other.json()).error.code,'ACTION_RECONCILIATION_REQUIRED');
     assert.equal(app.remote.selections.length,1);assert.equal(app.remote.quotes.length,1);
@@ -153,7 +154,7 @@ test('shipping quotes still send only the destination address',async()=>{
   const app=fixture();try{
     assert.equal((await app.search()).status,200);
     assert.equal((await app.post('/delivery/quote',{destination_address:{line1:'1 Example Street',city:'Austin',state:'TX',postal_code:'78701',country:'US'}})).status,200);
-    assert.deepEqual(app.remote.quotes.map(quote=>Object.keys(quote.input).sort()),[['destination_address','expected_delivery_selection_id']]);
+    assert.deepEqual(app.remote.quotes.map(quote=>Object.keys(quote.input).sort()),[['checkout_session_id','destination_address','expected_delivery_selection_id']]);
   }finally{app.close();}
 });
 

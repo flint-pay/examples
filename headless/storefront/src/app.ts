@@ -1,3 +1,5 @@
+import {counter} from './security/money.ts';
+import {projectClientAction} from './flint/projection.ts';
 import {Hono} from 'hono';
 import type {Context} from 'hono';
 import {getCookie,setCookie} from 'hono/cookie';
@@ -7,7 +9,7 @@ import type {ContentfulStatusCode} from 'hono/utils/http-status';
 import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import type {IncomingMessage} from 'node:http';
-import {SdkError} from '@flintpay/node';
+import {SdkError,errors} from '@flintpay/node';
 import type {Client,CreateCheckoutSessionCustomerVerificationRequestInput,CreateCustomerAddressRequestInput,DeliveryAddressRequestInput,MoneyValue,OrderTaxLocationFullAddressRequestInput,UpdateCustomerAddressRequestInput} from '@flintpay/node';
 import type {Address} from '@flintpay/node';
 import {SDK_VERSION} from './config.ts';
@@ -39,6 +41,7 @@ import {viewPath} from './flint/view-data.ts';
 import {renderPage} from './views/index.ts';
 import {trialSetupNotStarted} from './views/pages/complete.ts';
 import type {CheckoutState} from './views/types.ts';
+import {hasAffirmAction} from '../public/js/checkout-logic.js';
 
 type Env={Bindings:{incoming?:IncomingMessage};Variables:{session:Session;user:User|undefined;requestId:string;returnNext?:string;form?:ViewContext['form']}};
 export type AppOptions={config:Config;preflight:Preflight;client?:Client;store?:Store;identity?:IdentityStore};
@@ -108,8 +111,8 @@ export function createApp(options:AppOptions){
     }
     c.set('form',{values});
   }
-  async function state(c:Context<Env>,result?:PaymentResult){
-    const read=await checkouts.read(c.req.param('ref')!,c.get('user'));
+  async function state(c:Context<Env>,result?:PaymentResult,returning=false){
+    const ref=c.req.param('ref')!,read=await (returning?checkouts.readForReturn(ref):checkouts.read(ref,c.get('user')));
     if(result?.totalChanged){read.result.totalChanged=true;checkouts.notice(read.record,'total_changed');if(result.order.gift_cards?.length)checkouts.notice(read.record,'gift_card_changed');}
     return {read,state:checkouts.project(read)};
   }
@@ -117,7 +120,7 @@ export function createApp(options:AppOptions){
   async function job(c:Context<Env>,run:()=>Promise<unknown>){own(c);await checkouts.read(c.req.param('ref')!,c.get('user'));await run();return c.json({state:(await state(c)).state});}
   function paymentJson(c:Context<Env>,read:ReadCheckout,result?:PaymentResult){
     const current=read.result;const next=payments.next(current);const action=current.attempt?.status==='requires_action'?current.attempt.pending_actions?.[0]:undefined;
-    return c.json({state:checkouts.project(read),next,client_action:action?.client_action.stripe,pending_action_id:action?.pending_action_id,...(current.totalChanged?{error:{kind:'conflict',code:'ORDER_CHANGED_REFRESH_REQUIRED',message_key:current.order.gift_cards?.length?'gift_card_changed':'total_changed'}}:{})});
+    return c.json({state:checkouts.project(read),next,client_action:projectClientAction(action),pending_action_id:action?.pending_action_id,...(current.totalChanged?{error:{kind:'conflict',code:'ORDER_CHANGED_REFRESH_REQUIRED',message_key:current.order.gift_cards?.length?'gift_card_changed':'total_changed'}}:{})});
   }
   app.use('*',bodyLimit({maxSize:65536,onError:c=>c.json({error:{kind:'validation',code:'REQUEST_TOO_LARGE',message_key:'generic_error'}},413)}));
   app.use('*',async(c,next)=>{
@@ -162,7 +165,7 @@ export function createApp(options:AppOptions){
   app.get('/cart',async c=>page(c,'sf-cart',await cartData(c)));
   app.post('/cart/items',async c=>{
     const input=await body(c);const slug=text(input.product_slug??input.slug);const item=await catalog.product(slug);const variantId=text(input.variant_id??item.product.default_variant_id);const quantity=carts.quantity(input.quantity??1);
-    if(!item.variants.some(variant=>variant.variant_id===variantId&&variant.available_for_sale))throw new LocalError('PRODUCT_UNAVAILABLE');
+    if(!item.variants.some(variant=>variant.variant_id===variantId&&variant.is_available_for_sale))throw new LocalError('PRODUCT_UNAVAILABLE');
     const cart=carts.current(c.get('session'),c.get('user'));const existing=carts.lines(cart).find(line=>line.variant_id===variantId);
     await checkouts.editCart(cart,()=>carts.add(cart,slug,variantId,quantity));
     if(jsonWanted(c))return c.json({cart:await carts.view(cart),notice:'added_to_cart'});return c.redirect(`/products/${encodeURIComponent(slug)}?notice=added_to_cart`,303);
@@ -194,7 +197,7 @@ export function createApp(options:AppOptions){
     const address=confirming||!input.email?undefined:email(input.email);
     try{
       await checkouts.mutate(c.req.param('ref'),'checkout_verification',{purpose,channel,email:address},async(record,key)=>{
-        const verified=await client.checkoutSessions.createCustomerVerification({checkout_session_id:record.checkout_session_id!,body:{purpose,channel,...(address?{email:address}:{})} as CreateCheckoutSessionCustomerVerificationRequestInput},auth.checkout(record,key));
+        const verified=await client.checkoutSessions.createCustomerVerification(record.checkout_session_id!,{purpose,channel,...(address?{email:address}:{})} as CreateCheckoutSessionCustomerVerificationRequestInput,auth.checkout(record,key));
         const details=checkouts.details(record);details.verification={customer_verification_id:verified.checkout_session_customer_verification_id,status:'code_sent',purpose,channel:verified.channel,email:verified.email,phone_last_digits:verified.phone_last_digits};checkouts.saveDetails(record,details);
       });
     }catch(error){throw verificationRefusal(error,{confirming,channel});}
@@ -217,7 +220,7 @@ export function createApp(options:AppOptions){
     const input=await body(c);
     const destination:DeliveryAddressRequestInput=Object.fromEntries(Object.entries(asRecord(input.destination_address)).filter(([key])=>['line1','line2','city','state','postal_code','country'].includes(key)).map(([key,value])=>[key,text(value,200)]));
     await checkouts.mutate(c.req.param('ref')!,'delivery_quote',{destination_address:destination},async(record,key,context)=>{
-      const details=checkouts.details(record);const response=await client.checkoutSessions.createDeliveryQuote(record.checkout_session_id!,{expected_delivery_selection_id:context.delivery_selection_id,destination_address:destination},auth.checkout(record,key));
+      const details=checkouts.details(record);const response=await client.deliveryQuotes.create({checkout_session_id:record.checkout_session_id!,expected_delivery_selection_id:context.delivery_selection_id,destination_address:destination},auth.checkout(record,key));
       details.delivery_quote=response as Quote;details.quote_input={destination_address:destination};details.quote_basis={selection_id:context.delivery_selection_id};
       checkouts.saveDetails(record,details);
     });
@@ -236,7 +239,7 @@ export function createApp(options:AppOptions){
       const reusable=current.quote_input?.pickup_location_id===pickupLocationId&&!!quoted&&Date.parse(quoted.expires_at)>Date.now()&&current.quote_basis?.selection_id===(current.delivery_selection?.delivery_selection_id??null);
       if(!reusable)await checkouts.mutate(ref,'delivery_quote',{pickup_location_id:pickupLocationId},async(record,key,context)=>{
         const details=checkouts.details(record);if(!known(details))throw new LocalError('INVALID_DELIVERY_SELECTION');
-        details.delivery_quote=await client.checkoutSessions.createDeliveryQuote(record.checkout_session_id!,{expected_delivery_selection_id:context.delivery_selection_id,pickup_location_id:pickupLocationId},auth.checkout(record,key)) as Quote;
+        details.delivery_quote=await client.deliveryQuotes.create({checkout_session_id:record.checkout_session_id!,expected_delivery_selection_id:context.delivery_selection_id,pickup_location_id:pickupLocationId},auth.checkout(record,key)) as Quote;
         details.quote_input={pickup_location_id:pickupLocationId};details.quote_basis={selection_id:context.delivery_selection_id};checkouts.saveDetails(record,details);
       });
     }
@@ -261,7 +264,7 @@ export function createApp(options:AppOptions){
       return {pickup_location_id:pickupLocationId,recipient,request:sent};
     };
     await checkouts.mutate(ref,'delivery_select',build,async(record,key)=>{
-      const request=sent!;const response=await client.checkoutSessions.createDeliverySelection(record.checkout_session_id!,{choices:request.choices,recipient,delivery_quote_id:request.delivery_quote_id,expected_delivery_selection_id:request.expected_delivery_selection_id},auth.checkout(record,key));
+      const request=sent!;const response=await client.deliverySelections.create({choices:request.choices,recipient,delivery_quote_id:request.delivery_quote_id,expected_delivery_selection_id:request.expected_delivery_selection_id},auth.checkout(record,key));
       const details=checkouts.details(record);details.delivery_selection=(response as {delivery_selection:Details['delivery_selection']}).delivery_selection;checkouts.saveDetails(record,details);
     });
   }
@@ -314,7 +317,7 @@ export function createApp(options:AppOptions){
       const details=checkouts.details(record);const quoted=details.delivery_quote;if(!quoted)throw new LocalError('DELIVERY_QUOTE_STALE',409);
       if(new Date(quoted.expires_at).getTime()<Date.now())throw new LocalError('DELIVERY_QUOTE_EXPIRED',409);
       if(choices.length!==new Set(choices.map(choice=>choice.delivery_choice_group_id)).size||choices.some(choice=>!quoted.choice_groups.some(group=>group.delivery_choice_group_id===choice.delivery_choice_group_id&&group.options.some(option=>option.delivery_option_id===choice.delivery_option_id)))||quoted.choice_groups.some(group=>group.availability_status==='ready'&&!choices.some(choice=>choice.delivery_choice_group_id===group.delivery_choice_group_id)))throw new LocalError('INVALID_DELIVERY_SELECTION');
-      const response=await client.checkoutSessions.createDeliverySelection(record.checkout_session_id!,{choices,recipient,delivery_quote_id:context.delivery_quote_id!,expected_delivery_selection_id:context.delivery_selection_id},auth.checkout(record,key));
+      const response=await client.deliverySelections.create({choices,recipient,delivery_quote_id:context.delivery_quote_id!,expected_delivery_selection_id:context.delivery_selection_id},auth.checkout(record,key));
       details.delivery_selection=(response as {delivery_selection:Details['delivery_selection']}).delivery_selection;checkouts.saveDetails(record,details);
     });
   }));
@@ -344,7 +347,7 @@ export function createApp(options:AppOptions){
     const credential=raw.credential?asRecord(raw.credential):undefined;
     if(credential&&!['confirmation_token','payment_method_token','saved_payment_method'].includes(String(credential.kind)))throw new LocalError('PAYMENT_SOURCE_REQUIRED');
     if(!['processor','settlement','setup','unavailable'].includes(String(raw.approved_collection_kind)))throw new LocalError('INVALID_PAYMENT_APPROVAL');
-    const input:PayInput={approved_outstanding_money:approvedMoney(raw.approved_outstanding_money),approved_collection_kind:raw.approved_collection_kind as PayInput['approved_collection_kind'],...(credential?{credential:{kind:credential.kind as NonNullable<PayInput['credential']>['kind'],value:text(credential.value,400)}}:{}),...(raw.approved_order_version?{approved_order_version:text(raw.approved_order_version,20)}:{}),...(raw.approved_gift_card_money?{approved_gift_card_money:approvedMoney(raw.approved_gift_card_money)}:{}),...(raw.buyer_contact?{buyer_contact:{email:email(asRecord(raw.buyer_contact).email),...(asRecord(raw.buyer_contact).phone?{phone:phone(asRecord(raw.buyer_contact).phone)!}:{})}}:{}),save_payment_method:raw.save_payment_method===true,save_payment_method_phone:raw.save_payment_method_phone?phone(raw.save_payment_method_phone)??undefined:undefined};
+    const input:PayInput={approved_outstanding_money:approvedMoney(raw.approved_outstanding_money),approved_collection_kind:raw.approved_collection_kind as PayInput['approved_collection_kind'],...(credential?{credential:{kind:credential.kind as NonNullable<PayInput['credential']>['kind'],value:text(credential.value,400)}}:{}),...(raw.approved_order_version?{approved_order_version:counter(raw.approved_order_version)}:{}),...(raw.approved_gift_card_money?{approved_gift_card_money:approvedMoney(raw.approved_gift_card_money)}:{}),...(raw.buyer_contact?{buyer_contact:{email:email(asRecord(raw.buyer_contact).email),...(asRecord(raw.buyer_contact).phone?{phone:phone(asRecord(raw.buyer_contact).phone)!}:{})}}:{}),save_payment_method:raw.save_payment_method===true,save_payment_method_phone:raw.save_payment_method_phone?phone(raw.save_payment_method_phone)??undefined:undefined};
     const ref=c.req.param('ref');
     // Flint refuses tax older than its freshness window before it creates an attempt, so nothing was charged.
     // Tax is worked out again at the order's saved location, and the buyer approves the result with a new press.
@@ -374,9 +377,11 @@ export function createApp(options:AppOptions){
   app.post('/checkout/:ref/cancel-attempt',async c=>{own(c);const result=await payments.cancel(c.req.param('ref'));const current=await state(c,result);return paymentJson(c,current.read,result);});
   app.get('/checkout/:ref/return',async c=>{
     try{own(c);}catch{return page(c,'return-elsewhere');}
-    const current=await state(c);const result=current.read.result.attempt?.status==='requires_action'&&current.read.result.attempt.is_resumable?await payments.resume(c.req.param('ref'),true):current.read.result;
+    const current=await state(c,undefined,true),result=current.read.result;
     if(payments.next(result)==='done')return c.redirect(`/checkout/${c.req.param('ref')}/complete`,303);
-    if(payments.next(result)==='authenticate')checkouts.notice(current.read.record,'affirm_incomplete');return c.redirect(`/checkout/${c.req.param('ref')}`,303);
+    // The return route only reads the payment. An unfinished action is never opened here: the checkout page
+    // shows it with Continue and Pay another way, worded for Affirm or for any other Flint-hosted step.
+    if(payments.next(result)==='authenticate')checkouts.notice(current.read.record,hasAffirmAction(current.state as unknown as CheckoutState)?'affirm_incomplete':'payment_action_incomplete');return c.redirect(`/checkout/${c.req.param('ref')}`,303);
   });
   app.get('/checkout/:ref/complete',async c=>{
     own(c);const current=await state(c);let subscription:unknown;
@@ -420,7 +425,7 @@ export function createApp(options:AppOptions){
     }
     if(jsonWanted(c)){
       const localChallenge=c.req.path.endsWith('/gift-card/challenge')&&['GIFT_CHALLENGE_EXPIRED','GIFT_CHALLENGE_SESSION_CHANGED','GIFT_CHALLENGE_CODE_CHANGED','GIFT_CHALLENGE_ORDER_CHANGED','CHECKOUT_PAYMENT_RESOLVING','PAYMENT_ATTEMPT_IN_PROGRESS'].includes(mapped.code);
-      let projected:unknown;const ref=c.req.param('ref');if(ref&&status!==404&&!localChallenge){try{own(c);projected=(await state(c)).state;}catch{}}
+      let projected:unknown;const ref=c.req.param('ref');if(ref&&status!==404&&!localChallenge){try{own(c);projected=(await state(c,undefined,c.req.path.endsWith('/return'))).state;}catch{}}
       return c.json({error:mapped,state:projected},status);
     }
     if(status===401&&c.get('user')===undefined&&c.req.path.startsWith('/verify-email'))return c.redirect(`/sign-in?next=${encodeURIComponent(c.get('returnNext')??returnPath(c.req.query('next')))}`,303);

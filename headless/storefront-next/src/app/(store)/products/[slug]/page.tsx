@@ -48,7 +48,7 @@ export default async function ProductPage({ params }: Props) {
       </section>
     );
   }
-  const variants = item.variants.map((variant) => ({ variant_id: variant.variant_id, label: variantLabel(variant), available: variant.available_for_sale !== false, price: variant.unit_price_money }));
+  const variants = item.variants.map((variant) => ({ variant_id: variant.variant_id, label: variantLabel(variant), available: variant.is_available_for_sale !== false, price: variant.unit_price_money }));
   const sellable = variants.some((variant) => variant.available);
   const physical = item.product.product_type !== 'service';
   return (

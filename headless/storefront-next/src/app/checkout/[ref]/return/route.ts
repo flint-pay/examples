@@ -1,10 +1,12 @@
 import { NextResponse } from 'next/server';
 import { visitor } from '@/server/session.ts';
-import { projectState } from '@/server/checkout-view.ts';
+import { viewState } from '@/server/checkout-view.ts';
+import { hasAffirmAction } from '@/shared/checkout-logic.ts';
+import type { CheckoutState } from '@/shared/types.ts';
 
 type Params = { params: Promise<{ ref: string }> };
 
-// Stripe sends the buyer back here after a redirect payment method, such as Affirm. The browser that
+// Flint sends the buyer back here after a payment step on a Flint-hosted page, such as Affirm. The browser that
 // started the checkout continues it; any other browser is told where to go.
 export async function GET(request: Request, { params }: Params) {
   const { ref } = await params;
@@ -17,12 +19,14 @@ export async function GET(request: Request, { params }: Params) {
   } catch {
     return to('/return-elsewhere');
   }
-  const current = await projectState(rt, ref, user);
-  const attempt = current.read.result.attempt;
-  const result = attempt?.status === 'requires_action' && attempt.is_resumable ? await rt.payments.resume(ref, true) : current.read.result;
+  const read = await rt.checkouts.readForReturn(ref);
+  const current = { read, state: await viewState(rt, read) };
+  const result = current.read.result;
   const next = rt.payments.next(result);
   const path = `/checkout/${encodeURIComponent(ref)}`;
   if (next === 'done') return to(`${path}/complete`);
-  if (next === 'authenticate') rt.checkouts.notice(current.read.record, 'affirm_incomplete');
+  // The return route only reads the payment. An unfinished action is never opened here: the checkout page
+  // shows it with Continue and Pay another way, worded for Affirm or for any other Flint-hosted step.
+  if (next === 'authenticate') rt.checkouts.notice(current.read.record, hasAffirmAction(current.state as unknown as CheckoutState) ? 'affirm_incomplete' : 'payment_action_incomplete');
   return to(path);
 }

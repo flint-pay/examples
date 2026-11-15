@@ -28,7 +28,7 @@ test('partial creation ledger survives a later setup error', async () => temp(as
 }));
 test('untracked outcome, failed cleanup and unrestored settings each fail teardown', async () => temp(async dir => {
   const ledger = new Ledger(join(dir, 'ledger.json'), run); await ledger.record(resource); assert.throws(() => ledger.assertTracked());
-  await ledger.disposition(ledger.state.resources[0], 'RETAINED FOR RECONCILIATION'); ledger.assertTracked(); await ledger.snapshot('settings-A', { version: '1' }); assert.throws(() => ledger.assertTracked(), { message: 'SETTINGS_NOT_RESTORED' });
+  await ledger.disposition(ledger.state.resources[0], 'RETAINED FOR RECONCILIATION'); ledger.assertTracked(); await ledger.snapshot('settings-A', { version: 1 }); assert.throws(() => ledger.assertTracked(), { message: 'SETTINGS_NOT_RESTORED' });
 }));
 test('private state permissions and public-workspace rejection', async () => temp(async dir => {
   const file = join(dir, 'private.json'); await writePrivate(file, { placeholder: true }); assert.equal((await stat(file)).mode & 0o077, 0); await assert.rejects(() => privateDirectory(checkoutRoot));
@@ -41,10 +41,10 @@ test('all 52 settled rows and seven supplemental contract rows have an implement
 test('money avoids floating point and rejects numeric amounts', () => {
   assert.equal(money({ amount: '9007199254740993', currency: 'USD' }).amount, '9007199254740993'); assert.throws(() => money({ amount: 12000, currency: 'USD' })); assert.throws(() => equalMoney({ amount: '1', currency: 'USD' }, { amount: '1', currency: 'CAD' }));
 });
-function giftOrder() { return { version: '9', gift_cards: [{ gift_card_id: 'gift_PLACEHOLDER' }], settlement_amounts: { outstanding_money: { amount: '12000', currency: 'USD' } }, gift_card_estimate: { order_version: '9', gift_cards: [{ gift_card_id: 'gift_PLACEHOLDER', amount_money: { amount: '12000', currency: 'USD' } }], gift_card_money: { amount: '12000', currency: 'USD' }, processor_money: { amount: '0', currency: 'USD' } } }; }
-test('fully gift-funded request accepts latest allocation and omits processor source', () => { const order = giftOrder(); const request = settlementRequest(order); assert.equal(request.action, 'pay'); assert.equal('payment_source' in request, false); assert.equal((request.accepted_gift_card_allocation as any).order_version, '9'); assert.throws(() => settlementRequest(order, { token: 'pm_PLACEHOLDER' })); });
+function giftOrder() { return { version: 9, gift_cards: [{ gift_card_id: 'gift_PLACEHOLDER' }], settlement_amounts: { outstanding_money: { amount: '12000', currency: 'USD' } }, gift_card_estimate: { order_version: 9, gift_cards: [{ gift_card_id: 'gift_PLACEHOLDER', amount_money: { amount: '12000', currency: 'USD' } }], gift_card_money: { amount: '12000', currency: 'USD' }, processor_money: { amount: '0', currency: 'USD' } } }; }
+test('fully gift-funded request accepts latest allocation and omits processor source', () => { const order = giftOrder(); const request = settlementRequest(order); assert.equal(request.action, 'pay'); assert.equal('payment_source' in request, false); assert.equal((request.accepted_gift_card_allocation as any).order_version,9); assert.throws(() => settlementRequest(order, { token: 'pm_PLACEHOLDER' })); });
 test('zero balance uses published action pay without payment source', () => { const request = settlementRequest({ settlement_amounts: { outstanding_money: { amount: '0', currency: 'USD' } } }); assert.deepEqual(request, { action: 'pay', expected_outstanding_money: { amount: '0', currency: 'USD' } }); });
-test('gift allocation rejects stale revisions or mismatched exact sums', () => { const order = giftOrder(); order.gift_card_estimate.order_version = '8'; assert.throws(() => giftAllocation(order)); order.gift_card_estimate.order_version = '9'; order.gift_card_estimate.processor_money.amount = '1'; assert.throws(() => giftAllocation(order)); });
+test('gift allocation rejects stale revisions or mismatched exact sums', () => { const order = giftOrder(); order.gift_card_estimate.order_version = 8; assert.throws(() => giftAllocation(order)); order.gift_card_estimate.order_version = 9; order.gift_card_estimate.processor_money.amount = '1'; assert.throws(() => giftAllocation(order)); });
 test('one-charge assertions reject duplicate settled intents and a paid label without state', () => {
   const order = { payment_status: 'paid', settlement_amounts: { outstanding_money: { amount: '0', currency: 'USD' } } }, attempt = { status: 'succeeded', payment_intents: [{ payment_intent_id: 'pi_PLACEHOLDER', status: 'succeeded' }] }; assertOneCharge(order, [attempt]); assert.throws(() => assertOneCharge(order, [attempt, attempt])); assert.throws(() => assertOneCharge({ ...order, payment_status: 'unpaid' }, [attempt]));
 });
@@ -74,3 +74,20 @@ for (const [name, order, attempts, browserConfirmSetup, code] of [
 ] as const) test(`trial setup rejects ${name}`, () => {
   assert.throws(() => assertTrialSetup(order, [...attempts], browserConfirmSetup), { code });
 });
+
+test('refresh abandonment requires a nonnegative safe integer revocation count',async()=>temp(async dir=>{
+  const ledger=new Ledger(join(dir,'ledger.json'),run);
+  await ledger.record({...resource,resource:'cus_PLACEHOLDER',type:'customer'});
+  await assert.rejects(()=>ledger.action('refresh','A','customerSessions.refresh',[{credential_source:'accountA:customer_session_vault'}],async()=>{throw new Error('unknown');},async()=>{}));
+  await ledger.action('revoke','A','customers.revokeSessions',['cus_PLACEHOLDER',{}],async()=>({revoked_count:1}),async()=>{});
+  const original=ledger.state.actions['A:refresh'],revoke=ledger.state.actions['A:revoke'];
+  for(const count of [0,1,Number.MAX_SAFE_INTEGER]){
+    revoke.response={revoked_count:count};assert.equal(ledger.validAbandonment({...original,reconcileActionId:'A:revoke'}),true);
+  }
+  for(const count of ['1',-1,1.5,Number.MAX_SAFE_INTEGER+1,NaN,Infinity,null,undefined]){
+    revoke.response={revoked_count:count};assert.equal(ledger.validAbandonment({...original,reconcileActionId:'A:revoke'}),false);
+    await assert.rejects(()=>ledger.abandonUnreplayable('A:refresh','A:revoke'),{code:'OWNED_CUSTOMER_REVOCATION_RECONCILIATION_REQUIRED'});
+  }
+  revoke.response={revoked_count:1};await ledger.abandonUnreplayable('A:refresh','A:revoke');
+  assert.equal(original.phase,'abandoned');
+}));

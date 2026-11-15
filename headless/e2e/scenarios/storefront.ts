@@ -151,7 +151,7 @@ export const storefront: Record<string, Scenario> = {
     const c = await normal(d, 'mutate'); const variant = d.fixtures.products['stoneware-mug'];
     const reviewAt = new Date(Date.now() + 30 * 86400_000).toISOString();
     const before = (await d.operator.clients.clients.A.orders.get(c.orderId)).line_items.map(l => l.order_line_item_id);
-    await d.operator.execute({ name: 'mutate-checkout', sandbox: 'A', operation: 'orders.addLineItems', args: [c.orderId, { line_items: [{ variant_id: variant.variantId, quantity: '1' }] }], creates: [{ type: 'order_line_item', path: 'line_items.0.order_line_item_id', cleanup: 'review', reviewAt }], purpose: 'refresh-checkout' });
+    await d.operator.execute({ name: 'mutate-checkout', sandbox: 'A', operation: 'orders.createLineItems', args: [c.orderId, { line_items: [{ variant_id: variant.variantId, quantity: 1 }] }], creates: [{ type: 'order_line_item', path: 'line_items.0.order_line_item_id', cleanup: 'review', reviewAt }], purpose: 'refresh-checkout' });
     await c.page.reload(); await expect(c.page.getByTestId('sf-notice-checkout_refreshed')).toBeVisible(); await d.state(c); invariant(c.state.order.line_items.some((l: any) => !before.includes(l.order_line_item_id)), 'CHECKOUT_NOT_REFRESHED');
     await d.delivery(c); const oldMoney = money(c.state.order.settlement_amounts.outstanding_money);
     // The page keeps no cross-tab sync, so the order is changed after the buyer's Pay press is captured and before it reaches the server: the request still carries the former approval.

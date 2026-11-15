@@ -31,14 +31,14 @@ function isolationHarness(t: TestContext, collision = false) {
           customers: { get: (id: string) => foreign('customer', id) },
           invoices: { get: (id: string) => foreign('invoice', id) },
         } },
-        writable: async (sandbox: string) => ({ orders: { createWithResponse: async (body: unknown, options: { idempotencyKey: string }) => {
+        writable: async (sandbox: string) => ({ orders: { create: async (body: unknown, options: { idempotencyKey: string }) => {
           requests.push({ sandbox, body: structuredClone(body), key: options.idempotencyKey });
-          return { body: { data: { order_id: `ord_UNIT_${collision ? 'COLLISION' : sandbox}_FAKE` } }, meta: { requestId: `req_UNIT_${sandbox}` } };
+          return Object.defineProperty({ order_id: `ord_UNIT_${collision ? 'COLLISION' : sandbox}_FAKE` },'lastResponse',{value:{ requestId: `req_UNIT_${sandbox}` },configurable:true});
         } } }),
       },
       execute: async (step: { sandbox: string; operation: string; args: unknown[] }) => {
         assert.equal(step.sandbox, 'B'); assert.equal(step.operation, 'customerSessions.create');
-        assert.deepEqual(step.args, [{ customer_id: 'cus_UNIT_B_FAKE', expires_in_seconds: '300' }]);
+        assert.deepEqual(step.args, [{ customer_id: 'cus_UNIT_B_FAKE', expires_in_seconds: 300 }]);
         return { data: { secret: 'flint_cses_UNIT_B_FAKE' } };
       },
       ledger: { action: async <T>(name: string, sandbox: string, operation: string, args: unknown[], send: (key: string) => Promise<T>, reconcile: (result: T) => Promise<void>, suppliedKey: string) => {
@@ -58,7 +58,7 @@ test('I-01 declares fixture taxability and preserves resource and cross-sandbox 
   assert.deepEqual(h.reads, ['order:ord_UNIT_FOREIGN_FAKE', 'customer:cus_UNIT_A_FAKE', 'invoice:inv_UNIT_FOREIGN_FAKE', 'buyer-order:ord_UNIT_FOREIGN_FAKE']);
   assert.deepEqual(h.requests, ['A', 'B'].map(sandbox => ({ sandbox, key: h.key, body: {
     external_reference_id: h.key,
-    line_items: [{ type: 'custom', name: 'Isolation acceptance service', quantity: '1', unit_price_money: { amount: '100', currency: 'USD' }, fulfillment: { requirement: 'none' }, tax: { taxable: true } }],
+    line_items: [{ type: 'custom', name: 'Isolation acceptance service', quantity: 1, unit_price_money: { amount: '100', currency: 'USD' }, fulfillment: { requirement: 'none' }, tax: { taxable: true } }],
   } })));
   assert.equal(h.journals.length, 2); assert.equal(h.journals[0].args, h.journals[1].args);
   for (const entry of h.journals) {

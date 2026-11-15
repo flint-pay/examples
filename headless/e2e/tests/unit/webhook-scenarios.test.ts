@@ -3,7 +3,7 @@ import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { Client } from '@flintpay/node';
-import type { Webhook_order_paid_merchant } from '@flintpay/node';
+import type { OrderPaidMerchantEvent } from '@flintpay/node';
 import type { Driver } from '../../support/driver.ts';
 import { crossApp } from '../../scenarios/cross-app.ts';
 
@@ -20,7 +20,7 @@ function signedHarness(envelope: unknown, orderId = 'ord_UNIT_1') {
     request: { post: async (_url: string, options: { data: string; headers: Record<string, string> }) => {
       try {
         const verified = new Client().verifyWebhook(Buffer.from(options.data), options.headers, secret);
-        verifiedOrders.push((verified.event as Webhook_order_paid_merchant).data.object.order_id); deliveries.push(options.headers['webhook-id']!);
+        verifiedOrders.push((verified.event as OrderPaidMerchantEvent).data.object.order_id); deliveries.push(options.headers['webhook-id']!);
         return { status: () => 200 };
       } catch { return { status: () => 400 }; }
     } },
@@ -45,12 +45,12 @@ function signedHarness(envelope: unknown, orderId = 'ord_UNIT_1') {
 }
 function envelope() {
   const zero = { amount: '0' as const, currency: 'USD' }, total = { amount: '100' as const, currency: 'USD' };
-  return { api_version: '2026-09-07', webhook_event_id: 'evt_UNIT_1', event_type: 'order.paid', payload_version: 2, test: false, mode: 'test', merchant_id: 'merchant-unit', created_at: new Date().toISOString(), request: null, data: { object: {
-    order_id: 'ord_UNIT_1', version: '1', buyer_actions: [], charges: [], checkout_session_ids: [], discounts: [], fulfillments: [], gift_card_settlements: [], gift_card_tender_enabled: true, gift_cards: [], governing_delivery_selection_id: null, line_items: [], payment_intent_ids: [], refund_ids: [], return_credit_settlements: [], tips: [],
+  return { event_source:'merchant',sandbox_id:'sandbox_example',api_version: '2026-09-07', webhook_event_id: 'evt_UNIT_1', event_type: 'order.paid', payload_version: 2, test: false, mode: 'test', merchant_id: 'merchant-unit', created_at: new Date().toISOString(), request: null, data: { object: {active_payment_review_id:null,client_reference:null,created_at:'2000-01-01T00:00:00Z',custom_field_answers:[],deferred_promotions:[],invoice_id:null,merchant_id:'mer_UNIT_FAKE',paid_at:null,prepayment_order_id:null,subscription_delivery_number:null,supported_actions:[],updated_at:'2000-01-01T00:00:00Z',
+    order_id: 'ord_UNIT_1', version: 1,  charges: [], checkout_session_ids: [], discounts: [], fulfillments: [], gift_card_settlements: [], gift_card_tender_enabled: true, gift_cards: [], governing_delivery_selection_id: null, line_items: [], payment_intent_ids: [], refund_ids: [], return_credit_settlements: [], tips: [],
     pricing_amounts: { charge_money: zero, discount_money: zero, requested_tip_money: zero, subtotal_money: total, tax_money: zero, additive_tax_money: zero, inclusive_tax_money: zero, total_money: total },
-    settlement_amounts: { balance_money: zero, outstanding_money: zero, paid_money: total, credit_money: zero, net_collected_money: total, refunded_money: zero, settled_tip_money: zero, written_off_money: zero },
+    settlement_amounts: {dispute_lost_money:{amount:'0',currency:'USD'},disputed_money:{amount:'0',currency:'USD'},overpaid_money:{amount:'0',currency:'USD'},released_money:{amount:'0',currency:'USD'},removed_money:{amount:'0',currency:'USD'},  outstanding_money: zero, paid_money: total,  net_collected_money: total, refunded_money: zero, settled_tip_money: zero, written_off_money: zero },
     tax: { enabled: false, mode: 'automatic', status: 'not_required' }, payment_status: 'paid', refund_status: 'none', status: 'open',
-  } } } satisfies Webhook_order_paid_merchant;
+  } } } satisfies OrderPaidMerchantEvent;
 }
 function useSecret(secret: string, t: TestContext) {
   const previous = process.env.E2E_WEBHOOK_SECRET; process.env.E2E_WEBHOOK_SECRET = secret;

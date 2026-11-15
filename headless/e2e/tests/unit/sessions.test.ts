@@ -15,10 +15,10 @@ test('own public session reuse checks do not extract application authority or st
   try {
     const ledger = new Ledger(join(dir, 'ledger.json'), run); await ledger.record({ resource: customerId, type: 'customer', mode: 'test', sandbox: 'A', merchant: 'mer_PLACEHOLDER', sandboxId: 'test_PLACEHOLDER', createdBy: run, purpose: 'unit', cleanup: 'review', owner: 'unit', reviewAt: '2000-02-01T00:00:00Z', owned: true });
     let rotated = false, revoked = false; const keys: string[] = [];
-    const first = { customer_id: customerId, customer_session_id: 'cses_PLACEHOLDER_1', secret: 'first-s', refresh_token: 'first-r' };
-    const second = { customer_id: customerId, customer_session_id: 'cses_PLACEHOLDER_2', secret: 'second-s', refresh_token: 'second-r' };
+    const first = {supported_actions:[], customer_id: customerId, customer_session_id: 'cses_PLACEHOLDER_1', secret: 'first-s', refresh_token: 'first-r' };
+    const second = {supported_actions:[], customer_id: customerId, customer_session_id: 'cses_PLACEHOLDER_2', secret: 'second-s', refresh_token: 'second-r' };
     const client = { customers: { get: async () => ({ customer_id: customerId }) }, customerSessions: {
-      createWithResponse: async () => ({ body: { data: first }, meta: {} }),
+      create: async () => (Object.defineProperty(first,'lastResponse',{value:{},configurable:true})),
       refresh: async (body: any, options: any) => { assert.equal(body.refresh_token, first.refresh_token); keys.push(options.idempotencyKey); if (rotated) { revoked = true; throw Object.assign(new Error('CUSTOMER_SESSION_REFRESH_REUSED'), { code: 'CUSTOMER_SESSION_REFRESH_REUSED', status: 401 }); } rotated = true; return second; },
     } };
     const clients = { config: { apiOrigin: 'https://api.staging.withflintpay.com', pins: { A: { merchantId: 'mer_PLACEHOLDER', sandboxId: 'test_PLACEHOLDER' } } }, clients: { A: client }, writable: async () => client } as unknown as VerifiedClients;

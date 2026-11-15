@@ -3,7 +3,7 @@ import {dirname,resolve} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {pathToFileURL} from 'node:url';
 import {SdkError,makeUpdateSettingsRequest} from '@flintpay/node';
-import type {Client,CustomerAccountSettingsRequestRequestInput,Settings,UpdateSettingsRequestInput} from '@flintpay/node';
+import type {Client,CustomerAccountSettingsRequestInput,Settings,UpdateSettingsRequestInput} from '@flintpay/node';
 import type {Config} from '../src/config.ts';
 import {readConfig} from '../src/config.ts';
 import {createClient} from '../src/flint/client.ts';
@@ -12,10 +12,10 @@ import type {Auth} from '../src/flint/auth.ts';
 import {preflight} from '../src/flint/preflight.ts';
 
 // Null records an omitted customer_account subtree, not invented defaults.
-type AccountState=CustomerAccountSettingsRequestRequestInput|null;
-type SettingsWrite={expected_version:string;customer_account:AccountState};
-type Snapshot={version:1;sandbox_id:string;merchant_id:string;previous:AccountState;planned:CustomerAccountSettingsRequestRequestInput;apply_key:string;restore_key:string;expected_version:string;state:'prepared'|'applied'|'restoring'|'restored';applied?:Settings['customer_account']|null;applied_version?:string;restore_expected_version?:string};
-export function setupPlan(config:Config,demo=false):CustomerAccountSettingsRequestRequestInput{
+type AccountState=CustomerAccountSettingsRequestInput|null;
+type SettingsWrite={expected_version:number;customer_account:AccountState};
+type Snapshot={version:1;sandbox_id:string;merchant_id:string;previous:AccountState;planned:CustomerAccountSettingsRequestInput;apply_key:string;restore_key:string;expected_version:number;state:'prepared'|'applied'|'restoring'|'restored';applied?:Settings['customer_account']|null;applied_version?:number;restore_expected_version?:number};
+export function setupPlan(config:Config,demo=false):CustomerAccountSettingsRequestInput{
   return {mode:'merchant_hosted',merchant_account_url:config.appOrigin,route_templates:{order:'/orders/{resource_id}',subscription:'/subscriptions/{resource_id}',return:'/returns/{resource_id}',invoice:'/invoices/{resource_id}',email_preferences:'/email-preferences'},...(demo?{buyer_capabilities:{cancellation_timing:'buyer_chooses' as const,pause:{enabled:true,max_cycles:3},cancellation_reasons:['too_expensive','unused','switched_service','other'] as const,retention_offer:{kind:'pause_instead' as const,pause_cycles:1}}}:{})};
 }
 function canonical(value:unknown):string{if(Array.isArray(value))return '['+value.map(canonical).join(',')+']';if(value&&typeof value==='object')return '{'+Object.entries(value).filter(([,item])=>item!==undefined).sort(([a],[b])=>a.localeCompare(b)).map(([key,item])=>JSON.stringify(key)+':'+canonical(item)).join(',')+'}';return JSON.stringify(value??null);}
@@ -25,7 +25,7 @@ function containsPlan(actual:unknown,planned:unknown):boolean{
   if(planned&&typeof planned==='object'&&!Array.isArray(planned))return !!actual&&typeof actual==='object'&&Object.entries(planned).filter(([,value])=>value!==undefined).every(([key,value])=>containsPlan((actual as Record<string,unknown>)[key],value));
   return same(actual,planned);
 }
-function validVersion(value:unknown):value is string{return typeof value==='string'&&/^[1-9][0-9]*$/.test(value);}
+function validVersion(value:unknown):value is number{return typeof value==='number'&&Number.isSafeInteger(value)&&value>0;}
 function writeSnapshot(path:string,value:Snapshot,initial=false){
   mkdirSync(dirname(path),{recursive:true,mode:0o700});
   const target=initial?path:`${path}.${randomUUID()}.tmp`;
@@ -70,7 +70,7 @@ async function applySnapshot(client:Client,auth:Auth,path:string,snapshot:Snapsh
   snapshot.applied=account(changed);snapshot.applied_version=changed.version;snapshot.state='applied';writeSnapshot(path,snapshot);
   const verified=await client.settings.get(undefined,auth.merchant());verifyApplied(verified,snapshot);return verified;
 }
-export async function runSetup(client:Client,config:Config,args:string[]):Promise<{mode:string;setupNeeded:boolean;cards:string;snapshot?:string;changes?:CustomerAccountSettingsRequestRequestInput;previous_mode?:string}>{
+export async function runSetup(client:Client,config:Config,args:string[]):Promise<{mode:string;setupNeeded:boolean;cards:string;snapshot?:string;changes?:CustomerAccountSettingsRequestInput;previous_mode?:string}>{
   const flags=new Set(args),allowed=new Set(['--apply','--check','--buyer-capabilities=demo']);
   const resume=args.find(arg=>arg.startsWith('--resume=')),restore=args.find(arg=>arg.startsWith('--restore=')),snapshotArg=args.find(arg=>arg.startsWith('--snapshot='));
   for(const arg of args)if(!allowed.has(arg)&&arg!==resume&&arg!==restore&&arg!==snapshotArg)throw new Error('Unknown setup option');
@@ -81,7 +81,7 @@ export async function runSetup(client:Client,config:Config,args:string[]):Promis
     const path=resolve((resume??restore!).slice((resume?'--resume=':'--restore=').length));
     return lockedSnapshot(path,async()=>{
       const snapshot=readSnapshot(path,ready.sandboxId,ready.merchantId);
-      let settings=await client.settings.get(undefined,auth.merchant());
+      let settings:Settings=await client.settings.get(undefined,auth.merchant());
       if(resume){await applySnapshot(client,auth,path,snapshot,settings);return {mode:'resume',setupNeeded:false,cards:ready.cards,snapshot:path};}
       if(snapshot.state==='restored'){
         if(!same(account(settings),snapshot.previous))throw new Error('Customer account settings changed since restoration; reconciliation is required');
@@ -108,7 +108,7 @@ export async function runSetup(client:Client,config:Config,args:string[]):Promis
     });
   }
   const settings=await client.settings.get(undefined,auth.merchant());
-  const plan={...settings.customer_account,...setupPlan(config,flags.has('--buyer-capabilities=demo'))} as CustomerAccountSettingsRequestRequestInput;
+  const plan={...settings.customer_account,...setupPlan(config,flags.has('--buyer-capabilities=demo'))} as CustomerAccountSettingsRequestInput;
   if(!flags.has('--apply')){
     if(flags.has('--check')&&ready.setupNeeded)throw new Error('Customer account setup is incomplete');
     if(flags.has('--check')&&ready.cards!=='ready')throw new Error('Card acceptance is not ready');
@@ -126,6 +126,6 @@ export async function runSetup(client:Client,config:Config,args:string[]):Promis
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href){
   const config=readConfig(),client=createClient(config.apiBaseUrl);
   try{console.info(JSON.stringify(await runSetup(client,config,process.argv.slice(2))));}
-  catch(error){console.error(error instanceof SdkError?JSON.stringify({code:error.code,kind:error.kind,request_id:error.meta?.requestId}):error instanceof Error?error.message:'Setup failed');process.exitCode=1;}
+  catch(error){console.error(error instanceof SdkError?JSON.stringify({code:error.code,kind:error.name,request_id:error.requestId}):error instanceof Error?error.message:'Setup failed');process.exitCode=1;}
   finally{await client.close();}
 }

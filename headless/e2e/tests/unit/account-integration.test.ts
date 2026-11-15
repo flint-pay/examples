@@ -1,3 +1,4 @@
+import {errors} from '@flintpay/node';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, readFile } from 'node:fs/promises';
@@ -17,10 +18,10 @@ async function fixture(dir: string, options: { owned?: boolean; wrongCustomer?: 
   await ledger.record({ resource: customer, type: 'customer', mode: 'test', sandbox: 'A', merchant: 'mer_UNIT_FAKE', sandboxId: 'test_UNIT_FAKE', createdBy: run, purpose: 'synthetic-unit', cleanup: 'review', owner: 'unit', reviewAt: '2000-02-01T00:00:00Z', owned: options.owned ?? true });
   let writes = 0, revoked = false;
   const seen: string[] = [], keys: string[] = [], secrets: string[] = [];
-  const first = { customer_id: customer, customer_session_id: 'cses_UNIT_FIRST_FAKE', secret: 'flint_cses_UNIT_FIRST_FAKE', refresh_token: 'flint_cref_UNIT_FIRST_FAKE' };
-  const second = { ...first, customer_session_id: 'cses_UNIT_SECOND_FAKE', secret: 'flint_cses_UNIT_SECOND_FAKE', refresh_token: 'flint_cref_UNIT_SECOND_FAKE' };
+  const first = {supported_actions:[], customer_id: customer, customer_session_id: 'cses_UNIT_FIRST_FAKE', secret: 'flint_cses_UNIT_FIRST_FAKE', refresh_token: 'flint_cref_UNIT_FIRST_FAKE' };
+  const second = {...first, customer_session_id: 'cses_UNIT_SECOND_FAKE', secret: 'flint_cses_UNIT_SECOND_FAKE', refresh_token: 'flint_cref_UNIT_SECOND_FAKE' };
   const merchant = { customers: { get: async () => ({ customer_id: options.wrongCustomer ? 'cus_UNIT_FOREIGN_FAKE' : customer }) }, customerSessions: {
-    createWithResponse: async (body: any, opts: any) => { assert.equal(body.customer_id, customer); writes++; keys.push(opts.idempotencyKey); return { body: { data: first }, meta: {} }; },
+    create: async (body: any, opts: any) => { assert.equal(body.customer_id, customer); writes++; keys.push(opts.idempotencyKey); return Object.defineProperty(first,'lastResponse',{value:{},configurable:true}); },
     revoke: async (id: string, _body: unknown, opts: any) => { writes++; keys.push(opts.idempotencyKey); revoked = true; return { customer_session_id: id, status: 'revoked' }; },
   } };
   const verified = { config: { apiOrigin: 'https://api.staging.withflintpay.com', pins: { A: { merchantId: 'mer_UNIT_FAKE', sandboxId: 'test_UNIT_FAKE' } } }, clients: { A: merchant }, writable: async () => merchant } as unknown as VerifiedClients;
@@ -30,7 +31,7 @@ async function fixture(dir: string, options: { owned?: boolean; wrongCustomer?: 
     if (options.lostRefresh) throw new Error('synthetic transport interrupted'); return second;
   } } }, buyer: (secret: string) => {
     secrets.push(secret);
-    const me: Record<string, unknown> = { get: async () => { seen.push('get'); if (revoked && !options.stillValid) throw options.revokedError ?? new SdkError('not_found', 'Synthetic session revoked', 'response', false, { status: 404, headers: {}, attempts: 1, durationMs: 1 }, 'CUSTOMER_SESSION_NOT_FOUND'); return { customer_id: customer }; } };
+    const me: Record<string, unknown> = { get: async () => { seen.push('get'); if (revoked && !options.stillValid) throw options.revokedError ?? new errors.NotFoundError('Synthetic session revoked',{outcome:'response',retryAllowed:false,...({ status: 404, headers: {}, attempts: 1, durationMs: 1 }),code:'CUSTOMER_SESSION_NOT_FOUND'}); return { customer_id: customer }; } };
     for (const method of ['listOrders', 'listSubscriptions', 'listInvoices', 'listReturns', 'listPaymentMethods', 'listAddresses', 'listGiftCards']) me[method] = async () => { seen.push(method); return { data: [] }; };
     return { me, close: async () => {} };
   } } as unknown as AccountClients;
@@ -62,7 +63,7 @@ test('lost refresh remains unreconciled and a usable revoked session fails accep
 
 test('revocation requires the public session-not-found response, not an unrelated error', async () => temp(async dir => {
   for (const [status, code] of [[400, 'INVALID_CUSTOMER_SESSION'], [503, 'CUSTOMER_SESSION_NOT_FOUND']] as const) {
-    const f = await fixture(dir, { revokedError: new SdkError('api', 'Synthetic unrelated error', 'response', false, { status, headers: {}, attempts: 1, durationMs: 1 }, code) });
+    const f = await fixture(dir, { revokedError: new errors.ApiError('Synthetic unrelated error',{outcome:'response',retryAllowed:false,...({ status, headers: {}, attempts: 1, durationMs: 1 }),code:code}) });
     await assert.rejects(() => exerciseAccountApi(f.operator, customer, f.injected), { message: 'ACCOUNT_REVOKED_SESSION_MUST_BE_INVALID' });
   }
 }));

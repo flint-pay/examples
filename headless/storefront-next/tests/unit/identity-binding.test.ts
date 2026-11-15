@@ -1,3 +1,4 @@
+import {errors} from '@flintpay/node';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';
@@ -22,7 +23,7 @@ function verificationClient(){
       let verification=issued.get(key);
       if(verification)assert.equal(verification.body,JSON.stringify(body),'an idempotency key must retain its original body');
       else{verification={body:JSON.stringify(body),customer_verification_id:`example-verification-${issued.size+1}`};issued.set(key,verification);}
-      if(state.loseResponse)throw new SdkError('transport','local lost response','unknown',true);
+      if(state.loseResponse)throw new errors.ConnectionError('local lost response',{outcome:'unknown',retryAllowed:true});
       return {customer_verification_id:verification.customer_verification_id};
     }},
   } as unknown as Client;
@@ -103,7 +104,7 @@ test('definitive verification rejection releases its key so the next logical sen
   const identity=new IdentityStore(':memory:');const remote=verificationClient();
   try{
     const user=await buyer(identity);const session=identity.createSession(user.user_id);const binding=new IdentityBinding(remote.client,createAuth('local-fixture'),identity,'sandbox-A');
-    remote.state.reject=new SdkError('rate_limit','local rejection','response',false,{status:429,headers:{},attempts:1,durationMs:1},'CUSTOMER_VERIFICATION_RATE_LIMITED');
+    remote.state.reject=new errors.RateLimitError('local rejection',{outcome:'response',retryAllowed:false,...({status:429,headers:{},attempts:1,durationMs:1}),code:'CUSTOMER_VERIFICATION_RATE_LIMITED'});
     await assert.rejects(binding.send(user,session.session));assert.equal(binding.verificationRequest(user)?.idempotency_key,null);
     remote.state.reject=undefined;await binding.send(user,session.session);assert.equal(remote.issued.size,1);assert.notEqual(remote.calls[0]!.key,remote.calls[1]!.key);assert.equal(binding.verificationRequest(user)?.sequence,2);
   }finally{identity.close();}
@@ -113,7 +114,7 @@ test('5xx and idempotency-in-progress verification responses retain the same log
   try{
     const user=await buyer(identity);const session=identity.createSession(user.user_id);const binding=new IdentityBinding(remote.client,createAuth('local-fixture'),identity,'sandbox-A');
     for(const [status,code] of [[503,'CUSTOMER_VERIFICATION_UNAVAILABLE'],[409,'IDEMPOTENCY_KEY_IN_PROGRESS']] as const){
-      remote.state.reject=new SdkError('server','local uncertain response','response',true,{status,headers:{},attempts:1,durationMs:1},code);await assert.rejects(binding.send(user,session.session));assert.ok(binding.verificationRequest(user)?.idempotency_key);
+      remote.state.reject=new errors.ServerError('local uncertain response',{outcome:'response',retryAllowed:true,...({status,headers:{},attempts:1,durationMs:1}),code:code});await assert.rejects(binding.send(user,session.session));assert.ok(binding.verificationRequest(user)?.idempotency_key);
     }
     remote.state.reject=undefined;await binding.send(user,session.session);assert.equal(new Set(remote.calls.map(call=>call.key)).size,1);assert.equal(remote.issued.size,1);assert.equal(binding.verificationRequest(user)?.sequence,1);
   }finally{identity.close();}

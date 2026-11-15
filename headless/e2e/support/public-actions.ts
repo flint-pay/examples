@@ -5,15 +5,15 @@ import { invariant } from './safe.ts';
 import { money } from './money.ts';
 
 export async function createBuyerClient(d: Driver, name: string, customerId: string, sandbox: 'A' | 'B' = 'A'): Promise<Client> {
-  const response = await d.operator.execute({ name, sandbox, operation: 'customerSessions.create', args: [{ customer_id: customerId, expires_in_seconds: '300' }], creates: [{ path: 'customer_session_id', type: 'customer_session', cleanup: 'customer_session', reviewAt: new Date(d.operator.runDate() + 86400_000).toISOString() }], purpose: name });
+  const response = await d.operator.execute({ name, sandbox, operation: 'customerSessions.create', args: [{ customer_id: customerId, expires_in_seconds: 300 }], creates: [{ path: 'customer_session_id', type: 'customer_session', cleanup: 'customer_session', reviewAt: new Date(d.operator.runDate() + 86400_000).toISOString() }], purpose: name });
   return new Client({ baseUrl: d.config.apiOrigin, customerToken: response.data.secret, transport: pinnedFetch(), maxAttempts: 1 });
 }
 export async function buyerInvoiceLaunch(d: Driver, buyer: Client, name: string, invoiceId: string): Promise<any> {
-  const args = { surface: 'embedded' as const, payment_return_url: `${d.config.origins.accountA}/invoices/${invoiceId}/pay/return` };
-  return d.operator.ledger.action(name, 'A', 'me.createInvoiceCheckoutSession', [invoiceId, args], async key => {
+  const args = { surface: 'headless' as const, payment_return_url: `${d.config.origins.accountA}/invoices/${invoiceId}/pay/return` };
+  return d.operator.ledger.action(name, 'A', 'me.createCheckoutSession', [{...args,type:'invoice',invoice_id:invoiceId}], async key => {
     await d.operator.clients.verify('A');
-    const response = await buyer.me.createInvoiceCheckoutSessionWithResponse(invoiceId, args, { idempotencyKey: key });
-    return response.body.data;
+    const response = await buyer.me.createCheckoutSession({...args,type:'invoice',invoice_id:invoiceId}, { idempotencyKey: key });
+    return {checkout_session:response,checkout_auth_token:response.checkout_auth_token};
   }, async response => {
     invariant(response.checkout_session?.checkout_session_id && response.checkout_session.order_id, 'INVOICE_LAUNCH_SESSION_MISSING');
     await d.track('A', 'checkout_session', response.checkout_session.checkout_session_id, 'checkout_session');
@@ -21,21 +21,23 @@ export async function buyerInvoiceLaunch(d: Driver, buyer: Client, name: string,
   });
 }
 export async function hostedInvoiceLaunch(d: Driver, name: string, invoiceId: string): Promise<any> {
-  const response = await d.operator.execute({ name, sandbox: 'A', operation: 'invoices.createCheckoutSession', args: [invoiceId, { surface: 'hosted' }], creates: [{ path: 'checkout_session.checkout_session_id', type: 'checkout_session', cleanup: 'checkout_session', reviewAt: new Date(d.operator.runDate() + 86400_000).toISOString() }], purpose: name });
-  return response.data;
+  const response = await d.operator.execute({ name, sandbox: 'A', operation: 'checkoutSessions.create', args: [{ type:'invoice',invoice_id:invoiceId,surface: 'hosted' }], creates: [{ path: 'checkout_session_id', type: 'checkout_session', cleanup: 'checkout_session', reviewAt: new Date(d.operator.runDate() + 86400_000).toISOString() }], purpose: name });
+  return {checkout_session:response.data};
 }
 export async function beginHostedAuthentication(d: Driver, name: string, launch: any): Promise<void> {
-  invariant(launch.checkout_auth_token && launch.checkout_session?.checkout_session_id && launch.checkout_session.order_id, 'PUBLIC_CHECKOUT_AUTHORITY_REQUIRED');
+  // Hosted launches expose their URL and no checkout credential in SDK 8.
+  invariant(launch.checkout_auth_token,'HOSTED_CHECKOUT_PAYMENT_PREPARATION_REQUIRED');
+  invariant(launch.checkout_session?.checkout_session_id&&launch.checkout_session.order_id,'PUBLIC_CHECKOUT_AUTHORITY_REQUIRED');
   const token = d.fixtures.values.hostedConflictPaymentToken;
   invariant(typeof token === 'string' && token.length > 0, 'HOSTED_CONFLICT_PAYMENT_TOKEN_REQUIRED');
   invariant(/^pm_[A-Za-z0-9]+$/.test(token), 'HOSTED_CONFLICT_PAYMENT_TOKEN_INVALID');
   const checkout = new Client({ baseUrl: d.config.apiOrigin, checkoutToken: launch.checkout_auth_token, transport: pinnedFetch(), maxAttempts: 1 });
   const order = await checkout.orders.get(launch.checkout_session.order_id);
   // A new action needs a fresh one-shot source; the same ledger action may replay it.
-  invariant(!Object.entries(d.operator.ledger.state.actions).some(([actionId, action]) => actionId !== `A:${name}` && action.sandbox === 'A' && action.operation === 'orders.pay-checkout' && (action.args[0] as any)?.body?.payment_source?.token === token), 'HOSTED_CONFLICT_PAYMENT_TOKEN_REUSED');
-  const request = { order_id: order.order_id, body: { action: 'pay' as const, expected_outstanding_money: money(order.settlement_amounts.outstanding_money), payment_source: { credential_type: 'token' as const, token } } };
+  invariant(!Object.entries(d.operator.ledger.state.actions).some(([actionId, action]) => actionId !== `A:${name}` && action.sandbox === 'A' && action.operation === 'orders.pay-checkout' && (action.args[0] as any)?.body?.payment_source?.stripe?.payment_method === token), 'HOSTED_CONFLICT_PAYMENT_TOKEN_REUSED');
+  const request = { order_id: order.order_id, body: { action: 'pay' as const, expected_outstanding_money: money(order.settlement_amounts.outstanding_money), client_action_type:'url' as const, payment_source: { credential_type:'stripe_payment_method' as const,stripe:{payment_method:token} } } };
   const result = await d.operator.ledger.action(name, 'A', 'orders.pay-checkout', [request], async key => {
-    await d.operator.clients.verify('A'); return checkout.orders.pay(request, { idempotencyKey: key });
+    await d.operator.clients.verify('A'); return checkout.orders.pay(request.order_id, request.body, { idempotencyKey: key });
   }, async () => { await d.trackOrder('A', order.order_id); });
   invariant(result.order_payment_attempt?.status === 'requires_action', 'HOSTED_AUTHENTICATION_NOT_PENDING');
 }

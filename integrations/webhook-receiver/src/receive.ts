@@ -22,7 +22,7 @@ export function receive(rawBody: Uint8Array, headers: Headers, deps: { client: C
   } catch (error) {
     if (!(error instanceof SdkError)) throw error;
     // Record only the reason. The body, the headers, and the secret stay out of logs.
-    log({ event: 'webhook_rejected', kind: error.kind, code: error.code });
+    log({ event: 'webhook_rejected', name: error.name, code: error.code });
     return { status: 400, body: { error: 'invalid_signature' } };
   }
 

@@ -72,7 +72,7 @@ test('live events, mismatched IDs, and bodies that are not Flint events are refu
   try {
     const secret = newSecret();
     const deps = { client, inbox, secrets: [secret] };
-    const live = signed(JSON.stringify(envelope({ mode: 'live' })), secret);
+    const liveEvent=envelope({mode:'live'});Reflect.deleteProperty(liveEvent,'sandbox_id');const live=signed(JSON.stringify(liveEvent),secret);
     assert.deepEqual(receive(live.raw, live.headers, deps).body, { error: 'live_event_refused' });
     const mismatch = signed(JSON.stringify(envelope()), secret, { id: 'whev_example_other' });
     assert.deepEqual(receive(mismatch.raw, mismatch.headers, deps).body, { error: 'invalid_event' });
@@ -89,7 +89,7 @@ test('unhandled event types and test events get a 2xx and are recorded without p
   try {
     const secret = newSecret();
     const deps = { client, inbox, secrets: [secret] };
-    const other = signed(JSON.stringify(envelope({ webhook_event_id: 'whev_example_refund', event_type: 'refund.updated', data: {} })), secret);
+    const other = signed(JSON.stringify(envelope({ webhook_event_id: 'whev_example_refund', event_type: 'future.updated', data: {object:{}}  })), secret);
     assert.equal(receive(other.raw, other.headers, deps).status, 200);
     assert.equal(inbox.event('whev_example_refund')?.status, 'ignored');
     assert.equal(inbox.event('whev_example_refund')?.outcome, 'no handler for this event type');

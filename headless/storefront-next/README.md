@@ -2,7 +2,9 @@
 
 The [headless storefront](../storefront/) rebuilt with the Next.js App Router. It is the same fictional coffee roaster, Cedar & Stone, with the same features: a catalog, a cart, and an embedded checkout on your domain with delivery or pickup, discount codes, gift cards (including the gift card check), tips, saved cards, digital wallets, ACH debit, Affirm, and subscription signup with free trials. Flint hosts no part of the checkout.
 
-This example uses `@flintpay/node` 7.0.0 and runs in test mode only.
+This example uses `@flintpay/node` 8.0.0-beta.3 and runs in test mode only.
+
+A payment that needs the buyer to do something more arrives as one pending action, a closed union on `type`: a `url` action is a top-level redirect to the Flint-hosted page, and a `stripe` action runs Stripe.js `handleNextAction`. The buyer returns through `/checkout/[ref]/return`, which only reads the payment. See the [storefront README](../storefront/README.md#credential-boundary).
 
 ## How it maps to Next.js
 

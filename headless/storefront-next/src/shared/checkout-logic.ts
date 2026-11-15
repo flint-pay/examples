@@ -137,7 +137,7 @@ export function legSourceType(state: CheckoutState, paymentIntentId: string): st
   return state.order?.payment_intents?.find((intent) => intent.payment_intent_id === paymentIntentId)?.payment_source?.type ?? '';
 }
 
-function hasAffirmAction(state: CheckoutState): boolean {
+export function hasAffirmAction(state: CheckoutState): boolean {
   return (state.attempt?.payment_intents ?? []).some((leg) => legSourceType(state, leg.payment_intent_id) === 'affirm' && leg.status === 'requires_action');
 }
 

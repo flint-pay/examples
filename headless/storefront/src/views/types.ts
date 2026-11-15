@@ -72,7 +72,7 @@ export type ProductVariant = {
   variant_id: string;
   name?: string;
   sku?: string;
-  available_for_sale?: boolean;
+  is_available_for_sale?: boolean;
   unit_price_money: Money | null;
   selected_options?: { option_name: string; value: string }[];
   metadata?: Record<string, string>;
@@ -83,7 +83,7 @@ export type Product = {
   name: string;
   description?: string;
   product_type: string;
-  available_for_sale?: boolean;
+  is_available_for_sale?: boolean;
   price_range?: { min_unit_price_money: Money | null; max_unit_price_money: Money | null } | null;
   metadata?: Record<string, string>;
 };
@@ -175,7 +175,7 @@ export type Order = {
   order_id: string;
   order_number?: string;
   customer_id?: string;
-  version?: string;
+  version?: number;
   status?: string;
   payment_status?: string;
   line_items: OrderLineItem[];

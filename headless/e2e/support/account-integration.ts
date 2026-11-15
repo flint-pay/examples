@@ -14,7 +14,7 @@ export async function exerciseAccountApi(operator: Operator, customerId: string,
   const buyers: ReturnType<AccountClients['buyer']>[] = [];
   const reviewAt = new Date(operator.runDate() + 86400_000).toISOString();
   try {
-    const minted = await operator.execute({ name: 'account-api-mint', sandbox: 'A', operation: 'customerSessions.create', args: [{ customer_id: customerId, expires_in_seconds: '300' }], creates: [{ path: 'customer_session_id', type: 'customer_session', cleanup: 'customer_session', reviewAt }], purpose: 'account-public-api-integration' });
+    const minted = await operator.execute({ name: 'account-api-mint', sandbox: 'A', operation: 'customerSessions.create', args: [{ customer_id: customerId, expires_in_seconds: 300 }], creates: [{ path: 'customer_session_id', type: 'customer_session', cleanup: 'customer_session', reviewAt }], purpose: 'account-public-api-integration' });
     const first = minted.data; invariant(first.customer_id === customerId && first.secret && first.refresh_token, 'OWN_SESSION_AUTHORITY_REQUIRED');
     const buyer = clients.buyer(first.secret); buyers.push(buyer);
     invariant((await buyer.me.get()).customer_id === customerId, 'ACCOUNT_BUYER_CONTEXT_MISMATCH');

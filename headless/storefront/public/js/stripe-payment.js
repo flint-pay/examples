@@ -22,10 +22,15 @@
  */
 /**
  * @typedef {{
- *   publishable_key: string, account_id: string,
+ *   publishable_key: string, account_id?: string | null,
  *   payment_intent?: { client_secret: string, stripe_js_call: string } | null,
  *   setup_intent?: { client_secret: string, stripe_js_call: string } | null,
- * }} ClientAction
+ * }} StripeAction
+ */
+/**
+ * The pending action the app hands the page: a closed union on `type`. The page branches on `type`
+ * and never guesses the variant from whether `stripe` is present.
+ * @typedef {{ type: 'url', url: string, expiresAt: string } | { type: 'stripe', stripe: StripeAction, expiresAt: string }} ClientAction
  */
 /** @typedef {{ kind: 'confirmation_token' | 'payment_method_token', value: string }} Credential */
 /** @typedef {{ name: string, email: string, country?: string, postal_code?: string }} Billing */
@@ -48,23 +53,69 @@ export function whenStripeLoaded() {
 }
 
 /**
- * Runs a pending provider action with no Elements, guidance or card form. Only the action Flint
- * returned is used. Anything but `handle_next_action` is refused without calling Stripe.
- * `invoked` is true once Stripe was called, whether or not it returned an error.
+ * True when the action's own expiry has passed. A missing or unreadable expiry is not treated as
+ * expired: the server decides, and the resume that follows reads the true outcome.
+ * @param {{ expiresAt?: unknown } | null | undefined} action
+ * @param {number} [now]
+ */
+export function isActionExpired(action, now = Date.now()) {
+  if (!action || typeof action.expiresAt !== 'string') return false;
+  const at = Date.parse(action.expiresAt);
+  return Number.isFinite(at) && at <= now;
+}
+
+/**
+ * Only an http or https address is followed, so a malformed or script address never navigates.
+ * @param {unknown} value
+ * @returns {string | null}
+ */
+function redirectTarget(value) {
+  if (typeof value !== 'string' || !value) return null;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.href : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Opens a pending action by its type, with no Elements, guidance or card form. Only the action Flint
+ * returned is used.
+ *
+ * - `url`: a top-level redirect to the Flint-hosted page. The buyer returns through this app's return route.
+ * - `stripe`: Stripe.js `handleNextAction`. Anything but `handle_next_action` is refused without calling Stripe.
+ * - an unknown `type`, an unusable action, or one past its `expiresAt` is not opened.
+ *
+ * `invoked` is true once the redirect started or Stripe was called, whether or not Stripe returned an error.
+ * `redirected` is true for a redirect: the page is leaving, so the caller must not resume or read.
+ * `expired` is true when the action's expiry has passed.
+ * The client secret is used once and never logged or written to the page.
  * @param {ClientAction | null | undefined} action
- * @param {{ onInvoke?: () => void }} [hooks]
- * @returns {Promise<{ invoked: boolean, error?: { message?: string, code?: string } }>}
+ * @param {{ onInvoke?: () => void, navigate?: (url: string) => void, now?: number }} [hooks]
+ * @returns {Promise<{ invoked: boolean, redirected?: boolean, expired?: boolean, error?: { message?: string, code?: string } }>}
  */
 export async function runClientAction(action, hooks) {
-  const call = action?.payment_intent ?? action?.setup_intent;
-  if (!action?.publishable_key || !call?.client_secret || call.stripe_js_call !== 'handle_next_action') return { invoked: false, error: { message: 'missing_client_action' } };
+  if (!action || typeof action !== 'object') return { invoked: false, error: { message: 'missing_client_action' } };
+  if (isActionExpired(action, hooks?.now)) return { invoked: false, expired: true, error: { message: 'client_action_expired' } };
+  if (action.type === 'url') {
+    const target = redirectTarget(action.url);
+    if (!target) return { invoked: false, error: { message: 'missing_client_action' } };
+    hooks?.onInvoke?.();
+    (hooks?.navigate ?? ((/** @type {string} */ url) => window.location.assign(url)))(target);
+    return { invoked: true, redirected: true };
+  }
+  if (action.type !== 'stripe') return { invoked: false, error: { message: 'unsupported_client_action' } };
+  const stripe = action.stripe;
+  const call = stripe?.payment_intent ?? stripe?.setup_intent;
+  if (!stripe?.publishable_key || !call?.client_secret || call.stripe_js_call !== 'handle_next_action') return { invoked: false, error: { message: 'missing_client_action' } };
   let factory;
   try {
     factory = await whenStripeLoaded();
   } catch {
     return { invoked: false, error: { message: 'stripe_not_loaded' } };
   }
-  const client = factory(action.publishable_key, action.account_id ? { stripeAccount: action.account_id } : undefined);
+  const client = factory(stripe.publishable_key, stripe.account_id ? { stripeAccount: stripe.account_id } : undefined);
   hooks?.onInvoke?.();
   try {
     const result = await client.handleNextAction({ clientSecret: call.client_secret });

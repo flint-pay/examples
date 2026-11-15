@@ -124,9 +124,24 @@ app.get('/checkout/:ref', async (c) => {
   fake.notices = fake.notices.filter((key) => key !== 'trial_not_started');
   return response;
 });
+// The fake Flint-hosted page a url action opens. It sends the buyer straight back, unfinished, to the return route.
+// The hold scenario answers with a download, so the navigation ends without leaving: the page that opened it stays on
+// screen, the way the browser's back-forward cache restores it.
+app.get('/flint-hosted/:ref/:actionId', (c) =>
+  c.req.param('ref') === 'chk_urlhold'
+    ? new Response('hosted', { headers: { 'content-disposition': 'attachment; filename="hosted.txt"', 'content-type': 'application/octet-stream' } })
+    : c.redirect(`/checkout/${c.req.param('ref')}/return`, 303),
+);
 app.get('/checkout/:ref/return', (c) => {
   const ref = c.req.param('ref');
   if (ref === 'chk_elsewhere') return page(c, 'return-elsewhere', {});
+  // The real route only reads the payment. An unfinished action leaves a notice for the checkout page, worded for the method.
+  const fake = checkout(ref);
+  if (fake?.attempt?.status === 'requires_action') {
+    const affirm = (fake.order as any).payment_intents?.some((intent: any) => intent.payment_source?.type === 'affirm');
+    const key = affirm ? 'affirm_incomplete' : 'payment_action_incomplete';
+    if (!fake.notices.includes(key)) fake.notices.push(key);
+  }
   return c.redirect(`/checkout/${ref}`, 303);
 });
 app.get('/checkout/:ref/complete', (c) => {

@@ -1,5 +1,5 @@
 import type {Client,CreateCustomerVerificationRequestInput} from '@flintpay/node';
-import {SdkError} from '@flintpay/node';
+import {SdkError,errors} from '@flintpay/node';
 import type {Auth} from './auth.ts';
 import {IdentityStore,digest,randomReference} from '../identity/index.ts';
 import type {User,Session} from '../identity/index.ts';

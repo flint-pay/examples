@@ -1,5 +1,5 @@
 import type {Client,ExpandedPaymentIntentSummary,MoneyValue,Order,OrderPaymentAttempt,PayOrderRequestInput,PaymentSourceCredentialInput,OrderGiftCardAllocationAcceptanceInput} from '@flintpay/node';
-import {SdkError} from '@flintpay/node';
+import {SdkError,errors} from '@flintpay/node';
 import {createHash} from 'node:crypto';
 import type {Auth} from '../flint/auth.ts';
 import {LocalError,condition,unknownOutcome,sessionEnded} from '../flint/errors.ts';
@@ -11,7 +11,7 @@ import {nextStep,attemptOpen} from './next-step.ts';
 const TOTAL_CHANGED_CODES=['VERSION_CONFLICT','CONCURRENT_MODIFICATION','LIMIT_EXCEEDED'];
 export type Credential={kind:'confirmation_token'|'payment_method_token'|'saved_payment_method';value:string};
 export type CollectionKind='processor'|'settlement'|'setup'|'unavailable';
-export type PayInput={credential?:Credential;approved_outstanding_money:MoneyValue;approved_order_version?:string;approved_gift_card_money?:MoneyValue;approved_collection_kind:CollectionKind;buyer_contact?:{email:string;phone?:string};save_payment_method?:boolean;save_payment_method_phone?:string};
+export type PayInput={credential?:Credential;approved_outstanding_money:MoneyValue;approved_order_version?:number;approved_gift_card_money?:MoneyValue;approved_collection_kind:CollectionKind;buyer_contact?:{email:string;phone?:string};save_payment_method?:boolean;save_payment_method_phone?:string};
 // The checkout read lists intent IDs. The public payment-intent read identifies
 // the selected option; project only its ID, status and option into the buyer state.
 export type PaymentSourceRow=Pick<ExpandedPaymentIntentSummary,'payment_intent_id'|'status'>&{payment_source?:{type:string}};
@@ -41,7 +41,16 @@ export function paymentComplete(order:SourcedOrder):boolean{
   return order.payment_status==='paid'&&(!order.subscription_plan_id||!!order.subscription_id);
 }
 export function resolvesJob(job:ActionRecord,order:SourcedOrder,attempt:OrderPaymentAttempt|undefined):boolean{
+  if(stripeFallbackRequired(job))return false;
   return paymentComplete(order)||job.kind==='pay'&&!!order.active_payment_attempt||job.kind!=='pay'&&attempt?.order_payment_attempt_id===job.attempt_id&&!attemptOpen(attempt);
+}
+
+// Both the unresolved intent and the prepared Stripe request must be sent before
+// a read of the holding attempt can complete this journal entry.
+function stripeFallbackRequired(job:ActionRecord):boolean{
+  if(!job.body)return false;
+  const body=JSON.parse(job.body) as {stripe_fallback?:PayOrderRequestInput;client_action_type?:string};
+  return !!body.stripe_fallback||body.client_action_type==='stripe';
 }
 
 export class PaymentEngine {
@@ -108,13 +117,39 @@ export class PaymentEngine {
     if(!job.body)throw new LocalError('UNKNOWN_PAYMENT_OUTCOME',409);
     for(let retry=0;retry<4;retry++){
       assertOwnership();
+      const saved=JSON.parse(job.body!) as {stripe_fallback?:PayOrderRequestInput};
+      if(saved.stripe_fallback){
+        const order=await this.read(record),attempt=await this.attempt(record,order);
+        const body:PayOrderRequestInput=attemptOpen(attempt)
+          ?{action:'resume',order_payment_attempt_id:attempt!.order_payment_attempt_id,client_action_type:'stripe'}
+          :{...saved.stripe_fallback,client_action_type:'stripe'};
+        assertOwnership();
+        const json=JSON.stringify(body),attemptId=attempt?.order_payment_attempt_id??null;
+        this.store.run('UPDATE actions SET body=?,body_hash=?,attempt_id=? WHERE action_id=?',json,createHash('sha256').update(json).digest('hex'),attemptId,job.action_id);
+        job={...job,body:json,attempt_id:attemptId};
+      }
       try{
         const response=job.kind==='cancel'
-          ? await this.client.orders.cancelPaymentAttempt(record.order_id!,job.attempt_id!,JSON.parse(job.body) as {cancellation_reason:'abandoned'},this.auth.checkout(record,job.idempotency_key))
-          : await this.client.orders.pay({order_id:record.order_id!,body:JSON.parse(job.body) as PayOrderRequestInput},this.auth.checkout(record,job.idempotency_key));
+          ? await this.client.orders.cancelPaymentAttempt(record.order_id!,job.attempt_id!,JSON.parse(job.body!) as {cancellation_reason:'abandoned'},this.auth.checkout(record,job.idempotency_key))
+          : await this.client.orders.pay(record.order_id!,JSON.parse(job.body!) as PayOrderRequestInput,this.auth.checkout(record,job.idempotency_key));
         this.complete(job,response.order_payment_attempt);this.remember(record,response.order_payment_attempt);
         return {order:response.order,attempt:response.order_payment_attempt,unknown:false};
       }catch(error){
+        if(job.kind!=='cancel'&&error instanceof errors.ApiError&&error.code==='ACTION_NOT_ALLOWED'&&error.details.some(detail=>detail&&typeof detail==='object'&&'reason'in detail&&detail.reason==='provider_action_unsupported')){
+          const original=JSON.parse(job.body!) as PayOrderRequestInput;
+          if(original.client_action_type==='stripe'){
+            // Stripe was the final fallback. A definite refusal must not be retried by every status read.
+            this.store.run("UPDATE actions SET status='rejected',body=NULL WHERE action_id=?",job.action_id);
+            throw error;
+          }
+          // Persist the fallback before reads, which may fail after Flint has
+          // attached the original credential to a holding attempt.
+          assertOwnership();
+          const json=JSON.stringify({stripe_fallback:original}),key=`${job.idempotency_key}-stripe`;
+          this.store.run('UPDATE actions SET body=?,body_hash=?,idempotency_key=? WHERE action_id=?',json,createHash('sha256').update(json).digest('hex'),key,job.action_id);
+          job={...job,body:json,idempotency_key:key};
+          continue;
+        }
         if(!unknownOutcome(error)){
           if(error instanceof SdkError&&(error.outcome!=='response'||[401,403].includes(error.status??0))){this.store.run("UPDATE actions SET status='unknown' WHERE action_id=?",job.action_id);return this.reconcile(record);}
           this.store.run("UPDATE actions SET status='rejected',body=NULL WHERE action_id=?",job.action_id);
@@ -154,7 +189,7 @@ export class PaymentEngine {
       let body:PayOrderRequestInput;
       if(record.kind==='subscription'&&BigInt(order.settlement_amounts.outstanding_money.amount)===0n){
         if(input.credential?.kind!=='payment_method_token')throw new LocalError('SETUP_PAYMENT_SOURCE_REQUIRED');
-        body={action:'setup',setup_payment_source:{credential_type:'token',token:input.credential.value},expected_outstanding_money:input.approved_outstanding_money,buyer_contact:input.buyer_contact};
+        body={action:'setup',client_action_type:'url',setup_payment_source:{credential_type:'stripe_payment_method',stripe:{payment_method:input.credential.value}},expected_outstanding_money:input.approved_outstanding_money,buyer_contact:input.buyer_contact};
       }else{
         let source: PaymentSourceCredentialInput|undefined;
         if(BigInt(processorAmount)>0n){
@@ -168,10 +203,10 @@ export class PaymentEngine {
             source={credential_type:'stripe_confirmation_token',stripe:{confirmation_token:input.credential.value}};
           }else{
             if(!input.credential.value.startsWith('pm_'))throw new LocalError('PAYMENT_SOURCE_REQUIRED');
-            source={credential_type:'token',token:input.credential.value};
+            source={credential_type:'stripe_payment_method',stripe:{payment_method:input.credential.value}};
           }
         }
-        body={action:'pay',payment_source:source,expected_outstanding_money:input.approved_outstanding_money,accepted_gift_card_allocation:allocation,buyer_contact:input.buyer_contact,
+        body={action:'pay',client_action_type:'url',payment_source:source,expected_outstanding_money:input.approved_outstanding_money,accepted_gift_card_allocation:allocation,buyer_contact:input.buyer_contact,
           ...(source?{save_payment_method:input.save_payment_method,save_payment_method_phone:input.save_payment_method_phone}:{})};
       }
       const job=this.job(record,'pay',body);
@@ -183,7 +218,7 @@ export class PaymentEngine {
         const fresh=await this.read(record);const selectable=fresh.payment_collection?.stripe?.elements?.selectable_payment_intents;
         if(!approvalMatches(fresh,record.kind,input))return {order:fresh,unknown:false,totalChanged:true};
         if(selectable?.length!==1)throw new LocalError('PAYMENT_LEG_SELECTION_REQUIRED',409);
-        const retryBody:PayOrderRequestInput={...body,action:'confirm_payment_intents',payment_intents:[{payment_intent_id:selectable[0]!.payment_intent_id,...body.payment_source}]};
+        const retryBody:PayOrderRequestInput={...body,action:'confirm_payment_intents',payment_intents:[{payment_intent_id:selectable[0]!.payment_intent_id,payment_source:body.payment_source}]};
         delete (retryBody as unknown as {payment_source?:unknown}).payment_source;
         return this.execute(record,this.job(record,'pay',retryBody),assertOwnership);
       }
@@ -213,7 +248,17 @@ export class PaymentEngine {
       return this.execute(record,this.job(record,'cancel',{cancellation_reason:'abandoned'},`cancel-${record.last_attempt_id}`),assertOwnership);
     });
   }
-  async status(ref:string):Promise<PaymentResult>{const record=this.record(ref);return this.store.locked(this.resource(record),()=>this.reconcile(this.record(ref)));}
+  async recoverStripeFallback(record:CheckoutRecord,assertOwnership:()=>void):Promise<PaymentResult|undefined>{
+    const pending=this.unresolved(record);
+    if(pending&&stripeFallbackRequired(pending))return this.execute(record,pending,assertOwnership);
+  }
+  async status(ref:string):Promise<PaymentResult>{
+    const initial=this.record(ref);
+    return this.store.locked(this.resource(initial),async assertOwnership=>{
+      const record=this.record(ref);
+      return await this.recoverStripeFallback(record,assertOwnership)??this.reconcile(record);
+    });
+  }
   next(result:PaymentResult){
     if(result.unknown)return 'resume';
     if(paymentComplete(result.order))return 'done';

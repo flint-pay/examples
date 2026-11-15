@@ -1,3 +1,4 @@
+import {errors} from '@flintpay/node';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
@@ -24,7 +25,7 @@ function refusal(code='GIFT_CARD_CHALLENGE_REQUIRED',reason='proof_required',sta
 }
 function fixture(){
  const dir=mkdtempSync(join(tmpdir(),'gift-challenge-backend-')),store=new Store(join(dir,'app.sqlite')),config=readConfig({FLINT_API_KEY:'flint_test_FIXTURE',FLINT_API_BASE_URL:'https://api.staging.withflintpay.com',APP_ORIGIN:'http://localhost:4100',PORT:'4100'});
- const order={order_id:'ord_fixture',status:'open',payment_status:'unpaid',version:'5',gift_card_tender_enabled:true,settlement_amounts:{outstanding_money:{amount:'1000',currency:'USD'},paid_money:{amount:'0',currency:'USD'}},payment_collection:{stripe:{elements:{}}},gift_cards:[]} as unknown as Order;
+ const order={order_id:'ord_fixture',status:'open',payment_status:'unpaid',version:5,gift_card_tender_enabled:true,settlement_amounts:{outstanding_money:{amount:'1000',currency:'USD'},paid_money:{amount:'0',currency:'USD'}},payment_collection:{stripe:{elements:{}}},gift_cards:[]} as unknown as Order;
  const session={checkout_session_id:'cs_fixture',status:'open',is_in_recovery:false,page_origin:config.appOrigin,gift_card_challenge:{url}};
  const calls:{body:Record<string,unknown>;options:RequestOptions}[]=[],reads:RequestOptions[]=[];
  let send:()=>Promise<Order>=async()=>{throw refusal();};
@@ -63,8 +64,8 @@ for(const status of ['open','closed','retrying'] as const)test(`I6 changed sessi
  await assert.rejects(()=>f.retry(view.challenge_id),{code:'GIFT_CHALLENGE_SESSION_CHANGED'});assert.equal(f.reads.length,reads);assert.equal(f.calls.length,1);assert.equal(row(f).status,'challenge');assert.equal(f.store.get<{status:string}>('SELECT status FROM gift_challenges WHERE challenge_id=?',view.challenge_id)?.status,'closed');
 }));
 for(const status of ['closed','retrying','expired'] as const)test(`I6 same-session ${status} stays expired`,async()=>use(async f=>{const view=await challenged(f);if(status==='expired')f.store.run('UPDATE gift_challenges SET expires_at=? WHERE challenge_id=?',Date.now()-1,view.challenge_id);else f.store.run('UPDATE gift_challenges SET status=? WHERE challenge_id=?',status,view.challenge_id);const reads=f.reads.length;await assert.rejects(()=>f.retry(view.challenge_id),{code:'GIFT_CHALLENGE_EXPIRED'});assert.equal(f.reads.length,reads);assert.equal(f.calls.length,1);}));
-test('I7 revision fence discards an unspent proof',async()=>use(async f=>{const view=await challenged(f);f.order.version='6';await assert.rejects(()=>f.retry(view.challenge_id),{code:'GIFT_CHALLENGE_ORDER_CHANGED'});assert.equal(f.calls.length,1);assert.equal(row(f).status,'rejected');}));
-test('I7 remote open payment attempt precedes the changed order revision',async()=>use(async f=>{const view=await challenged(f);f.order.version='6';openAttempt(f);await retryRefused(f,view.challenge_id,'PAYMENT_ATTEMPT_IN_PROGRESS',true);}));
+test('I7 revision fence discards an unspent proof',async()=>use(async f=>{const view=await challenged(f);f.order.version=6;await assert.rejects(()=>f.retry(view.challenge_id),{code:'GIFT_CHALLENGE_ORDER_CHANGED'});assert.equal(f.calls.length,1);assert.equal(row(f).status,'rejected');}));
+test('I7 remote open payment attempt precedes the changed order revision',async()=>use(async f=>{const view=await challenged(f);f.order.version=6;openAttempt(f);await retryRefused(f,view.challenge_id,'PAYMENT_ATTEMPT_IN_PROGRESS',true);}));
 test('GB4 failed fresh order read closes the challenge and preserves the original action',async()=>use(async f=>{
  const view=await challenged(f),before=row(f);Object.assign(f.client.orders,{get:async(_id:string,_params:unknown,options:RequestOptions)=>{f.reads.push(options);throw refusal('SERVICE_UNAVAILABLE','',503);}});
  await retryRefused(f,view.challenge_id,'SERVICE_UNAVAILABLE',true);assert.deepEqual(row(f),before);
@@ -126,7 +127,7 @@ test('I10 unknown retry HTTP response uses the unconfirmed message and never ech
 
 test('I16 request and challenge logs exclude codes, proof, frame URLs and session authority',async()=>routeUse(async h=>{
  const output:string[]=[],info=console.info,warn=console.warn;console.info=(...values:unknown[])=>{output.push(values.map(String).join(' '));};console.warn=console.info;
- try{const applied=await h.post(h.root+'/gift-card',{gift_card_code:code}),view=(await applied.json()).gift_challenge;assert.ok(view);h.send(async()=>{throw new SdkError('server',[code,proof,url].join(' '),'response',true,{status:503,headers:{},attempts:1,durationMs:1},'SERVICE_UNAVAILABLE');});assert.equal((await h.post(h.root+'/gift-card/challenge',{challenge_id:view.challenge_id,gift_card_code:code,proof})).status,503);
+ try{const applied=await h.post(h.root+'/gift-card',{gift_card_code:code}),view=(await applied.json()).gift_challenge;assert.ok(view);h.send(async()=>{throw new errors.ServerError([code,proof,url].join(' '),{outcome:'response',retryAllowed:true,...({status:503,headers:{},attempts:1,durationMs:1}),code:'SERVICE_UNAVAILABLE'});});assert.equal((await h.post(h.root+'/gift-card/challenge',{challenge_id:view.challenge_id,gift_card_code:code,proof})).status,503);
   const text=output.join('\n');assert.ok(text.includes('"outcome":"issued"'));assert.ok(text.includes('"outcome":"retry_unknown"'));for(const secret of [code,proof,url,'fixture checkout authority','cs_fixture','page_origin'])assert.equal(text.includes(secret),false);
  }finally{console.info=info;console.warn=warn;}
 }));
@@ -142,7 +143,7 @@ test('I1 echo mismatch preserves the checkout record and the same creation key',
  await assert.rejects(()=>f.app.launch(before),{code:'CHECKOUT_LAUNCH_INVALID'});assert.equal(f.store.all("SELECT * FROM actions WHERE kind='session_create'").length,1);
 }));
 test('I1 pre-upgrade pending session bodies replay byte for byte without inserting page_origin',async()=>use(async f=>{
- const body={surface:'embedded',order_id:f.order.order_id,redirects:{success_redirect_url:'http://localhost:4100/return'}},json=JSON.stringify(body),key=`session-${f.record.checkout_ref}-1`;
+ const body={surface:'headless',order_id:f.order.order_id,redirects:{success_redirect_url:'http://localhost:4100/return'}},json=JSON.stringify(body),key=`session-${f.record.checkout_ref}-1`;
  f.store.run('INSERT INTO actions(action_id,resource,kind,idempotency_key,body,body_hash,created_at) VALUES(?,?,?,?,?,?,?)',key,`order:${f.order.order_id}`,'session_create',key,json,createHash('sha256').update(json).digest('hex'),Date.now());
  let sent:unknown;Object.assign(f.client.checkoutSessions,{create:async(input:unknown)=>{sent=input;return {...f.session,order_id:f.order.order_id,page_origin:undefined,checkout_auth_token:'fixture authority'};}});
  await f.app.launch(f.app.record(f.record.checkout_ref));assert.equal(JSON.stringify(sent),json);assert.equal('page_origin'in(sent as object),false);

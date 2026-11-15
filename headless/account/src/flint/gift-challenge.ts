@@ -1,5 +1,5 @@
 import {createHash,randomBytes} from 'node:crypto';
-import {SdkError} from '@flintpay/node';
+import {SdkError,errors} from '@flintpay/node';
 import type {Client,CheckoutSession} from '@flintpay/node';
 import type {Auth} from './auth.ts';
 import {sdkReason} from './errors.ts';
@@ -30,18 +30,17 @@ export function trustedChallengeUrl(raw:unknown,expectedOrigin:string):string|nu
 export function challengeFromError(error:unknown,expectedOrigin:string):GiftChallengeOutcome|null{
   if(!(error instanceof SdkError)||error.code!=='GIFT_CARD_CHALLENGE_REQUIRED')return null;
   if(error.status!==400&&error.status!==409)return {kind:'unavailable',cause:'reason_unknown'};
-  const body=object(error.details)?error.details as Record<string,unknown>:undefined;
   // Flint puts the reason and the next action on the error detail; the error's own remediation is the fallback.
-  const details=Array.isArray(body?.details)?body.details.find((item):item is Record<string,unknown>=>object(item)&&typeof item.reason==='string'):undefined;
-  const reason=details?.reason;
+  const first=error instanceof errors.ApiError&&object(error.details[0])?error.details[0]:undefined;
+  const reason=first?.reason;
   if(reason==='page_origin_required')return {kind:'origin_required'};
   if(reason!=='proof_required'&&reason!=='proof_rejected')return {kind:'unavailable',cause:'reason_unknown'};
-  const remediation=object(details?.remediation)?details.remediation:object(body?.remediation)?body.remediation:undefined;
-  const actions=Array.isArray(remediation?.next_actions)?remediation.next_actions:[];
-  const matches=actions.filter((action):action is Record<string,unknown>=>object(action)&&action.action_type==='complete_gift_card_challenge');
+  const remediation=object(first?.remediation)?first.remediation:error instanceof errors.ApiError?error.remediation:undefined;
+  const actions:Record<string,unknown>[]=Array.isArray(remediation?.next_actions)?remediation.next_actions.filter(object):[];
+  const matches=actions.filter(action=>action.action_type==='complete_gift_card_challenge');
   if(matches.length!==1)return {kind:'unavailable',cause:'next_action_missing'};
   const url=trustedChallengeUrl(matches[0]!.url,expectedOrigin);
-  return url?{kind:'challenge',reason,url}:{kind:'unavailable',cause:'url_untrusted'};
+  return url?{kind:'challenge',reason:reason==='proof_required'?'proof_required':'proof_rejected',url}:{kind:'unavailable',cause:'url_untrusted'};
 }
 
 export async function confirmWithSession(outcome:GiftChallengeOutcome,readSession:()=>Promise<CheckoutSession>,expectedSessionId:string):Promise<GiftChallengeOutcome>{
@@ -59,6 +58,6 @@ export function newChallengeId():string{return `gch_${randomBytes(24).toString('
 export function sessionTag(challengeId:string,checkoutSessionId:string):string{return createHash('sha256').update(`flint-examples.gift-challenge.v1\n${challengeId}\n${checkoutSessionId}`).digest('base64url');}
 export function validProof(value:unknown):value is string{return typeof value==='string'&&/^[\x21-\x7E]{1,2048}$/.test(value);}
 
-export function applyWithProof(client:Client,auth:Auth,record:CheckoutRecord,giftCardCode:string,revision:string,key:string,proof:string){
-  return client.orders.applyGiftCard(record.order_id!,{code:giftCardCode,expected_version:revision as `${bigint}`,'Flint-Gift-Card-Challenge':proof},auth.checkout(record,key));
+export function applyWithProof(client:Client,auth:Auth,record:CheckoutRecord,giftCardCode:string,revision:number,key:string,proof:string){
+  return client.orders.applyGiftCard(record.order_id!,{code:giftCardCode,expected_version:revision,'Flint-Gift-Card-Challenge':proof},auth.checkout(record,key));
 }

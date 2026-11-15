@@ -2,7 +2,7 @@
 
 A merchant-owned store for a fictional coffee roaster, Cedar & Stone. It shows a catalog, a cart, and an embedded checkout that runs on your domain, with delivery or pickup, discount codes, gift cards, tips, saved cards, digital wallets, ACH debit, Affirm, and subscription signup. Flint hosts no part of the checkout.
 
-This example uses `@flintpay/node` 7.0.0 and runs in test mode only.
+This example uses `@flintpay/node` 8.0.0-beta.3 and runs in test mode only.
 
 ## What it shows
 
@@ -54,7 +54,9 @@ Every page is rendered on the server with `hono/html`, and each buyer state has 
 
 ### Credential boundary
 
-- Your API key, checkout credentials, customer data, and Stripe client secrets stay on the server. The browser receives the Stripe publishable key, the connected account ID, and a client secret only in the response to the request that needs it, while a payment is waiting on an action.
+- Your API key, checkout credentials, customer data, and Stripe client secrets stay on the server. The browser receives the Stripe publishable key, the connected account ID, and a client secret only in the response to the request that needs it, while a payment is waiting on a `stripe` action. The page never logs the client secret or writes it to the markup.
+- A payment that needs the buyer to do something more arrives as one pending action, a closed union on `type`. A `url` action is a top-level redirect to the Flint-hosted page, and the buyer returns through `/checkout/:ref/return`, which only reads the payment. A `stripe` action runs Stripe.js `handleNextAction`. The page branches on `type`, never on whether a `stripe` object is present. An unknown `type`, or an action past its `expiresAt`, is never opened.
+- A buyer who comes back from a Flint-hosted page without finishing sees Continue and Pay another way. The page does not send them back on its own.
 - The browser sends your own references, such as a cart line or a checkout reference. The server finds the Flint IDs from its own records.
 - A checkout reference in a URL routes the request. It is not permission: only the browser that started the checkout, or the signed-in buyer it belongs to, can open it.
 - Every request that changes data checks the request origin and a per-session CSRF token. Every Flint change sends an idempotency key that the server stores before it sends the request.

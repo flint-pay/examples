@@ -184,12 +184,22 @@ export class FakeCheckout {
     this.recalc();
   }
 
+  /** A pending Flint-hosted page. The buyer returns unfinished through /checkout/:ref/return. */
+  private urlPending(variant: 'url' | 'urlexpired' | 'urlunknown'): Json {
+    const origin = `http://localhost:${process.env.LOCAL_STATE_PORT ?? 4190}`;
+    const expires_at = variant === 'urlexpired' ? '2000-01-01T00:00:00Z' : '2099-01-01T00:00:00Z';
+    const client_action: Json = variant === 'urlunknown'
+      ? { type: 'future', url: 'javascript:alert(1)' }
+      : { type: 'url', url: `${origin}/flint-hosted/${this.ref}/pa_fixture_url`, stripe: { publishable_key: 'pk_test_fixture', account_id: 'acct_fixture', payment_intent: { client_secret: 'pi_fixture_secret_fixture', stripe_js_call: 'handle_next_action' } } };
+    return { expires_at, pending_action_id: `pa_fixture_${++this.seq}`, action_type: 'redirect', client_action };
+  }
+
   private initScenario() {
     const s = this.scenario;
-    const stripePending = (kind: 'payment_intent' | 'setup_intent') => ({
+    const stripePending = (kind: 'payment_intent' | 'setup_intent') => ({expires_at:'2099-01-01T00:00:00Z',
       pending_action_id: 'pa_fixture_1',
       action_type: 'handle_next_action',
-      client_action: { stripe: { publishable_key: 'pk_test_fixture', account_id: 'acct_fixture', [kind]: { client_secret: 'pi_fixture_secret_fixture', stripe_js_call: 'handle_next_action' } } },
+      client_action: { type:'stripe',stripe: { publishable_key: 'pk_test_fixture', account_id: 'acct_fixture', [kind]: { client_secret: 'pi_fixture_secret_fixture', stripe_js_call: 'handle_next_action' } } },
     });
     if (s === 'taxset') this.billing = { line1: '1 Cedar St', city: 'Austin', state: 'TX', postal_code: '78701', country: 'US' };
     if (s === 'expired') this.session.status = 'expired';
@@ -201,6 +211,16 @@ export class FakeCheckout {
     if (s === 'authenticating') {
       this.attempt = this.makeAttempt('requires_action', { is_resumable: true, pending_actions: [stripePending('payment_intent')] });
       this.pendingBehavior = '3ds';
+    }
+    if (s === 'urlreturn' || s === 'urlreturnaffirm' || s === 'urlhold') {
+      // The buyer came back from a Flint-hosted page without finishing. The return route left the notice.
+      this.attempt = this.makeAttempt('requires_action', { is_resumable: true, ...(s === 'urlreturnaffirm' ? { selected: 'affirm' } : {}), pending_actions: [this.urlPending('url')] });
+      this.notices.push(s === 'urlreturnaffirm' ? 'affirm_incomplete' : 'payment_action_incomplete');
+      this.pendingBehavior = 'url';
+    }
+    if (s === 'urlreturnexpired' || s === 'urlcancelfail') {
+      this.attempt = this.makeAttempt('requires_action', { is_resumable: true, pending_actions: [this.urlPending('urlexpired')] });
+      this.pendingBehavior = 'url';
     }
     if (s === 'lostresume') this.journal = { remaining: 2, outcome: 'ok' };
     if (s === 'resumefail') this.journal = { remaining: 1, outcome: 'fail' };
@@ -236,7 +256,7 @@ export class FakeCheckout {
     this.seq += 1;
     // Attempt legs carry no source type. The order's payment intents do, matched by id.
     this.order.payment_intents = extra.selected ? [{ payment_intent_id: `pi_fixture_${this.seq}`, status, payment_source: { type: extra.selected } }] : [];
-    return {
+    return {order_id:'ord_example',supported_actions:[],
       order_payment_attempt_id: `opa_fixture_${this.seq}`,
       status,
       mode: 'payment',
@@ -334,7 +354,7 @@ export class FakeCheckout {
       o.gift_cards = [];
       o.gift_card_estimate = null;
     }
-    o.version = String(Number(o.version ?? 3) + 0);
+    o.version = Number(o.version ?? 3);
   }
 
   // ----- Projection -----
@@ -404,7 +424,7 @@ export class FakeCheckout {
     const pending = attempt?.status === 'requires_action' ? attempt.pending_actions?.[0] : undefined;
     return {
       status: 200,
-      body: { state: this.project(), next: this.nextStep(), client_action: pending?.client_action?.stripe, pending_action_id: pending?.pending_action_id, ...extra },
+      body: {expires_at:'2099-01-01T00:00:00Z', state: this.project(), next: this.nextStep(), client_action: pending ? browserAction(pending) : undefined, pending_action_id: pending?.pending_action_id, ...extra },
     };
   }
 
@@ -459,6 +479,8 @@ export class FakeCheckout {
       case 'attempt':
         return this.readAttempt();
       case 'cancel-attempt':
+        // The cancel cannot be completed: the attempt stays open.
+        if (this.scenario === 'urlcancelfail') return fail(409, 'conflict', 'ATTEMPT_NOT_CANCELABLE', 'generic_error', this.project());
         this.attempt = this.makeAttempt('canceled', { is_resumable: false });
         this.notices = this.notices.filter((key) => key !== 'affirm_incomplete');
         return this.paymentReply();
@@ -565,7 +587,7 @@ export class FakeCheckout {
     // A ZIP code the tax service cannot place, so the page shows the error and keeps the form.
     if (body.postal_code === '00000') return fail(422, 'validation', 'TAX_LOCATION_INVALID', 'generic_error', this.project());
     this.billing = body;
-    this.order.version = String(Number(this.order.version ?? 3) + 1);
+    this.order.version = Number(this.order.version ?? 3)+1;
     this.recalc();
     return this.ok();
   }
@@ -750,8 +772,14 @@ export class FakeCheckout {
         this.pendingBehavior = behavior;
         this.attempt = this.makeAttempt('requires_action', {
           is_resumable: true,
-          pending_actions: [{ pending_action_id: `pa_fixture_${++this.seq}`, action_type: 'handle_next_action', client_action: { stripe: { publishable_key: 'pk_test_fixture', account_id: 'acct_fixture', ...(kind === 'setup' ? { setup_intent: { client_secret: 'seti_fixture_secret_fixture', stripe_js_call: 'handle_next_action' } } : { payment_intent: { client_secret: 'pi_fixture_secret_fixture', stripe_js_call: 'handle_next_action' } }) } } }],
+          pending_actions: [{expires_at:'2099-01-01T00:00:00Z', pending_action_id: `pa_fixture_${++this.seq}`, action_type: 'handle_next_action', client_action: { type:'stripe',stripe: { publishable_key: 'pk_test_fixture', account_id: 'acct_fixture', ...(kind === 'setup' ? { setup_intent: { client_secret: 'seti_fixture_secret_fixture', stripe_js_call: 'handle_next_action' } } : { payment_intent: { client_secret: 'pi_fixture_secret_fixture', stripe_js_call: 'handle_next_action' } }) } } }],
         });
+        return this.paymentReply();
+      case 'url':
+      case 'urlexpired':
+      case 'urlunknown':
+        this.pendingBehavior = 'url';
+        this.attempt = this.makeAttempt('requires_action', { is_resumable: true, pending_actions: [this.urlPending(behavior)] });
         return this.paymentReply();
       case 'lostsend':
         // Several sends had unknown outcomes and Flint shows no attempt yet: the app answers resume.
@@ -792,7 +820,7 @@ export class FakeCheckout {
       this.attempt = this.makeAttempt('requires_action', {
         is_resumable: true,
         selected: 'affirm',
-        pending_actions: [{ pending_action_id: `pa_fixture_${++this.seq}`, action_type: 'handle_next_action', client_action: { stripe: { publishable_key: 'pk_test_fixture', account_id: 'acct_fixture', payment_intent: { client_secret: 'pi_fixture_secret_fixture', stripe_js_call: 'handle_next_action' } } } }],
+        pending_actions: [{expires_at:'2099-01-01T00:00:00Z', pending_action_id: `pa_fixture_${++this.seq}`, action_type: 'handle_next_action', client_action: { type:'stripe',stripe: { publishable_key: 'pk_test_fixture', account_id: 'acct_fixture', payment_intent: { client_secret: 'pi_fixture_secret_fixture', stripe_js_call: 'handle_next_action' } } } }],
       });
     } else this.markPaid();
     return this.paymentReply();
@@ -806,6 +834,15 @@ export class FakeCheckout {
     }
     return this.paymentReply();
   }
+}
+
+/** The pending action as the app hands it to the page: a closed union on type, with the action's expiry. */
+function browserAction(pending: Json): Json {
+  const action = pending.client_action ?? {};
+  const out: Json = { type: action.type, expiresAt: pending.expires_at };
+  if (action.type === 'url') out.url = action.url;
+  if (action.type === 'stripe') out.stripe = action.stripe;
+  return out;
 }
 
 function sanitizeBody(body: Json): unknown {

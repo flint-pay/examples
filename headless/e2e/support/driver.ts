@@ -120,7 +120,7 @@ export class Driver {
     invariant(this.inbox, 'INBOX_PREREQUISITE');
     const mail = await this.inbox.waitForEmail({ to: this.fixtures.buyers[buyer].email, after, subjectIncludes: this.fixtures.values.emailSubjects?.[family] });
     const sandbox = buyer === 'b1b' ? 'B' : 'A';
-    if (!this.supportUrls.has(sandbox)) this.supportUrls.set(sandbox, (await this.operator.clients.clients[sandbox].merchants.get()).support_url);
+    if (!this.supportUrls.has(sandbox)) this.supportUrls.set(sandbox, (await this.operator.clients.clients[sandbox].merchant.get()).support_url);
     const classifications = auditEmail(mail, family, { appOrigins: Object.values(this.config.origins), apiOrigin: this.config.apiOrigin, checkoutOrigin: CHECKOUT_ORIGIN, merchantSupportUrl: this.supportUrls.get(sandbox) });
     for (let i = 0; i < mail.links.length; i++) if (['flint_account_link_relay', 'flint_email_preferences_relay'].includes(classifications[i].role)) {
       const relay = new URL(mail.links[i].href);

@@ -1,4 +1,4 @@
-export const SDK_VERSION = "7.0.0";
+export const SDK_VERSION = "8.0.0-beta.3";
 import { readBuild } from './build.ts';
 import type { Build } from './build.ts';
 import {isIP} from 'node:net';

@@ -1,3 +1,4 @@
+import {errors} from '@flintpay/node';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync,readFileSync,statSync} from 'node:fs';
@@ -8,17 +9,17 @@ import type {CustomerAccountSettings} from '@flintpay/node';
 import {runSetup} from '../../scripts/setup.ts';
 import {readConfig} from '../../src/config.ts';
 const config=readConfig({FLINT_API_KEY:'flint_test_PLACEHOLDER',FLINT_API_BASE_URL:'https://api.staging.withflintpay.com',APP_ORIGIN:'http://localhost:4200',PORT:'4200',FLINT_SANDBOX_ID:'sandbox_example'});
-type Write={customer_account:CustomerAccountSettings|null;expected_version:string|number};
+type Write={customer_account:CustomerAccountSettings|null;expected_version:number|number};
 function localApi(initial:CustomerAccountSettings|null={mode:'flint_hosted'}){
   let account=initial??undefined,version=1,writes=0,lose:'before'|'after'|undefined,loseRead=false,normalize=false,beforeUpdate:((body:Write,key:string)=>void)|undefined;
   const attempts:{body:Write;key:string}[]=[],cache=new Map<string,{body:string;response:string}>();
   const request_id=`req_${'0'.repeat(26)}`,headers={'Content-Type':'application/json','Flint-Mode':'test','Flint-Sandbox-ID':'sandbox_example'};
-  const resource=()=>({settings_id:'settings_example',settings_scope:'merchant',tax_identity:null,version:String(version),...(account?{customer_account:account}:{})});
+  const resource=()=>({merchant_id:'mer_example',created_at:'2000-01-01T00:00:00Z',updated_at:'2000-01-01T00:00:00Z',settings_id:'settings_example',settings_scope:'merchant',tax_identity:null,version,...(account?{customer_account:account}:{})});
   const client=new Client({baseUrl:config.apiBaseUrl,maxAttempts:1,transport:async(input,init)=>{
     const path=new URL(String(input)).pathname;
     assert.equal(new Headers(init?.headers).get('Authorization'),'Bearer flint_test_PLACEHOLDER');
     const requirements={currently_due:[],eventually_due:[],past_due:[],pending_verification:[]};
-    if(path==='/v1/merchant')return new Response(JSON.stringify({data:{merchant_id:'mer_example',organization_id:'org_example',email:'merchant@example.invalid',status:'active',version:'1',readiness:{capabilities:[{capability:'accept_card_payments',domain:'payments',status:'ready',next_actions:[],requirements}],payments:{status:'ready',next_actions:[]},payouts:{status:'ready',next_actions:[]},requirements,observed_at:'2026-01-01T00:00:00Z'}},request_id}),{headers});
+    if(path==='/v1/merchant')return new Response(JSON.stringify({data:{created_at:'2000-01-01T00:00:00Z',updated_at:'2000-01-01T00:00:00Z',merchant_id:'mer_example',organization_id:'org_example',email:'merchant@example.invalid',status:'active',version:1,readiness:{capabilities:[{capability:'accept_card_payments',domain:'payments',status:'ready',next_actions:[],requirements}],payments:{status:'ready',next_actions:[]},payouts:{status:'ready',next_actions:[]},requirements,observed_at:'2026-01-01T00:00:00Z'}},request_id}),{headers});
     assert.equal(path,'/v1/settings');
     if(init?.method==='GET'){if(loseRead){loseRead=false;throw new Error('Synthetic readback loss');}return new Response(JSON.stringify({data:resource(),request_id}),{headers});}
     const body=JSON.parse(String(init?.body)) as Write,key=new Headers(init?.headers).get('Idempotency-Key')!;
@@ -63,11 +64,11 @@ test('published SDK sends explicit null clearing and serializes expected_version
     calls++;assert.equal(new URL(String(input)).pathname,'/v1/settings');assert.equal(init?.method,'PATCH');
     assert.deepEqual(JSON.parse(String(init?.body)),{expected_version:1,customer_account:null});
     assert.equal(new Headers(init?.headers).get('Idempotency-Key'),'example-clear-key');
-    return new Response(JSON.stringify({data:{settings_id:'settings_example',settings_scope:'merchant',tax_identity:null,version:'2'},request_id:`req_${'0'.repeat(26)}`}),{headers:{'Content-Type':'application/json','Flint-Mode':'test','Flint-Sandbox-ID':'sandbox_example'}});
+    return new Response(JSON.stringify({data:{merchant_id:'mer_example',created_at:'2000-01-01T00:00:00Z',updated_at:'2000-01-01T00:00:00Z',settings_id:'settings_example',settings_scope:'merchant',tax_identity:null,version:2},request_id:`req_${'0'.repeat(26)}`}),{headers:{'Content-Type':'application/json','Flint-Mode':'test','Flint-Sandbox-ID':'sandbox_example'}});
   }});
   try{
-    const restored=await client.settings.update({expected_version:'1',customer_account:null},{apiKey:'flint_test_PLACEHOLDER',idempotencyKey:'example-clear-key'});
-    assert.equal(restored.customer_account,undefined);assert.equal(restored.version,'2');assert.equal(calls,1);
+    const restored=await client.settings.update({expected_version:1,customer_account:null},{apiKey:'flint_test_PLACEHOLDER',idempotencyKey:'example-clear-key'});
+    assert.equal(restored.customer_account,undefined);assert.equal(restored.version,2);assert.equal(calls,1);
   }finally{await client.close();}
 });
 test('lost apply responses resume the original request and key with one settings change',async t=>{
@@ -83,7 +84,7 @@ test('lost restoration response replays the persisted expected_version despite a
   const temp=tempSnapshot(),api=localApi();t.after(async()=>{await api.client.close();temp.close();});
   await runSetup(api.client,config,['--apply','--snapshot='+temp.path]);api.loseNext('after');
   await assert.rejects(runSetup(api.client,config,['--restore='+temp.path]));
-  assert.equal(saved(temp.path).state,'restoring');assert.equal(saved(temp.path).restore_expected_version,'2');assert.equal(api.account()?.mode,'flint_hosted');
+  assert.equal(saved(temp.path).state,'restoring');assert.equal(saved(temp.path).restore_expected_version,2);assert.equal(api.account()?.mode,'flint_hosted');
   api.bumpVersion();await runSetup(api.client,config,['--restore='+temp.path]);assert.equal(api.writes(),2);assert.deepEqual(api.attempts[1],api.attempts[2]);assert.equal(saved(temp.path).state,'restored');
 });
 test('restore first resolves an unknown apply with its original key',async t=>{
@@ -103,7 +104,7 @@ test('prepared apply and in-flight restore preserve their request on version con
     const temp=tempSnapshot(),api=localApi();t.after(async()=>{await api.client.close();temp.close();});
     if(operation==='restore')await runSetup(api.client,config,['--apply','--snapshot='+temp.path]);
     api.beforeUpdate(()=>{api.beforeUpdate(undefined);api.interfere();});
-    await assert.rejects(runSetup(api.client,config,operation==='apply'?['--apply','--snapshot='+temp.path]:['--restore='+temp.path]),error=>error instanceof SdkError&&error.kind==='conflict');
+    await assert.rejects(runSetup(api.client,config,operation==='apply'?['--apply','--snapshot='+temp.path]:['--restore='+temp.path]),error=>error instanceof SdkError&&error instanceof errors.ConflictError);
     assert.equal(saved(temp.path).state,operation==='apply'?'prepared':'restoring');assert.equal(api.writes(),operation==='apply'?0:1);assert.equal(api.account()?.merchant_account_url,'http://localhost:4300');
     const attempts=api.attempts.length;
     await assert.rejects(runSetup(api.client,config,[(operation==='apply'?'--resume=':'--restore=')+temp.path]),/changed since setup/);assert.equal(api.attempts.length,attempts);

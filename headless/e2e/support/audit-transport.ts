@@ -1,5 +1,5 @@
 import { API_ORIGIN } from './config.ts';
-import { digest, invariant, requestId } from './safe.ts';
+import { digest, invariant, nonnegativeSafeInteger, requestId } from './safe.ts';
 
 export type AuditAppend = (entry: Record<string, unknown>) => Promise<void>;
 const cleanup: Record<string, string> = { subscription: 'subscription', invoice: 'invoice', checkout_session: 'checkout_session', customer_session: 'customer_session', gift_card: 'gift_card', payment_method: 'payment_method', return_resolution: 'return_resolution', customer_verification: 'expiry', email_change_request: 'expiry' };
@@ -16,14 +16,19 @@ export function creationTypes(path: string): Set<string> {
   if (/^\/v1\/customer-sessions(?:\/refresh)?$/.test(path)) add('customer_session');
   if (/^\/v1\/(?:customer-verifications|checkout-sessions\/[^/]+\/customer-verifications)$/.test(path)) add('customer_verification');
   if (path === '/v1/orders') add('order', 'order_line_item', 'fulfillment');
-  if (path === '/v1/checkout-sessions') add('checkout_session', 'order', 'order_line_item', 'fulfillment');
+  if (path === '/v1/payment-intents') add('payment_intent');
+  if (path === '/v1/fulfillments') add('fulfillment');
+  if (path === '/v1/shipments') add('shipment');
+  if (path === '/v1/packages') add('package');
+  if (path === '/v1/return-resolutions') add('return_resolution');
+  if (path === '/v1/checkout-sessions' || path === '/v1/me/checkout-sessions') add('checkout_session', 'order', 'order_line_item', 'fulfillment');
   if (/^\/v1\/(?:me\/)?(?:invoices|return-resolutions)\/[^/]+\/checkout-session$/.test(path)) add('checkout_session');
   if (/^\/v1\/orders\/[^/]+\/line-items$/.test(path)) add('order_line_item', 'fulfillment');
   if (/^\/v1\/orders\/[^/]+\/charges$/.test(path)) add('order_charge');
   if (/^\/v1\/orders\/[^/]+\/fulfillments$/.test(path)) add('fulfillment');
   if (/^\/v1\/orders\/[^/]+\/(?:pay|payment-intents)$/.test(path)) add('payment_attempt', 'payment_intent', 'payment_method', 'subscription', 'gift_card_settlement', 'gift_card_redemption', 'gift_card_transaction');
-  if (/^\/v1\/checkout-sessions\/[^/]+\/delivery-quotes$/.test(path)) add('delivery_quote');
-  if (/^\/v1\/checkout-sessions\/[^/]+\/delivery-selections$/.test(path)) add('delivery_selection');
+  if (path === '/v1/delivery-quotes') add('delivery_quote');
+  if (path === '/v1/delivery-selections') add('delivery_selection');
   if (path === '/v1/me/addresses') add('address');
   if (path === '/v1/me/deletion-requests') add('deletion_request');
   if (path === '/v1/me/email-change-requests') add('email_change_request');
@@ -93,7 +98,7 @@ export function auditedFetch(originalFetch: typeof fetch, append: AuditAppend): 
         const pathIds = new Set(url.pathname.split('/'));
         for (const resource of resources(value?.data)) await append({ kind: 'RESOURCE', timestamp: Date.now(), ...resource, ...(resource.type === 'customer_session' && /^[A-Za-z0-9_-]+$/.test(value?.data?.customer_id ?? '') ? { customerId: value.data.customer_id } : {}), created: creates.has(resource.type) && !supplied.has(resource.id) && !pathIds.has(resource.id), requestId: requestId(response.headers.get('x-request-id')) });
         if (value?.data?.status === 'revoked' && typeof value.data.customer_session_id === 'string') await append({ kind: 'REVOCATION', timestamp: Date.now(), id: value.data.customer_session_id });
-        if (typeof value?.data?.revoked_count === 'string' && /^(0|[1-9]\d*)$/.test(value.data.revoked_count) && typeof value.data.customer_id === 'string') await append({ kind: 'REVOCATION_ALL', timestamp: Date.now(), customerId: value.data.customer_id, count: value.data.revoked_count });
+        if (nonnegativeSafeInteger(value?.data?.revoked_count) && typeof value.data.customer_id === 'string') await append({ kind: 'REVOCATION_ALL', timestamp: Date.now(), customerId: value.data.customer_id, count: value.data.revoked_count });
       }
     }
     if (writing && response.status < 500 && errorCode !== 'IDEMPOTENCY_KEY_IN_PROGRESS') await append({ kind: 'RESOLVED', timestamp: Date.now(), fingerprint, status: response.status });

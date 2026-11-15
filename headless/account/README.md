@@ -70,8 +70,9 @@ The browser receives only what Stripe.js needs: the publishable key, the account
 1. The buyer opens `/invoices/:id/pay` or `/returns/:id/pay`. The app launches an embedded checkout session with a return path on this origin.
 2. The page mounts the Payment Element and an optional wallet button. Stripe returns a single-use credential.
 3. The page sends that credential and the amount the buyer saw to this app. If the order total changed, the app says so and waits for a new click.
-4. The app reads the order, starts the payment, and follows the attempt. A decline keeps the form. A bank authentication runs in the page and then the app resumes the same attempt. A response that never arrives is reconciled with Flint before any new payment can start.
-5. When the payment finishes, or when a provider sends the buyer back, the page goes to `/invoices/:id/pay/return` or `/returns/:id/pay/return`. Those routes read the real state, so reloading is safe.
+4. The app reads the order, starts the payment, and follows the attempt. A decline keeps the form. A response that never arrives is reconciled with Flint before any new payment can start.
+5. When a payment needs the buyer to do something more, the app hands the page one pending action, a closed union on `type`. A `url` action is opened as a top-level redirect to the Flint-hosted page. A `stripe` action keeps the Stripe.js `handleNextAction` flow, and the app resumes the same attempt after it. An unknown `type`, or an action past its `expiresAt`, is never opened: the page shows a generic error or the "try again" message. The page never logs the client secret or writes it to the markup.
+6. When the payment finishes, or when the buyer comes back from a Flint-hosted page, the page goes to `/invoices/:id/pay/return` or `/returns/:id/pay/return`. Those routes only read the real state, so reloading is safe. They never confirm or resume. A finished payment goes on to the invoice or return. A payment still processing waits and checks again. A payment the buyer left unfinished shows Continue and Pay another way, and the page does not send the buyer back on its own. A failed payment shows the form with a message to try another card.
 
 ### Gift cards on a payment
 
@@ -182,7 +183,7 @@ Browser tests keep traces, screenshots, and videos off, because they capture sig
 
 ## Limitations
 
-- It uses `@flintpay/node` 7.0.0.
+- It uses `@flintpay/node` 8.0.0-beta.3.
 - Gift card emails that Flint sends open Flint's own gift card page in every customer account mode. That is an intentional part of Flint's hosted design, not a missing API. On a live store with a checkout custom domain, the page uses your checkout hostname. This example doesn't link to it. Buyers can paste the link from that email into this account's Gift cards page to save the card and see its balance. The page reads the link in the browser without opening it, ignores its query, and sends only the grant ID and token to this app. It accepts https links on any host, and http only on localhost.
 - This example doesn't sell gift cards. Cards you issue with `POST /v1/gift-cards` return their code once, so you can deliver those yourself.
 - Saving a gift card on the Gift cards pages doesn't go through Flint's gift card challenge. The check runs when a buyer applies a code to an invoice or an exchange payment. A saved gift card isn't applied to a payment automatically: the buyer enters the code on the pay page.

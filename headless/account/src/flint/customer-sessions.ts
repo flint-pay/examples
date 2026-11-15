@@ -48,7 +48,7 @@ export class CustomerSessions {
           this.identity.db.prepare('INSERT OR IGNORE INTO account_customer_session_generation VALUES(?,?,1)').run(user.user_id,this.sandboxId);
           const generation=(this.identity.db.prepare('SELECT generation FROM account_customer_session_generation WHERE user_id=? AND sandbox_id=?').get(user.user_id,this.sandboxId) as {generation:number}).generation;
           const key=this.identity.actionKey(`session-create:${this.sandboxId}:${user.user_id}:${generation}`);
-          const session=await this.client.customerSessions.create({customer_id:user.flint_customer_id!,expires_in_seconds:BigInt(this.config.sessionTtl)},this.auth.merchant(key));
+          const session=await this.client.customerSessions.create({customer_id:user.flint_customer_id!,expires_in_seconds:this.config.sessionTtl},this.auth.merchant(key));
           return this.save(user,session);
         }
         if(vault.refresh_expires_at<=Date.now())throw new LocalError('CUSTOMER_SESSION_REFRESH_EXPIRED',401);

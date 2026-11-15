@@ -149,11 +149,11 @@ function splitText(state: PaymentState): string {
 
 function invoiceSummary(summary: InvoicePaySummary, state: PaymentState | null, ctx: RenderContext): Html {
   const { invoice } = summary;
-  const due = state?.approved_outstanding_money ?? invoice.currently_due_money ?? invoice.outstanding_money;
+  const due = state?.approved_outstanding_money ?? invoice.settlement_amounts.currently_due_money ?? invoice.settlement_amounts.outstanding_money;
   return html`<h2>${pay.summaryInvoice}</h2>
     <dl class="facts" data-testid="ac-invoice-pay-summary">
       <div class="fact"><dt>${pay.invoiceNumber}</dt><dd data-testid="ac-invoice-pay-number">${invoice.invoice_number ?? invoice.invoice_id}</dd></div>
-      ${invoice.due_at ? html`<div class="fact"><dt>${pay.dueDate}</dt><dd>${timeEl(invoice.due_at, ctx)}</dd></div>` : ''}
+      ${invoice.due_date ? html`<div class="fact"><dt>${pay.dueDate}</dt><dd>${timeEl(invoice.due_date, ctx)}</dd></div>` : ''}
       <div class="fact fact-strong"><dt>${pay.amountDueNow}</dt><dd>${money(due, { testid: 'ac-invoice-pay-amount', className: 'money-large' })}</dd></div>
     </dl>
     <p><a href="${path('/invoices', invoice.invoice_id)}/pdf" data-testid="ac-invoice-pay-pdf">${pay.downloadPdf}</a></p>`;
@@ -193,7 +193,8 @@ function conflictBlock(data: PaymentPageData): Html {
     </div></section>`;
 }
 
-function paymentRegion(data: PaymentPageData, ctx: RenderContext): Html {
+/** `returnedFormTitle` is the page's usual heading, set only on a return that opened as "Finishing your payment": the script switches back to it once the buyer is at the form again. */
+function paymentRegion(data: PaymentPageData, ctx: RenderContext, returnedFormTitle?: string): Html {
   const state = data.state;
   if (!state) return conflictBlock(data);
   const endpoints = paymentEndpoints(data.surface, data.resource_id);
@@ -214,7 +215,7 @@ function paymentRegion(data: PaymentPageData, ctx: RenderContext): Html {
   };
   return html`<section class="card" aria-labelledby="payment-heading">
     <h2 id="payment-heading">${pay.paymentHeading}</h2>
-    <div class="payment" id="payment" data-testid="ac-payment" data-state="${initial}" data-phase="${phase}" data-surface="${data.surface}" data-still-after-ms="60000" data-payment-root${attrs({ 'aria-busy': needsElements ? 'true' : undefined })}>
+    <div class="payment" id="payment" data-testid="ac-payment" data-state="${initial}" data-phase="${phase}" data-surface="${data.surface}" data-still-after-ms="60000" data-payment-root${attrs({ 'aria-busy': needsElements ? 'true' : undefined, 'data-form-title': returnedFormTitle })}>
       <noscript><p class="alert alert-warn">${pay.noscript}</p></noscript>
       <div class="payment-banner" data-payment-banner role="status" data-testid="ac-payment-banner" hidden></div>
       <div class="alert alert-error" data-payment-message role="alert" tabindex="-1" data-testid="ac-payment-message" hidden></div>
@@ -344,14 +345,39 @@ function giftSection(data: PaymentPageData, state: PaymentState, ctx: RenderCont
   </section>`;
 }
 
+/**
+ * What the page says to a buyer who just came back from the Flint-hosted page, by what the payment
+ * reports. A succeeded or bank-processing payment never reaches this page: the return route sends
+ * the buyer on to the invoice or return.
+ */
+function returnedHelp(phase: PaymentPhase | null): string {
+  switch (phase) {
+    case 'authenticating':
+    case 'affirm_incomplete':
+      return pay.returnedActionHelp;
+    case 'declined':
+      return pay.returnedDeclinedHelp;
+    case 'waiting':
+    case 'resuming':
+    case 'recovery':
+      return pay.returnedWaitingHelp;
+    default:
+      return pay.returnedHelp;
+  }
+}
+
 function payPage(ctx: RenderContext<PaymentPageData>): Html {
   const data = ctx.data;
   const isInvoice = data.surface === 'invoice';
   const summary = data.summary;
   const number = isInvoice ? ((summary as InvoicePaySummary).invoice.invoice_number ?? data.resource_id) : (summary as ReturnPaySummary).return.return_number;
-  const title = data.returned ? pay.returnedTitle : isInvoice ? fill(pay.invoiceTitle, { number }) : pay.returnTitle;
   // Stripe.js is only loaded when the page can collect a payment or run a provider action.
   const phase = data.state ? derivePhase(data.state) : null;
+  // A buyer back after a decline is at the form again, so the page keeps its usual heading. Any other return
+  // is still reading or finishing the payment.
+  const finishing = data.returned && phase !== 'declined';
+  const formTitle = isInvoice ? fill(pay.invoiceTitle, { number }) : pay.returnTitle;
+  const title = finishing ? pay.returnedTitle : formTitle;
   const settlement = Boolean(data.state && isSettlement(data.state));
   const needsModule = Boolean(
     data.state && data.launch === 'ready' && phase && !['unavailable', 'expired', 'succeeded', 'bank_processing'].includes(phase) && (hasPaymentCollection(data.state) || data.state.next !== 'new_payment' || settlement),
@@ -366,9 +392,9 @@ function payPage(ctx: RenderContext<PaymentPageData>): Html {
       (data.state.gift_editable || (data.state.order.gift_cards?.length ?? 0) > 0 || data.state.gift_unconfirmed),
   );
   const testid = isInvoice ? 'ac-invoice-pay' : 'ac-return-pay';
-  const main = html`${pageHeader(title, { subtitle: data.returned ? pay.returnedHelp : undefined, testid: `${testid}-title` })}
+  const main = html`${pageHeader(title, { subtitle: data.returned ? returnedHelp(phase) : undefined, testid: `${testid}-title` })}
     <div class="pay-layout">
-      <div class="pay-main">${gift}${paymentRegion(data, ctx)}</div>
+      <div class="pay-main">${gift}${paymentRegion(data, ctx, finishing ? formTitle : undefined)}</div>
       ${summaryPanel(data, ctx)}
     </div>
     <p class="back-link"><a href="${paymentEndpoints(data.surface, data.resource_id).detail}">${isInvoice ? pay.backToInvoice : pay.backToReturn}</a></p>`;

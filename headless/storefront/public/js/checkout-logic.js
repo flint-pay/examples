@@ -183,7 +183,7 @@ export function legSourceType(state, paymentIntentId) {
 }
 
 /** @param {CheckoutState} state */
-function hasAffirmAction(state) {
+export function hasAffirmAction(state) {
   return (state.attempt?.payment_intents ?? []).some((leg) => legSourceType(state, leg.payment_intent_id) === 'affirm' && leg.status === 'requires_action');
 }
 

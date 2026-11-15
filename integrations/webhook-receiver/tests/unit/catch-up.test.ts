@@ -1,10 +1,11 @@
+import {Client as FlintClient,errors} from '@flintpay/node';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { SdkError } from '@flintpay/node';
 import type { Client, WebhookEvent } from '@flintpay/node';
 import { Inbox } from '../../src/inbox.ts';
 import { catchUp, OVERLAP_MS } from '../../src/catch-up.ts';
-import { resendDelivery } from '../../src/deliveries.ts';
+import { resendDelivery, sendTestEvent } from '../../src/deliveries.ts';
 import { receive } from '../../src/receive.ts';
 import { createAuth } from '../../src/flint.ts';
 import { envelope, newSecret, sdk, signed } from './support.ts';
@@ -15,7 +16,7 @@ const listed = (id: string): WebhookEvent => ({
   webhook_event_id: id,
   event_type: 'order.paid',
   created_at: '2026-10-15T12:00:00Z',
-  api_version: '2026-09-07',
+  event_source:'merchant',sandbox_id:'sandbox_example',api_version: '2026-09-07',
   test: false,
   resource_type: 'order',
 }) as WebhookEvent;
@@ -119,7 +120,7 @@ test('a resend reuses its saved idempotency key when the answer was lost, and ge
       webhookDeliveries: {
         resend: async (_id: string, _params: unknown, options: { idempotencyKey: string }) => {
           keys.push(options.idempotencyKey);
-          if (lose) throw new SdkError('transport', 'socket hang up', 'unknown', true);
+          if (lose) throw new errors.ConnectionError('socket hang up',{outcome:'unknown',retryAllowed:true});
           return { webhook_event_id: 'whev_example_one', attempt_number: 2, attempt_status: 'delivered', delivery_status: 'delivered' };
         },
       },
@@ -135,4 +136,14 @@ test('a resend reuses its saved idempotency key when the answer was lost, and ge
   } finally {
     inbox.close();
   }
+});
+
+test('test events preserve the SDK pending attempt status and numeric counters',async()=>{
+  const payload={webhook_event_id:'whev_example',webhook_delivery_id:'wdel_example',webhook_delivery_attempt_id:'watt_example',attempt_number:1,attempt_status:'pending',delivery_status:'pending',delivery_trigger:'test_event',duration_milliseconds:0};
+  const client=new FlintClient({baseUrl:'https://api.staging.withflintpay.com',transport:async(input,init)=>{
+    const request=new Request(input,init);assert.equal(new URL(request.url).pathname,'/v1/webhook-endpoints/whep_example/test-events');
+    assert.ok(request.headers.get('idempotency-key'));return Response.json({request_id:'req_example',data:payload});
+  }});
+  const action=await sendTestEvent({client,auth},'whep_example','order.paid');
+  assert.equal(action.attempt_status,'pending');assert.equal(action.attempt_number,1);assert.equal(action.duration_milliseconds,0);
 });

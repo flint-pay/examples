@@ -1,3 +1,4 @@
+import {projectClientAction} from './flint/projection.ts';
 import 'server-only';
 import type {User} from './identity/index.ts';
 import type {Runtime} from './runtime.ts';
@@ -31,6 +32,6 @@ export async function projectState(rt:Runtime,ref:string,user:User|undefined,res
 /** The answer to pay, resume, attempt reads and cancel. The provider action travels only here, never in a page. */
 export function paymentAnswer(rt:Runtime,read:ReadCheckout,state:CheckoutState){
   const current=read.result;const next=rt.payments.next(current);const action=current.attempt?.status==='requires_action'?current.attempt.pending_actions?.[0]:undefined;
-  return {state,next,client_action:action?.client_action.stripe,pending_action_id:action?.pending_action_id,
+  return {state,next,client_action:projectClientAction(action),pending_action_id:action?.pending_action_id,
     ...(current.totalChanged?{error:{kind:'conflict',code:'ORDER_CHANGED_REFRESH_REQUIRED',message_key:current.order.gift_cards?.length?'gift_card_changed':'total_changed'}}:{})};
 }

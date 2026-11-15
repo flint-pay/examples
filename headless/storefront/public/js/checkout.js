@@ -8,7 +8,7 @@ import * as logic from './checkout-logic.js';
 import { $, $$, announce, csrfToken, focusElement, setBusy } from './dom.js';
 import { mountChallengeFrame } from './gift-challenge.js';
 import { formatMoney, sameMoney } from './money.js';
-import { createStripePayment, runClientAction } from './stripe-payment.js';
+import { createStripePayment, isActionExpired, runClientAction } from './stripe-payment.js';
 
 /** @typedef {import('../../src/views/types.ts').CheckoutState} CheckoutState */
 /** @typedef {import('../../src/views/types.ts').GiftChallengeView} GiftChallengeView */
@@ -29,6 +29,8 @@ const POLL_MAX_MS = 5000;
 const POLL_LIMIT_MS = 60_000;
 /** Resume requests one recovery run may send. Each replays the same saved request. */
 const MAX_RESUME_POSTS = 3;
+/** How many times a cancel is tried for an action that can no longer open, before the buyer decides. */
+const CANCEL_TRIES = 3;
 const BILLING_FOCUS_KEY = 'sf-focus-billing-title';
 const SWAP_REGIONS = ['notices', 'summary', 'discount', 'delivery', 'billing', 'gift-cards', 'tip', 'contact-extra'];
 
@@ -53,6 +55,8 @@ const app = {
   /** Pending provider action ids this page already ran, with how many times. */
   handledActions: /** @type {Map<string, number>} */ (new Map()),
   pendingActionId: '',
+  /** True once a url action started leaving this page. */
+  redirecting: false,
   generation: 0,
   verifiedEmail: '',
   quoteRetries: 0,
@@ -240,7 +244,7 @@ function setPaymentState(next, options = {}) {
   if (section) section.setAttribute('data-state', next);
   for (const panel of $$('[data-panel]')) panel.toggleAttribute('hidden', panel.getAttribute('data-panel') !== panelFor(next));
   const waitText = $('[data-waiting-text]');
-  if (waitText) waitText.textContent = next === 'resuming' ? boot.labels.stateResuming : boot.labels.stateWaiting;
+  if (waitText) waitText.textContent = next === 'resuming' ? boot.labels.stateResuming : app.redirecting && next === 'authenticating' ? boot.labels.stateRedirecting : boot.labels.stateWaiting;
   const form = payForm();
   if (form) form.toggleAttribute('data-locked', OPEN_STATES.has(next));
   lockSections(OPEN_STATES.has(next));
@@ -1781,8 +1785,15 @@ function declineText(code) {
   return msg(known.includes(key) ? key : 'decline_default');
 }
 
-/** @param {any} clientAction */
-async function authenticate(clientAction) {
+/**
+ * Opens the pending action by its type. A `url` action is a top-level redirect to the Flint-hosted page, and
+ * the buyer comes back through `/checkout/:ref/return`, which only reads the payment. A `stripe` action runs
+ * Stripe.js `handleNextAction`. A page opened by that return (`onLoad`) never sends the buyer back on its own:
+ * a url action still waiting shows Continue and Pay another way.
+ * @param {any} clientAction
+ * @param {{ onLoad?: boolean }} [options]
+ */
+async function authenticate(clientAction, options = {}) {
   setPaymentState('authenticating', { message: '' });
   let action = clientAction;
   if (!action) {
@@ -1810,15 +1821,81 @@ async function authenticate(clientAction) {
     }
     return;
   }
+  if (isActionExpired(action)) {
+    await abandonExpiredAction();
+    return;
+  }
+  if (options.onLoad && action?.type === 'url') {
+    await mountPayment();
+    showIncomplete(logic.hasAffirmAction(app.state) ? 'affirm' : 'action');
+    return;
+  }
   // Flint clears the card form's guidance while an action is pending, so Stripe runs it without Elements.
   const run = await runClientAction(action, { onInvoke: () => { if (dedupeKey) app.handledActions.set(dedupeKey, 1); } });
+  if (run.redirected) {
+    // The page is leaving for the Flint-hosted page. Nothing to resume or read: the return route does that.
+    app.redirecting = true;
+    setPaymentState('authenticating', { message: '' });
+    return;
+  }
+  if (run.expired) {
+    await abandonExpiredAction();
+    return;
+  }
   if (!run.invoked) {
-    // Nothing ran, so the action is not marked as seen and a reload tries it again. No more requests.
+    // Nothing ran: an unknown type or an unusable action. The action is not marked as seen and a reload
+    // tries it again. No more requests.
     setPaymentState('unavailable', { message: msg('bug_checkout', { store: boot.store }) });
     return;
   }
   // Resume whether or not the provider call returned an error: Flint decides the outcome.
   await recoverOutcome('resume');
+}
+
+/**
+ * Shows the buyer an action that is still waiting, worded for Affirm or for any other Flint-hosted step.
+ * Continue is hidden when it could not help, such as an action past its expiry that could not be cancelled.
+ * @param {'affirm' | 'action'} kind
+ * @param {{ continueUsable?: boolean }} [options]
+ */
+function showIncomplete(kind, options = {}) {
+  $('[data-affirm-continue]')?.toggleAttribute('hidden', options.continueUsable === false);
+  const text = kind === 'affirm' ? 'data-affirm-text' : 'data-action-text';
+  const label = kind === 'affirm' ? 'data-affirm-label' : 'data-action-label';
+  for (const node of $$('[data-incomplete-text], [data-dialog-body]')) node.textContent = node.getAttribute(text) ?? node.textContent;
+  for (const node of $$('[data-affirm-continue], [data-dialog-confirm], [data-dialog-cancel]')) node.textContent = node.getAttribute(label) ?? node.textContent;
+  setPaymentState('affirm_incomplete', { message: msg(kind === 'affirm' ? 'affirm_incomplete' : 'payment_action_incomplete'), focus: false });
+}
+
+/**
+ * An action past its expiry is not opened. The open attempt is cancelled, with a few tries, and the buyer gets
+ * the card form back with the same "try again" message Flint gives for a lapsed action.
+ */
+async function abandonExpiredAction() {
+  /** @type {JobResult | undefined} */
+  let result;
+  for (let attempt = 0; attempt < CANCEL_TRIES; attempt += 1) {
+    if (attempt > 0) await new Promise((resolve) => window.setTimeout(resolve, 500 * 2 ** (attempt - 1)));
+    result = await uiJobs.run(() => request('POST', '/cancel-attempt', {}));
+    if (result.ok) break;
+  }
+  if (result?.ok) {
+    if (result.state) applyState(result.state);
+    // The buyer paid before the cancel landed: go on to the confirmation, never offer to try again.
+    if (result.next === 'done' || result.next === 'bank_processing') {
+      await advance(result.next, undefined);
+      return;
+    }
+    await refreshRegions();
+    await mountPayment();
+    messageNode()?.setAttribute('data-code', 'payment_action_expired');
+    setPaymentState('declined', { message: declineText('payment_action_expired') });
+    return;
+  }
+  // The attempt could not be closed after a few tries. Stop instead of looping: the buyer sees why, and
+  // Pay another way tries the cancel again when they choose. Continue is hidden: the action is past its expiry.
+  showIncomplete('action', { continueUsable: false });
+  showMessage(`${declineText('payment_action_expired')} ${msg('generic_error')}`, true);
 }
 
 /**
@@ -1929,8 +2006,13 @@ async function cancelAttemptAndPayAnotherWay() {
     showMessage(errorText(result.error), true);
     return;
   }
-  app.excludeAffirm = false;
   if (result.state) applyState(result.state);
+  // The buyer paid before the cancel landed: go on to the confirmation, never back to the form.
+  if (result.next === 'done' || result.next === 'bank_processing') {
+    await advance(result.next, undefined);
+    return;
+  }
+  app.excludeAffirm = false;
   await refreshRegions();
   await mountPayment();
   setPaymentState('ready', { message: '', focus: false });
@@ -1955,6 +2037,14 @@ function wireStatic() {
     if (typed && !US_POSTAL_CODE.test(typed)) postal.setAttribute('aria-invalid', 'true');
   });
   document.addEventListener('submit', onJobSubmit);
+  // A page restored from the back-forward cache after the redirect would still say it is taking the buyer
+  // away. Read the payment again as a fresh load does: a url action waits for Continue or Pay another way.
+  window.addEventListener('pageshow', (event) => {
+    if (!event.persisted || !app.redirecting) return;
+    app.redirecting = false;
+    app.handledActions.clear();
+    void authenticate(undefined, { onLoad: true });
+  });
   wireGiftChallenge();
   const card = $('#save-card');
   card?.addEventListener('change', async () => {
@@ -2006,7 +2096,7 @@ async function start() {
       break;
     }
     case 'authenticating':
-      await authenticate(undefined);
+      await authenticate(undefined, { onLoad: true });
       break;
     case 'resuming':
       // The app holds an unresolved payment request, possibly with no attempt yet. No form work is needed.

@@ -19,7 +19,7 @@ export async function failedDeliveries({ client, auth }: Deps, options: { endpoi
     ...(options.endpointId ? { webhook_endpoint_id: options.endpointId } : {}),
   }, auth.merchant());
   for await (const event of events) {
-    const deliveries = await client.webhookEvents.listWebhookDeliveries({ webhook_event_id: event.webhook_event_id, page_size: 100 }, auth.merchant());
+    const deliveries = await client.webhookDeliveries.list({ webhook_event_id: event.webhook_event_id, page_size: 100 }, auth.merchant());
     for (const delivery of deliveries.data) {
       if (delivery.status !== 'failed') continue;
       if (options.endpointId && delivery.webhook_endpoint_id !== options.endpointId) continue;
@@ -60,7 +60,7 @@ export async function resendDelivery({ client, auth }: Deps, inbox: Inbox, webho
 
 /** Asks Flint to send a small fixture event to the endpoint now. Test events are delivered once and never retried. */
 export async function sendTestEvent({ client, auth }: Deps, endpointId: string, eventType: string): Promise<WebhookDeliveryAction> {
-  return client.webhookEndpoints.createWebhookTestEvent(
+  return client.webhookEndpoints.createTestEvent(
     endpointId,
     { event_type: eventType as CreateWebhookTestEventRequestInput['event_type'] },
     auth.merchant(`examples-webhook-test-${randomUUID()}`),
