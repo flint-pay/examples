@@ -137,7 +137,11 @@ export class PaymentEngine {
       }catch(error){
         if(job.kind!=='cancel'&&error instanceof errors.ApiError&&error.code==='ACTION_NOT_ALLOWED'&&error.details.some(detail=>detail&&typeof detail==='object'&&'reason'in detail&&detail.reason==='provider_action_unsupported')){
           const original=JSON.parse(job.body!) as PayOrderRequestInput;
-          if(original.client_action_type==='stripe')throw error;
+          if(original.client_action_type==='stripe'){
+            // Stripe was the final fallback. A definite refusal must not be retried by every status read.
+            this.store.run("UPDATE actions SET status='rejected',body=NULL WHERE action_id=?",job.action_id);
+            throw error;
+          }
           // Persist the fallback before reads, which may fail after Flint has
           // attached the original credential to a holding attempt.
           assertOwnership();

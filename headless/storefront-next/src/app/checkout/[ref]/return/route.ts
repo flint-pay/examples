@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { visitor } from '@/server/session.ts';
-import { projectState } from '@/server/checkout-view.ts';
+import { viewState } from '@/server/checkout-view.ts';
 import { hasAffirmAction } from '@/shared/checkout-logic.ts';
 import type { CheckoutState } from '@/shared/types.ts';
 
@@ -19,8 +19,8 @@ export async function GET(request: Request, { params }: Params) {
   } catch {
     return to('/return-elsewhere');
   }
-  const current = await projectState(rt, ref, user);
-  const attempt = current.read.result.attempt;
+  const read = await rt.checkouts.readForReturn(ref);
+  const current = { read, state: await viewState(rt, read) };
   const result = current.read.result;
   const next = rt.payments.next(result);
   const path = `/checkout/${encodeURIComponent(ref)}`;

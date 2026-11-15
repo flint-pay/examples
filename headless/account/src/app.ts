@@ -309,7 +309,8 @@ export function createApp(deps:Dependencies){
     let record=store.checkout(current.user_id,preflight.sandboxId,type,resourceId);
     if(!canPay&&!record)return c.redirect(`/${root}/${resourceId}`,303);
     let launch:'ready'|'surface_conflict'|'collection_in_progress'='ready';
-    if(!record||!returned){
+    if(returned&&!record)return c.redirect(`/${root}/${resourceId}/pay`,303);
+    if(!returned){
       try{
         record=await store.locked(`launch:${preflight.sandboxId}:${current.user_id}:${type}:${resourceId}`,async()=>{
           const previous=store.checkout(current.user_id,preflight.sandboxId,type,resourceId);
@@ -342,7 +343,7 @@ export function createApp(deps:Dependencies){
     }
     let state=null;
     if(record&&launch==='ready'){
-      const result=await engine.status(record.checkout_ref),job=await engine.view(record,result,returned);state=job.state;
+      const result=await (returned?engine.statusForReturn(record.checkout_ref):engine.status(record.checkout_ref)),job=await engine.view(record,result,returned);state=job.state;
       if(job.next==='done'||job.next==='bank_processing'){flash(c,type==='return'?'return_payment_received':job.next==='done'?'invoice_payment_received':'invoice_payment_processing');return c.redirect(`/${root}/${resourceId}${type==='invoice'?'?payment=received':''}`,303);}
     }
     return page(c,type==='invoice'?'ac-invoice-pay':'ac-return-pay',{surface:type,resource_id:resourceId,buyer:{name:current.name,email:current.email},summary:{[type]:project(type,resource)},launch,state,returned});

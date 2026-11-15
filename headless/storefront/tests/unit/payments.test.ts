@@ -235,3 +235,21 @@ for(const recover of ['status','pay'] as const)test(`Stripe fallback survives a 
     await engine.start(row.checkout_ref,input());assert.equal(sent.length,2);
   }finally{store.close();}
 });
+
+
+test('a second provider refusal rejects the Stripe fallback instead of retrying it on later status reads',async()=>{
+  const store=new Store(':memory:');try{
+    const row=record(store);let calls=0;
+    const current={...order(),active_payment_attempt:{...attempt('requires_action',true),pending_actions:[]}};
+    const client={orders:{get:async()=>current,pay:async()=>{
+      calls++;throw new errors.ConflictError('Provider action unsupported',{status:409,code:'ACTION_NOT_ALLOWED',outcome:'response',details:[{code:'ACTION_NOT_ALLOWED',message:'Provider action unsupported',reason:'provider_action_unsupported'}]});
+    }}} as unknown as Client;
+    const engine=new PaymentEngine(client,createAuth('fixture'),store);
+    const job=engine.job(row,'pay',{action:'pay',client_action_type:'url',payment_source:{credential_type:'stripe_confirmation_token',stripe:{confirmation_token:'ctoken_example'}}});
+    await assert.rejects(()=>engine.execute(row,job,()=>{}),{code:'ACTION_NOT_ALLOWED'});
+    assert.equal(calls,2);assert.equal(engine.unresolved(row),undefined);
+    assert.equal(store.get<{status:string;body:string|null}>('SELECT status,body FROM actions WHERE action_id=?',job.action_id)?.status,'rejected');
+    assert.equal(store.get<{body:string|null}>('SELECT body FROM actions WHERE action_id=?',job.action_id)?.body,null);
+    await engine.status(row.checkout_ref);await engine.status(row.checkout_ref);assert.equal(calls,2);
+  }finally{store.close();}
+});

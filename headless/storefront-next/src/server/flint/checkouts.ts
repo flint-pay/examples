@@ -123,6 +123,20 @@ export class Checkouts {
     const ref=randomReference('chk_');this.store.run('INSERT INTO checkouts(checkout_ref,session_hash,user_id,kind,subscription_plan_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?)',ref,session.session_hash,user?.user_id??null,'subscription',planId,Date.now(),Date.now());
     return this.launch(this.record(ref),this.identity.isBound(user,this.sandboxId)?user.flint_customer_id!:undefined);
   }
+  // Provider returns observe payment state without replaying journaled work or refreshing the checkout.
+  async readForReturn(ref:string):Promise<ReadCheckout>{
+    const initial=this.record(ref);
+    if(!initial.order_id||!initial.checkout_session_id)throw new LocalError('CHECKOUT_SETUP_INCOMPLETE',409);
+    return this.store.locked(`order:${initial.order_id}`,async()=>{
+      const record=this.record(ref);let session:CheckoutSession;
+      try{session=await this.client.checkoutSessions.get(record.checkout_session_id!,undefined,record.checkout_auth_token?this.auth.checkout(record):this.auth.merchant());}
+      catch(error){if(!sessionEnded(error))throw error;session=await this.client.checkoutSessions.get(record.checkout_session_id!,undefined,this.auth.merchant());}
+      const order=await this.payments.read(record),sourced=await this.payments.withPaymentSources(record,order);
+      const managedRead=['paid','partially_paid'].includes(session.status)||['invalidated','expired','closed'].includes(session.status)&&!session.is_in_recovery;
+      const attempt=await this.payments.attempt(record,order,managedRead);
+      return {record,session,order:sourced,result:this.payments.observe(record,sourced,attempt)};
+    });
+  }
   async read(ref:string,user?:User):Promise<ReadCheckout>{
     const initial=this.record(ref);
     if(!initial.order_id||!initial.checkout_session_id)throw new LocalError('CHECKOUT_SETUP_INCOMPLETE',409);

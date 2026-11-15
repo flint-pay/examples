@@ -111,8 +111,8 @@ export function createApp(options:AppOptions){
     }
     c.set('form',{values});
   }
-  async function state(c:Context<Env>,result?:PaymentResult){
-    const read=await checkouts.read(c.req.param('ref')!,c.get('user'));
+  async function state(c:Context<Env>,result?:PaymentResult,returning=false){
+    const ref=c.req.param('ref')!,read=await (returning?checkouts.readForReturn(ref):checkouts.read(ref,c.get('user')));
     if(result?.totalChanged){read.result.totalChanged=true;checkouts.notice(read.record,'total_changed');if(result.order.gift_cards?.length)checkouts.notice(read.record,'gift_card_changed');}
     return {read,state:checkouts.project(read)};
   }
@@ -377,7 +377,7 @@ export function createApp(options:AppOptions){
   app.post('/checkout/:ref/cancel-attempt',async c=>{own(c);const result=await payments.cancel(c.req.param('ref'));const current=await state(c,result);return paymentJson(c,current.read,result);});
   app.get('/checkout/:ref/return',async c=>{
     try{own(c);}catch{return page(c,'return-elsewhere');}
-    const current=await state(c);const result=current.read.result;
+    const current=await state(c,undefined,true),result=current.read.result;
     if(payments.next(result)==='done')return c.redirect(`/checkout/${c.req.param('ref')}/complete`,303);
     // The return route only reads the payment. An unfinished action is never opened here: the checkout page
     // shows it with Continue and Pay another way, worded for Affirm or for any other Flint-hosted step.
@@ -425,7 +425,7 @@ export function createApp(options:AppOptions){
     }
     if(jsonWanted(c)){
       const localChallenge=c.req.path.endsWith('/gift-card/challenge')&&['GIFT_CHALLENGE_EXPIRED','GIFT_CHALLENGE_SESSION_CHANGED','GIFT_CHALLENGE_CODE_CHANGED','GIFT_CHALLENGE_ORDER_CHANGED','CHECKOUT_PAYMENT_RESOLVING','PAYMENT_ATTEMPT_IN_PROGRESS'].includes(mapped.code);
-      let projected:unknown;const ref=c.req.param('ref');if(ref&&status!==404&&!localChallenge){try{own(c);projected=(await state(c)).state;}catch{}}
+      let projected:unknown;const ref=c.req.param('ref');if(ref&&status!==404&&!localChallenge){try{own(c);projected=(await state(c,undefined,c.req.path.endsWith('/return'))).state;}catch{}}
       return c.json({error:mapped,state:projected},status);
     }
     if(status===401&&c.get('user')===undefined&&c.req.path.startsWith('/verify-email'))return c.redirect(`/sign-in?next=${encodeURIComponent(c.get('returnNext')??returnPath(c.req.query('next')))}`,303);
