@@ -2,7 +2,7 @@ import {errors} from '@flintpay/node';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import type {Client,CheckoutSession,Order,RequestOptions} from '@flintpay/node';
+import type {Client,CheckoutSession,Order,OrderPaymentAttempt,PayOrderRequestInput,RequestOptions} from '@flintpay/node';
 import {SdkError} from '@flintpay/node';
 import {flintError} from './support/flint-error.ts';
 import {Checkouts} from '../../src/flint/checkouts.ts';
@@ -13,6 +13,7 @@ import type {ActionRecord} from '../../src/store/db.ts';
 import {Carts} from '../../src/store/cart.ts';
 import type {Catalog} from '../../src/flint/catalog.ts';
 import {IdentityStore} from '../../src/identity/index.ts';
+import {projectClientAction} from '../../src/flint/projection.ts';
 import {PaymentEngine} from '../../src/payments/engine.ts';
 
 // Flint publishes shared codes and tells the refusals apart by reason and resource.
@@ -210,4 +211,24 @@ test('a normal open session still restores pending contact and reads its deliver
   assert.deepEqual(sessionContact(read),{email:'buyer@example.com',phone:null});
   assert.equal(f.store.get<ActionRecord>('SELECT * FROM actions WHERE action_id=?',key)?.status,'succeeded');
   assert.deepEqual(f.app.details(read.record).delivery_selection,selection);assert.equal(f.launches.length,0);
+}));
+
+test('checkout status read resumes a durable Stripe fallback after the refusal read failed',async()=>use(async f=>{
+  const sent:{body:PayOrderRequestInput;key?:string}[]=[];
+  const get=f.client.orders.get.bind(f.client.orders);let failRead=false;
+  f.client.orders.get=(async(...args:Parameters<typeof get>)=>{if(failRead){failRead=false;throw new Error('refusal read failed');}return get(...args);}) as typeof get;
+  f.client.orders.pay=(async(_id:string,body:PayOrderRequestInput,options:RequestOptions)=>{
+    sent.push({body,key:options.idempotencyKey});
+    if(sent.length===1){f.enterRecovery();failRead=true;throw flintError(409,'ACTION_NOT_ALLOWED',{reason:'provider_action_unsupported'});}
+    f.order.active_payment_attempt={...f.order.active_payment_attempt,pending_actions:[{pending_action_id:'action_fixture',expires_at:'2099-01-01T00:00:00Z',client_action:{type:'stripe',stripe:{publishable_key:'pk_example',payment_intent:{client_secret:'pi_example_secret',stripe_js_call:'handle_next_action'}}}}]} as unknown as OrderPaymentAttempt;
+    return {order:f.order,order_payment_attempt:f.order.active_payment_attempt};
+  }) as typeof f.client.orders.pay;
+  const engine=f.app.payments,row=f.record(),job=engine.job(row,'pay',{action:'pay',client_action_type:'url',payment_source:{credential_type:'stripe_confirmation_token',stripe:{confirmation_token:'ctoken_example'}}});
+  await assert.rejects(()=>engine.execute(row,job,()=>{}),/refusal read failed/);
+  const read=await f.app.read(row.checkout_ref);
+  assert.equal(read.result.unknown,false);assert.equal(engine.next(read.result),'authenticate');
+  assert.equal(projectClientAction(read.result.attempt?.pending_actions?.[0])?.type,'stripe');
+  assert.deepEqual(sent[1]!.body,{action:'resume',order_payment_attempt_id:read.result.attempt!.order_payment_attempt_id,client_action_type:'stripe'});
+  assert.equal(sent[1]!.key,`${sent[0]!.key}-stripe`);
+  await f.app.read(row.checkout_ref);assert.equal(sent.length,2);
 }));

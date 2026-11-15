@@ -1,6 +1,6 @@
 import { readPrivate, writePrivate, writePrivateText } from './private-files.ts';
 import { dirname, join } from 'node:path';
-import { digest, invariant, requestId, apiFailure } from './safe.ts';
+import { digest, invariant, nonnegativeSafeInteger, requestId, apiFailure } from './safe.ts';
 import type { Sandbox } from './config.ts';
 
 export type Disposition = 'CLEANED UP' | 'PENDING EXPIRY' | 'PENDING AUTHORIZED CLEANUP' | 'RETAINED FOR RECONCILIATION';
@@ -83,7 +83,7 @@ export class Ledger {
     const reconcile = action.reconcileActionId && this.state.actions[action.reconcileActionId];
     const count = reconcile && (reconcile.response as any)?.revoked_count;
     const customer = reconcile && this.state.resources.find(r => r.type === 'customer' && r.resource === reconcile.args[0] && r.sandbox === reconcile.sandbox && r.owned && r.createdBy === this.run);
-    return action.args.some(a => a && typeof a === 'object' && 'credential_source' in a && typeof (a as any).credential_source === 'string') && !!reconcile && reconcile.phase === 'known' && reconcile.operation === 'customers.revokeSessions' && reconcile.sandbox === action.sandbox && !!customer && typeof count === 'string' && /^(0|[1-9]\d*)$/.test(count);
+    return action.args.some(a => a && typeof a === 'object' && 'credential_source' in a && typeof (a as any).credential_source === 'string') && !!reconcile && reconcile.phase === 'known' && reconcile.operation === 'customers.revokeSessions' && reconcile.sandbox === action.sandbox && !!customer && nonnegativeSafeInteger(count);
   }
   async abandonUnreplayable(actionId: string, reconcileActionId: string): Promise<void> {
     const action = this.state.actions[actionId];

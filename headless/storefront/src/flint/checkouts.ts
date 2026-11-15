@@ -126,8 +126,9 @@ export class Checkouts {
   async read(ref:string,user?:User):Promise<ReadCheckout>{
     const initial=this.record(ref);
     if(!initial.order_id||!initial.checkout_session_id)throw new LocalError('CHECKOUT_SETUP_INCOMPLETE',409);
-    return this.store.locked(`order:${initial.order_id}`,async()=>{
+    return this.store.locked(`order:${initial.order_id}`,async assertOwnership=>{
       let record=this.record(ref);let session:CheckoutSession;let credentialsStale=false;
+      await this.payments.recoverStripeFallback(record,assertOwnership);
       if(record.cart_dirty){await this.syncRecord(record);record=this.record(ref);}
       try{session=await this.client.checkoutSessions.get(record.checkout_session_id!,undefined,record.checkout_auth_token?this.auth.checkout(record):this.auth.merchant());}
       catch(error){

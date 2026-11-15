@@ -1,5 +1,5 @@
 import { API_ORIGIN } from './config.ts';
-import { digest, invariant, requestId } from './safe.ts';
+import { digest, invariant, nonnegativeSafeInteger, requestId } from './safe.ts';
 
 export type AuditAppend = (entry: Record<string, unknown>) => Promise<void>;
 const cleanup: Record<string, string> = { subscription: 'subscription', invoice: 'invoice', checkout_session: 'checkout_session', customer_session: 'customer_session', gift_card: 'gift_card', payment_method: 'payment_method', return_resolution: 'return_resolution', customer_verification: 'expiry', email_change_request: 'expiry' };
@@ -98,7 +98,7 @@ export function auditedFetch(originalFetch: typeof fetch, append: AuditAppend): 
         const pathIds = new Set(url.pathname.split('/'));
         for (const resource of resources(value?.data)) await append({ kind: 'RESOURCE', timestamp: Date.now(), ...resource, ...(resource.type === 'customer_session' && /^[A-Za-z0-9_-]+$/.test(value?.data?.customer_id ?? '') ? { customerId: value.data.customer_id } : {}), created: creates.has(resource.type) && !supplied.has(resource.id) && !pathIds.has(resource.id), requestId: requestId(response.headers.get('x-request-id')) });
         if (value?.data?.status === 'revoked' && typeof value.data.customer_session_id === 'string') await append({ kind: 'REVOCATION', timestamp: Date.now(), id: value.data.customer_session_id });
-        if (typeof value?.data?.revoked_count === 'string' && /^(0|[1-9]\d*)$/.test(value.data.revoked_count) && typeof value.data.customer_id === 'string') await append({ kind: 'REVOCATION_ALL', timestamp: Date.now(), customerId: value.data.customer_id, count: value.data.revoked_count });
+        if (nonnegativeSafeInteger(value?.data?.revoked_count) && typeof value.data.customer_id === 'string') await append({ kind: 'REVOCATION_ALL', timestamp: Date.now(), customerId: value.data.customer_id, count: value.data.revoked_count });
       }
     }
     if (writing && response.status < 500 && errorCode !== 'IDEMPOTENCY_KEY_IN_PROGRESS') await append({ kind: 'RESOLVED', timestamp: Date.now(), fingerprint, status: response.status });

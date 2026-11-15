@@ -41,7 +41,16 @@ export function paymentComplete(order:SourcedOrder):boolean{
   return order.payment_status==='paid'&&(!order.subscription_plan_id||!!order.subscription_id);
 }
 export function resolvesJob(job:ActionRecord,order:SourcedOrder,attempt:OrderPaymentAttempt|undefined):boolean{
+  if(stripeFallbackRequired(job))return false;
   return paymentComplete(order)||job.kind==='pay'&&!!order.active_payment_attempt||job.kind!=='pay'&&attempt?.order_payment_attempt_id===job.attempt_id&&!attemptOpen(attempt);
+}
+
+// Both the unresolved intent and the prepared Stripe request must be sent before
+// a read of the holding attempt can complete this journal entry.
+function stripeFallbackRequired(job:ActionRecord):boolean{
+  if(!job.body)return false;
+  const body=JSON.parse(job.body) as {stripe_fallback?:PayOrderRequestInput;client_action_type?:string};
+  return !!body.stripe_fallback||body.client_action_type==='stripe';
 }
 
 export class PaymentEngine {
@@ -108,6 +117,17 @@ export class PaymentEngine {
     if(!job.body)throw new LocalError('UNKNOWN_PAYMENT_OUTCOME',409);
     for(let retry=0;retry<4;retry++){
       assertOwnership();
+      const saved=JSON.parse(job.body!) as {stripe_fallback?:PayOrderRequestInput};
+      if(saved.stripe_fallback){
+        const order=await this.read(record),attempt=await this.attempt(record,order);
+        const body:PayOrderRequestInput=attemptOpen(attempt)
+          ?{action:'resume',order_payment_attempt_id:attempt!.order_payment_attempt_id,client_action_type:'stripe'}
+          :{...saved.stripe_fallback,client_action_type:'stripe'};
+        assertOwnership();
+        const json=JSON.stringify(body),attemptId=attempt?.order_payment_attempt_id??null;
+        this.store.run('UPDATE actions SET body=?,body_hash=?,attempt_id=? WHERE action_id=?',json,createHash('sha256').update(json).digest('hex'),attemptId,job.action_id);
+        job={...job,body:json,attempt_id:attemptId};
+      }
       try{
         const response=job.kind==='cancel'
           ? await this.client.orders.cancelPaymentAttempt(record.order_id!,job.attempt_id!,JSON.parse(job.body!) as {cancellation_reason:'abandoned'},this.auth.checkout(record,job.idempotency_key))
@@ -118,15 +138,12 @@ export class PaymentEngine {
         if(job.kind!=='cancel'&&error instanceof errors.ApiError&&error.code==='ACTION_NOT_ALLOWED'&&error.details.some(detail=>detail&&typeof detail==='object'&&'reason'in detail&&detail.reason==='provider_action_unsupported')){
           const original=JSON.parse(job.body!) as PayOrderRequestInput;
           if(original.client_action_type==='stripe')throw error;
-          const order=await this.read(record);
-          const attempt=await this.attempt(record,order);
-          const body:PayOrderRequestInput=attemptOpen(attempt)
-            ?{action:'resume',order_payment_attempt_id:attempt!.order_payment_attempt_id,client_action_type:'stripe'}
-            :{...original,client_action_type:'stripe'};
+          // Persist the fallback before reads, which may fail after Flint has
+          // attached the original credential to a holding attempt.
           assertOwnership();
-          const json=JSON.stringify(body),key=`${job.idempotency_key}-stripe`;
-          this.store.run("UPDATE actions SET body=?,body_hash=?,idempotency_key=?,attempt_id=? WHERE action_id=?",json,createHash('sha256').update(json).digest('hex'),key,attempt?.order_payment_attempt_id??null,job.action_id);
-          job={...job,body:json,idempotency_key:key,attempt_id:attempt?.order_payment_attempt_id??null};
+          const json=JSON.stringify({stripe_fallback:original}),key=`${job.idempotency_key}-stripe`;
+          this.store.run('UPDATE actions SET body=?,body_hash=?,idempotency_key=? WHERE action_id=?',json,createHash('sha256').update(json).digest('hex'),key,job.action_id);
+          job={...job,body:json,idempotency_key:key};
           continue;
         }
         if(!unknownOutcome(error)){
@@ -227,7 +244,17 @@ export class PaymentEngine {
       return this.execute(record,this.job(record,'cancel',{cancellation_reason:'abandoned'},`cancel-${record.last_attempt_id}`),assertOwnership);
     });
   }
-  async status(ref:string):Promise<PaymentResult>{const record=this.record(ref);return this.store.locked(this.resource(record),()=>this.reconcile(this.record(ref)));}
+  async recoverStripeFallback(record:CheckoutRecord,assertOwnership:()=>void):Promise<PaymentResult|undefined>{
+    const pending=this.unresolved(record);
+    if(pending&&stripeFallbackRequired(pending))return this.execute(record,pending,assertOwnership);
+  }
+  async status(ref:string):Promise<PaymentResult>{
+    const initial=this.record(ref);
+    return this.store.locked(this.resource(initial),async assertOwnership=>{
+      const record=this.record(ref);
+      return await this.recoverStripeFallback(record,assertOwnership)??this.reconcile(record);
+    });
+  }
   next(result:PaymentResult){
     if(result.unknown)return 'resume';
     if(paymentComplete(result.order))return 'done';

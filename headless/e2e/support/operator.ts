@@ -236,8 +236,8 @@ export class Operator {
           invariant((await c.subscriptions.get(r.resource)).status === 'canceled', 'SUBSCRIPTION_CLEANUP_FAILED');
         } else if (r.cleanup === 'invoice') {
           const value = await c.invoices.get(r.resource);
-          if (!['paid', 'void', 'uncollectible'].includes(value.status)) await call('invoices.void', [r.resource, {}], k => c.invoices.void(r.resource, {}, { idempotencyKey: k }));
-          invariant(['paid', 'void', 'uncollectible'].includes((await c.invoices.get(r.resource)).status), 'INVOICE_CLEANUP_FAILED');
+          if (!['paid', 'voided', 'uncollectible'].includes(value.status)) await call('invoices.void', [r.resource, {}], k => c.invoices.void(r.resource, {}, { idempotencyKey: k }));
+          invariant(['paid', 'voided', 'uncollectible'].includes((await c.invoices.get(r.resource)).status), 'INVOICE_CLEANUP_FAILED');
         } else if (r.cleanup === 'checkout_session') {
           const value = await c.checkoutSessions.get(r.resource);
           if (!['closed', 'expired', 'paid', 'invalidated'].includes(value.status)) await call('checkoutSessions.close', [r.resource, {}], k => c.checkoutSessions.close(r.resource, {}, { idempotencyKey: k }));

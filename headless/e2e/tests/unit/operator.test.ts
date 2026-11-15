@@ -281,7 +281,7 @@ test('unknown settings outcome replays the original version and restores the sna
   const fake = { settings: { get: async () => structuredClone(current), update: async (body: any, options: any) => {
     seen.push({ body: structuredClone(body), key: options.idempotencyKey });
     if (cache.has(options.idempotencyKey)) return cache.get(options.idempotencyKey);
-    assert.equal(body.expected_version, current.version); current = { ...body, version: (BigInt(current.version) + 1n).toString() }; delete current.expected_version;
+    assert.equal(typeof body.expected_version, 'number'); assert.equal(body.expected_version, current.version); current = { ...body, version: current.version + 1 }; delete current.expected_version;
     const response = structuredClone(current); cache.set(options.idempotencyKey, response); if (lost) { lost = false; throw new Error('unknown'); } return response;
   } } };
   const clients = { config, writable: async () => fake } as unknown as VerifiedClients;
@@ -332,7 +332,7 @@ for(const initial of ['absent','null','object'] as const)test(`settings restore 
   const effective={mode:'flint_hosted'},seen:any[]=[],cache=new Map<string,any>();
   const fake={settings:{get:async()=>structuredClone(current),getEffective:async()=>({customer_account:current.customer_account??effective}),update:async(body:any,options:any)=>{
     seen.push({body:structuredClone(body),key:options.idempotencyKey});if(cache.has(options.idempotencyKey))return cache.get(options.idempotencyKey);
-    assert.equal(body.expected_version,current.version);current={...current,...body,version:(BigInt(current.version)+1n).toString()};delete current.expected_version;if(body.customer_account===null)delete current.customer_account;
+    assert.equal(typeof body.expected_version,'number');assert.equal(body.expected_version,current.version);current={...current,...body,version:current.version+1};delete current.expected_version;if(body.customer_account===null)delete current.customer_account;
     const response=structuredClone(current);cache.set(options.idempotencyKey,response);
     if(body.customer_account?.mode==='merchant_hosted'&&lostApply){lostApply=false;throw new Error('lost apply');}
     if(body.customer_account?.mode!=='merchant_hosted'&&lostRestore){lostRestore=false;throw new Error('lost restore');}return response;
@@ -429,4 +429,13 @@ test('return proposals track the resolution before a replacement order exists', 
   await op.execute(step); await op.execute(step);
   assert.equal(calls, 1);
   assert.deepEqual(ledger.state.resources.map(r => [r.type, r.resource]), [['return', 'ret_PLACEHOLDER'], ['return_resolution', 'rres_PLACEHOLDER']]);
+}));
+
+for(const initial of ['open','voided'] as const)test(`invoice cleanup recognizes voided after ${initial}`,async()=>setup(async ledger=>{
+  let status:string=initial,voids=0;
+  const fake={invoices:{get:async()=>({status}),void:async()=>{voids++;status='voided';return {status};}}};
+  const clients={config,writable:async()=>fake} as unknown as VerifiedClients;
+  await ledger.record({resource:'inv_PLACEHOLDER',type:'invoice',mode:'test',sandbox:'A',merchant:config.pins.A.merchantId,sandboxId:config.pins.A.sandboxId,createdBy:run,purpose:'unit',cleanup:'invoice',owner:'unit',reviewAt:'2000-02-01T00:00:00Z',owned:true});
+  await new Operator(clients,ledger,{} as Fixtures).cleanup();
+  assert.equal(voids,initial==='open'?1:0);assert.equal(ledger.state.resources[0].status,'CLEANED UP');ledger.assertTracked();
 }));

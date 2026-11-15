@@ -33,3 +33,7 @@ export function apiFailure(error: unknown): { status?: number; code?: string; re
 export function emit(value: { event: string; code?: string; count?: number; row?: string; status?: string }): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
 }
+
+export function nonnegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}

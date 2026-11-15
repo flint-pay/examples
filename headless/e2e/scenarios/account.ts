@@ -2,7 +2,7 @@ import { expect } from '@playwright/test';
 import type { Driver } from '../support/driver.ts';
 import type { Scenario } from './storefront.ts';
 import { providerSteps, bank } from './provider.ts';
-import { invariant, apiFailure, emit } from '../support/safe.ts';
+import { invariant, nonnegativeSafeInteger, apiFailure, emit } from '../support/safe.ts';
 import { equalMoney, money, assertOneCharge } from '../support/money.ts';
 import { createBuyerClient, buyerInvoiceLaunch, hostedInvoiceLaunch, beginHostedAuthentication } from '../support/public-actions.ts';
 import { exerciseOwnSessionRefresh } from '../support/owned-sessions.ts';
@@ -332,7 +332,7 @@ export async function replayAppRefresh(d: Driver, anonymous: Pick<Client, 'custo
     invariant(false, 'SUPERSEDED_REFRESH_ACCEPTED');
   }
   if (ledger.state.actions['A:ac15-superseded-refresh-replay'].phase === 'unknown') {
-    await ledger.action('ac15-replay-reconcile', 'A', 'customers.revokeSessions', [customerId, {}], async key => (await d.operator.clients.writable('A', true)).customers.revokeSessions(customerId, {}, { idempotencyKey: key }), async response => { invariant(typeof response.revoked_count === 'string' && /^(0|[1-9]\d*)$/.test(response.revoked_count), 'SESSION_RECONCILIATION_FAILED'); });
+    await ledger.action('ac15-replay-reconcile', 'A', 'customers.revokeSessions', [customerId, {}], async key => (await d.operator.clients.writable('A', true)).customers.revokeSessions(customerId, {}, { idempotencyKey: key }), async response => { invariant(nonnegativeSafeInteger(response.revoked_count), 'SESSION_RECONCILIATION_FAILED'); });
     await ledger.abandonUnreplayable('A:ac15-superseded-refresh-replay', 'A:ac15-replay-reconcile');
     invariant(false, 'REPLAY_OUTCOME_UNKNOWN');
   }

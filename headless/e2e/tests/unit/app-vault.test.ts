@@ -239,7 +239,7 @@ async function replayFixture(dir:string,reply:'reused'|'accepted'|'unknown'|409|
   const c=config(dir),ledger=new Ledger(join(dir,'ledger.json'),run);
   for(const [id,type] of [[customer,'customer'],[family,'customer_session']]) await ledger.record({resource:id,type,mode:'test',sandbox:'A',merchant:c.pins.A.merchantId,sandboxId:c.pins.A.sandboxId,createdBy:run,purpose:'app-creation',cleanup:'review',owner:'unit',reviewAt:'2001-01-01T00:00:00Z',owned:true});
   const cleanup:string[]=[];
-  const operatorClient={customerSessions:{revoke:async(id:string)=>{cleanup.push(id);return {customer_session_id:id,status:'revoked'};}},customers:{revokeSessions:async(id:string)=>{cleanup.push(id);return {customer_id:id,revoked_count:'1'};}}};
+  const operatorClient={customerSessions:{revoke:async(id:string)=>{cleanup.push(id);return {customer_session_id:id,status:'revoked'};}},customers:{revokeSessions:async(id:string)=>{cleanup.push(id);return {customer_id:id,revoked_count:1};}}};
   const operator={ledger,clients:{writable:async()=>operatorClient}};
   const d=new Driver(c,{buyers:{b1:{customerId:customer}}} as any,{} as any,operator as any);
   let attempts=0;

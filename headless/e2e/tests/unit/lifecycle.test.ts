@@ -74,3 +74,20 @@ for (const [name, order, attempts, browserConfirmSetup, code] of [
 ] as const) test(`trial setup rejects ${name}`, () => {
   assert.throws(() => assertTrialSetup(order, [...attempts], browserConfirmSetup), { code });
 });
+
+test('refresh abandonment requires a nonnegative safe integer revocation count',async()=>temp(async dir=>{
+  const ledger=new Ledger(join(dir,'ledger.json'),run);
+  await ledger.record({...resource,resource:'cus_PLACEHOLDER',type:'customer'});
+  await assert.rejects(()=>ledger.action('refresh','A','customerSessions.refresh',[{credential_source:'accountA:customer_session_vault'}],async()=>{throw new Error('unknown');},async()=>{}));
+  await ledger.action('revoke','A','customers.revokeSessions',['cus_PLACEHOLDER',{}],async()=>({revoked_count:1}),async()=>{});
+  const original=ledger.state.actions['A:refresh'],revoke=ledger.state.actions['A:revoke'];
+  for(const count of [0,1,Number.MAX_SAFE_INTEGER]){
+    revoke.response={revoked_count:count};assert.equal(ledger.validAbandonment({...original,reconcileActionId:'A:revoke'}),true);
+  }
+  for(const count of ['1',-1,1.5,Number.MAX_SAFE_INTEGER+1,NaN,Infinity,null,undefined]){
+    revoke.response={revoked_count:count};assert.equal(ledger.validAbandonment({...original,reconcileActionId:'A:revoke'}),false);
+    await assert.rejects(()=>ledger.abandonUnreplayable('A:refresh','A:revoke'),{code:'OWNED_CUSTOMER_REVOCATION_RECONCILIATION_REQUIRED'});
+  }
+  revoke.response={revoked_count:1};await ledger.abandonUnreplayable('A:refresh','A:revoke');
+  assert.equal(original.phase,'abandoned');
+}));

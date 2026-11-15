@@ -138,3 +138,19 @@ test('gift apply audit records checkout authority and proof presence without the
  const entry=entries.find(entry=>entry.kind==='MUTATION');assert.equal(entry?.operation,'ORDER_APPLY_GIFT_CARD');assert.equal(entry?.authMode,'checkout');assert.equal(entry?.challengeProof,true);assert.equal(entry?.targetId,'ord_PLACEHOLDER');for(const value of [proof,code,'ckat_PLACEHOLDER'])assert.equal(JSON.stringify(entries).includes(value),false);
  await assert.rejects(()=>transport(`${API_ORIGIN}/v1/orders/ord_PLACEHOLDER/gift-cards`,{method:'POST',headers:{authorization:'Bearer flint_test_PLACEHOLDER'},body:'{}'}),{code:'APP_GIFT_APPLY_MERCHANT_AUTH'});assert.equal(calls,1);
 });
+
+test('audit exports numeric revoke-all counters and preserves fresh revocation evidence',async()=>temp(async dir=>{
+  for(const count of [0,1,Number.MAX_SAFE_INTEGER,'1',-1,1.5,Number.MAX_SAFE_INTEGER+1,null]){
+    const entries:Record<string,unknown>[]=[];
+    const transport=auditedFetch(async()=>Response.json({data:{customer_id:'cus_PLACEHOLDER',revoked_count:count}}),async entry=>{entries.push(entry);});
+    await transport(`${API_ORIGIN}/v1/customers/cus_PLACEHOLDER/sessions/revoke`,{method:'POST',body:'{}'});
+    const valid=typeof count==='number'&&Number.isSafeInteger(count)&&count>=0;
+    const revocation=entries.find(entry=>entry.kind==='REVOCATION_ALL');
+    assert.equal(!!revocation,valid);
+    if(valid){
+      assert.equal(revocation!.count,count);
+      const d=driver(dir);await consumeAppFeed(d,'accountA',lines({kind:'READY'},...entries));
+      assert.equal(d.revocations.length,count>0?1:0);
+    }
+  }
+}));

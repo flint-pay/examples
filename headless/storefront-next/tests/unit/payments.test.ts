@@ -13,6 +13,7 @@ import type {CheckoutRecord,ActionRecord} from '../../src/server/store/db.ts';
 import {createAuth} from '../../src/server/flint/auth.ts';
 import {PaymentEngine,acceptedAllocation,approvalMatches,collectionKind,resolvesJob} from '../../src/server/payments/engine.ts';
 import type {PayInput} from '../../src/server/payments/engine.ts';
+import {projectClientAction} from '../../src/server/flint/projection.ts';
 import {nextStep} from '../../src/server/payments/next-step.ts';
 
 const money=(amount:string)=>({amount:amount as `${bigint}`,currency:'USD'});
@@ -201,5 +202,36 @@ test('URL action refusal continues the holding attempt with Stripe and a journal
     assert.equal(sent.length,2);assert.equal(sent[0]!.body.client_action_type,'url');
     assert.deepEqual(sent[1]!.body,{action:'resume',order_payment_attempt_id:current.active_payment_attempt!.order_payment_attempt_id,client_action_type:'stripe'});
     assert.equal(sent[1]!.key,sent[0]!.key+'-stripe');assert.equal('payment_source'in sent[1]!.body,false);
+  }finally{store.close();}
+});
+
+for(const recover of ['status','pay'] as const)test(`Stripe fallback survives a read failure and recovers through ${recover}`,async()=>{
+  const store=new Store(':memory:');try{
+    const row=record(store);let current=order(),failRead=false;
+    const sent:{body:PayOrderRequestInput;key?:string}[]=[];
+    const client={orders:{get:async()=>{if(failRead){failRead=false;throw new Error('read failed after refusal');}return current;},pay:async(_id:string,body:PayOrderRequestInput,options:RequestOptions)=>{
+      sent.push({body,key:options.idempotencyKey});
+      if(sent.length===1){
+        current={...current,active_payment_attempt:{...attempt('requires_action',true),pending_actions:[]}};failRead=true;
+        throw new errors.ConflictError('URL unsupported',{status:409,code:'ACTION_NOT_ALLOWED',outcome:'response',details:[{code:'ACTION_NOT_ALLOWED',message:'URL unsupported',reason:'provider_action_unsupported'}]});
+      }
+      const pending={...attempt('requires_action',true),pending_actions:[{pending_action_id:'action_example',client_action:{type:'stripe',stripe:{publishable_key:'pk_example',payment_intent:{client_secret:'pi_example_secret',stripe_js_call:'handle_next_action'}}}}]} as unknown as OrderPaymentAttempt;
+      current={...current,active_payment_attempt:pending};return {order:current,order_payment_attempt:pending};
+    }}} as unknown as Client;
+    let engine=new PaymentEngine(client,createAuth('fixture'),store);
+    const job=engine.job(row,'pay',{action:'pay',client_action_type:'url',payment_source:{credential_type:'stripe_confirmation_token',stripe:{confirmation_token:'ctoken_example'}}});
+    await assert.rejects(()=>engine.execute(row,job,()=>{}),/read failed after refusal/);
+    // A fresh engine sees the durable intent, and ordinary reconciliation cannot discard it.
+    engine=new PaymentEngine(client,createAuth('fixture'),store);
+    assert.equal((await engine.reconcile(engine.record(row.checkout_ref))).unknown,true);
+    assert.ok(engine.unresolved(row)?.body);
+    const result=recover==='status'?await engine.status(row.checkout_ref):await engine.start(row.checkout_ref,input());
+    assert.equal(result.unknown,false);assert.equal(nextStep(result.attempt),'authenticate');
+    assert.equal(projectClientAction(result.attempt?.pending_actions?.[0])?.type,'stripe');
+    assert.equal(sent.length,2);
+    assert.deepEqual(sent[1]!.body,{action:'resume',order_payment_attempt_id:result.attempt!.order_payment_attempt_id,client_action_type:'stripe'});
+    assert.equal(sent[1]!.key,`${sent[0]!.key}-stripe`);
+    assert.equal(engine.unresolved(row),undefined);
+    await engine.start(row.checkout_ref,input());assert.equal(sent.length,2);
   }finally{store.close();}
 });
