@@ -37,9 +37,9 @@ export function invoicesPage(ctx: RenderContext<InvoicesData>): Html {
           return html`<tr data-testid="ac-invoice-row-${invoice.invoice_id}">
             <th scope="row" data-label="${columns.invoice}"><a href="${path('/invoices', invoice.invoice_id)}">${fill(invoicesCopy.number, { number: invoice.invoice_number ?? invoice.invoice_id })}</a></th>
             <td data-label="${columns.issued}">${timeEl(invoice.issued_at, ctx)}</td>
-            <td data-label="${columns.due}">${timeEl(invoice.due_at, ctx)}</td>
+            <td data-label="${columns.due}">${timeEl(invoice.due_date, ctx)}</td>
             <td data-label="${columns.status}">${badge(status.label, status.tone, { 'data-state': status.state })}</td>
-            <td data-label="${columns.amount}" class="num">${money(invoice.outstanding_money)}</td>
+            <td data-label="${columns.amount}" class="num">${money(invoice.settlement_amounts.outstanding_money)}</td>
           </tr>`;
         })}</tbody>
       </table>
@@ -60,9 +60,9 @@ export function invoicePage(ctx: RenderContext<InvoiceData>): Html {
   const status = invoiceStatusView(invoice, isProcessing);
   const state = closed ? 'void_or_uncollectible' : status.state;
   const payAction = availableAction(invoice.buyer_actions, 'pay');
-  const dueNow = !isZero(invoice.currently_due_money) ? invoice.currently_due_money : invoice.outstanding_money;
+  const dueNow = !isZero(invoice.settlement_amounts.currently_due_money) ? invoice.settlement_amounts.currently_due_money : invoice.settlement_amounts.outstanding_money;
   const snapshot = invoice.snapshot;
-  const pricing = snapshot?.pricing_amounts;
+  const pricing = invoice.pricing_amounts;
   const number = invoice.invoice_number ?? invoice.invoice_id;
   const waiting = Boolean(awaiting_payment) && invoice.status !== 'paid' && !closed;
 
@@ -72,9 +72,9 @@ export function invoicePage(ctx: RenderContext<InvoiceData>): Html {
     ...(pricing && !isZero(pricing.charge_money) ? [{ label: 'Charges', value: money(pricing.charge_money) }] : []),
     ...(pricing ? [{ label: 'Tax', value: money(pricing.tax_money) }] : []),
     ...(pricing ? [{ label: invoicesCopy.total, value: money(pricing.total_money), strong: true }] : []),
-    ...(!isZero(invoice.credit_money) ? [{ label: 'Credit applied', value: money(invoice.credit_money) }] : []),
-    { label: invoicesCopy.paidSoFar, value: money(invoice.paid_money, { testid: 'ac-invoice-paid' }) },
-    { label: invoicesCopy.amountDue, value: money(invoice.outstanding_money, { testid: 'ac-invoice-outstanding' }), strong: true },
+    ...(!isZero(invoice.settlement_amounts.credited_money) ? [{ label: 'Credit applied', value: money(invoice.settlement_amounts.credited_money) }] : []),
+    { label: invoicesCopy.paidSoFar, value: money(invoice.settlement_amounts.paid_money, { testid: 'ac-invoice-paid' }) },
+    { label: invoicesCopy.amountDue, value: money(invoice.settlement_amounts.outstanding_money, { testid: 'ac-invoice-outstanding' }), strong: true },
   ]);
 
   const items = snapshot?.line_items?.length
@@ -104,7 +104,7 @@ export function invoicePage(ctx: RenderContext<InvoiceData>): Html {
         : '';
 
   const main = html`${pageHeader(fill(invoicesCopy.number, { number }), {
-    subtitle: [invoice.issued_at ? fill(invoicesCopy.issued, { date: fmt.date(invoice.issued_at) }) : '', invoice.due_at ? fill(invoicesCopy.due, { date: fmt.date(invoice.due_at) }) : ''].filter(Boolean).join('. '),
+    subtitle: [invoice.issued_at ? fill(invoicesCopy.issued, { date: fmt.date(invoice.issued_at) }) : '', invoice.due_date ? fill(invoicesCopy.due, { date: fmt.date(invoice.due_date) }) : ''].filter(Boolean).join('. '),
     testid: 'ac-invoice-title',
   })}
     <div class="status-line" data-invoice-id="${invoice.invoice_id}">

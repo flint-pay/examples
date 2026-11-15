@@ -186,10 +186,10 @@ export class FakeCheckout {
 
   private initScenario() {
     const s = this.scenario;
-    const stripePending = (kind: 'payment_intent' | 'setup_intent') => ({
+    const stripePending = (kind: 'payment_intent' | 'setup_intent') => ({expires_at:'2099-01-01T00:00:00Z',
       pending_action_id: 'pa_fixture_1',
       action_type: 'handle_next_action',
-      client_action: { stripe: { publishable_key: 'pk_test_fixture', account_id: 'acct_fixture', [kind]: { client_secret: 'pi_fixture_secret_fixture', stripe_js_call: 'handle_next_action' } } },
+      client_action: { type:'stripe',stripe: { publishable_key: 'pk_test_fixture', account_id: 'acct_fixture', [kind]: { client_secret: 'pi_fixture_secret_fixture', stripe_js_call: 'handle_next_action' } } },
     });
     if (s === 'taxset') this.billing = { line1: '1 Cedar St', city: 'Austin', state: 'TX', postal_code: '78701', country: 'US' };
     if (s === 'expired') this.session.status = 'expired';
@@ -236,7 +236,7 @@ export class FakeCheckout {
     this.seq += 1;
     // Attempt legs carry no source type. The order's payment intents do, matched by id.
     this.order.payment_intents = extra.selected ? [{ payment_intent_id: `pi_fixture_${this.seq}`, status, payment_source: { type: extra.selected } }] : [];
-    return {
+    return {order_id:'ord_example',supported_actions:[],
       order_payment_attempt_id: `opa_fixture_${this.seq}`,
       status,
       mode: 'payment',
@@ -334,7 +334,7 @@ export class FakeCheckout {
       o.gift_cards = [];
       o.gift_card_estimate = null;
     }
-    o.version = String(Number(o.version ?? 3) + 0);
+    o.version = Number(o.version ?? 3);
   }
 
   // ----- Projection -----
@@ -404,7 +404,7 @@ export class FakeCheckout {
     const pending = attempt?.status === 'requires_action' ? attempt.pending_actions?.[0] : undefined;
     return {
       status: 200,
-      body: { state: this.project(), next: this.nextStep(), client_action: pending?.client_action?.stripe, pending_action_id: pending?.pending_action_id, ...extra },
+      body: {expires_at:'2099-01-01T00:00:00Z', state: this.project(), next: this.nextStep(), client_action: pending?.client_action?.stripe, pending_action_id: pending?.pending_action_id, ...extra },
     };
   }
 
@@ -565,7 +565,7 @@ export class FakeCheckout {
     // A ZIP code the tax service cannot place, so the page shows the error and keeps the form.
     if (body.postal_code === '00000') return fail(422, 'validation', 'TAX_LOCATION_INVALID', 'generic_error', this.project());
     this.billing = body;
-    this.order.version = String(Number(this.order.version ?? 3) + 1);
+    this.order.version = Number(this.order.version ?? 3)+1;
     this.recalc();
     return this.ok();
   }
@@ -750,7 +750,7 @@ export class FakeCheckout {
         this.pendingBehavior = behavior;
         this.attempt = this.makeAttempt('requires_action', {
           is_resumable: true,
-          pending_actions: [{ pending_action_id: `pa_fixture_${++this.seq}`, action_type: 'handle_next_action', client_action: { stripe: { publishable_key: 'pk_test_fixture', account_id: 'acct_fixture', ...(kind === 'setup' ? { setup_intent: { client_secret: 'seti_fixture_secret_fixture', stripe_js_call: 'handle_next_action' } } : { payment_intent: { client_secret: 'pi_fixture_secret_fixture', stripe_js_call: 'handle_next_action' } }) } } }],
+          pending_actions: [{expires_at:'2099-01-01T00:00:00Z', pending_action_id: `pa_fixture_${++this.seq}`, action_type: 'handle_next_action', client_action: { type:'stripe',stripe: { publishable_key: 'pk_test_fixture', account_id: 'acct_fixture', ...(kind === 'setup' ? { setup_intent: { client_secret: 'seti_fixture_secret_fixture', stripe_js_call: 'handle_next_action' } } : { payment_intent: { client_secret: 'pi_fixture_secret_fixture', stripe_js_call: 'handle_next_action' } }) } } }],
         });
         return this.paymentReply();
       case 'lostsend':
@@ -792,7 +792,7 @@ export class FakeCheckout {
       this.attempt = this.makeAttempt('requires_action', {
         is_resumable: true,
         selected: 'affirm',
-        pending_actions: [{ pending_action_id: `pa_fixture_${++this.seq}`, action_type: 'handle_next_action', client_action: { stripe: { publishable_key: 'pk_test_fixture', account_id: 'acct_fixture', payment_intent: { client_secret: 'pi_fixture_secret_fixture', stripe_js_call: 'handle_next_action' } } } }],
+        pending_actions: [{expires_at:'2099-01-01T00:00:00Z', pending_action_id: `pa_fixture_${++this.seq}`, action_type: 'handle_next_action', client_action: { type:'stripe',stripe: { publishable_key: 'pk_test_fixture', account_id: 'acct_fixture', payment_intent: { client_secret: 'pi_fixture_secret_fixture', stripe_js_call: 'handle_next_action' } } } }],
       });
     } else this.markPaid();
     return this.paymentReply();

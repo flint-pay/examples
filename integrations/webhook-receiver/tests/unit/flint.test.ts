@@ -5,10 +5,10 @@ import { createAuth, preflight } from '../../src/flint.ts';
 
 test('merchant preflight preserves sandbox response header guards without requiring payment readiness', async () => {
   const auth = createAuth('flint_test_unit');
-  const run = (headers: Record<string, string>, guard?: string) => preflight({ merchants: {
-    getWithResponse: async (params: unknown, options: unknown) => {
+  const run = (headers: Record<string, string>, guard?: string) => preflight({ merchant: {
+    get: async (params: unknown, options: unknown) => {
       assert.equal(params, undefined); assert.deepEqual(options, auth.merchant());
-      return { body: { data: { readiness: { capabilities: [] } } }, meta: { headers } };
+      return Object.defineProperty({ readiness: { capabilities: [] } },'lastResponse',{value:{ headers },configurable:true});
     },
   } } as unknown as Client, auth, guard);
   assert.deepEqual(await run({ 'flint-mode': 'test', 'flint-sandbox-id': 'test_UNIT' }, 'test_UNIT'), { sandboxId: 'test_UNIT' });

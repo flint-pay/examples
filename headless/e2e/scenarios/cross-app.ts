@@ -11,7 +11,7 @@ import { checkoutRoot } from '../support/private-files.ts';
 import { syncAppAudit, revocationCheckpoint, assertFreshRevocation, currentAppFamily } from '../support/audit-feed.ts';
 
 export async function buyerClient(d: Driver, customerId: string, sandbox: 'A' | 'B' = 'A'): Promise<Client> {
-  const step = { name: `buyer-${customerId.replace(/[^a-zA-Z0-9_-]/g, '').slice(-40)}`, sandbox, operation: 'customerSessions.create', args: [{ customer_id: customerId, expires_in_seconds: '300' }], creates: [{ path: 'customer_session_id', type: 'customer_session', cleanup: 'customer_session', reviewAt: new Date(Date.now() + 3600_000).toISOString() }], purpose: 'public-buyer-assertions' };
+  const step = { name: `buyer-${customerId.replace(/[^a-zA-Z0-9_-]/g, '').slice(-40)}`, sandbox, operation: 'customerSessions.create', args: [{ customer_id: customerId, expires_in_seconds: 300 }], creates: [{ path: 'customer_session_id', type: 'customer_session', cleanup: 'customer_session', reviewAt: new Date(Date.now() + 3600_000).toISOString() }], purpose: 'public-buyer-assertions' };
   const response = await d.operator.execute(step);
   return new Client({ baseUrl: d.config.apiOrigin, customerToken: response.data.secret, transport: pinnedFetch(), maxAttempts: 1 });
 }
@@ -34,11 +34,11 @@ export const crossApp: Record<string, Scenario> = {
     const b = d.operator.clients.clients.B;
     await notFound(b.orders.get(order)); await notFound(b.customers.get(d.fixtures.buyers.b1.customerId)); await notFound(b.invoices.get(invoice));
     const buyer = await buyerClient(d, d.fixtures.buyers.b1b.customerId, 'B'); await notFound(buyer.me.getOrder(order));
-    const key = `fx-${d.config.run}-same-key-two-sandboxes`, args = [{ external_reference_id: key, line_items: [{ type: 'custom' as const, name: 'Isolation acceptance service', quantity: '1' as const, unit_price_money: { amount: '100' as const, currency: 'USD' }, fulfillment: { requirement: 'none' as const }, tax: { taxable: true } }] }];
+    const key = `fx-${d.config.run}-same-key-two-sandboxes`, args = [{ external_reference_id: key, line_items: [{ type: 'custom' as const, name: 'Isolation acceptance service', quantity: 1, unit_price_money: { amount: '100' as const, currency: 'USD' }, fulfillment: { requirement: 'none' as const }, tax: { taxable: true } }] }];
     const ids: string[] = [];
     for (const sandbox of ['A', 'B'] as const) {
       const result = await d.operator.ledger.action('cross-sandbox-key', sandbox, 'orders.create', args, async durableKey => {
-        const c = await d.operator.clients.writable(sandbox); const r = await c.orders.createWithResponse(args[0], { idempotencyKey: durableKey }); return { data: r.body.data, requestId: r.meta.requestId };
+        const c = await d.operator.clients.writable(sandbox); const r = await c.orders.create(args[0], { idempotencyKey: durableKey }); return { data: r, requestId: r.lastResponse.requestId };
       }, async response => { await d.trackOrder(sandbox, response.data.order_id); }, key);
       ids.push(result.data.order_id);
     }
@@ -54,7 +54,7 @@ export const crossApp: Record<string, Scenario> = {
     invariant(sameEmailCustomer && proof, 'SAME_EMAIL_B_PUBLIC_PROOF_REQUIRED');
     const c = await d.operator.clients.writable('B'); invariant((await c.customers.get(sameEmailCustomer)).email === d.fixtures.buyers.b1.email, 'SAME_EMAIL_FIXTURE_MISMATCH');
     const result = await d.operator.ledger.action('link-same-email-b', 'B', 'customers.linkGuestPurchases', [sameEmailCustomer, proof], k => c.customers.linkGuestPurchases(sameEmailCustomer, { customer_verification_id: proof }, { idempotencyKey: k }), async () => {});
-    invariant(result.linked_order_count === '0', 'CROSS_SANDBOX_GUEST_LINKED'); const a = await d.operator.clients.clients.A.orders.get(d.created.get('guestAchOrder')!); invariant(a.customer_id === d.fixtures.buyers.b1.customerId, 'SANDBOX_A_BINDING_CHANGED'); return ['SAME_EMAIL_GUEST_LINK_SANDBOX_ISOLATION'];
+    invariant(result.linked_order_count === 0, 'CROSS_SANDBOX_GUEST_LINKED'); const a = await d.operator.clients.clients.A.orders.get(d.created.get('guestAchOrder')!); invariant(a.customer_id === d.fixtures.buyers.b1.customerId, 'SANDBOX_A_BINDING_CHANGED'); return ['SAME_EMAIL_GUEST_LINK_SANDBOX_ISOLATION'];
   },
   'B-01': async d => {
     await d.guardCheck();

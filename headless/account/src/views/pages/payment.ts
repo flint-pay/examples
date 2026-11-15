@@ -149,11 +149,11 @@ function splitText(state: PaymentState): string {
 
 function invoiceSummary(summary: InvoicePaySummary, state: PaymentState | null, ctx: RenderContext): Html {
   const { invoice } = summary;
-  const due = state?.approved_outstanding_money ?? invoice.currently_due_money ?? invoice.outstanding_money;
+  const due = state?.approved_outstanding_money ?? invoice.settlement_amounts.currently_due_money ?? invoice.settlement_amounts.outstanding_money;
   return html`<h2>${pay.summaryInvoice}</h2>
     <dl class="facts" data-testid="ac-invoice-pay-summary">
       <div class="fact"><dt>${pay.invoiceNumber}</dt><dd data-testid="ac-invoice-pay-number">${invoice.invoice_number ?? invoice.invoice_id}</dd></div>
-      ${invoice.due_at ? html`<div class="fact"><dt>${pay.dueDate}</dt><dd>${timeEl(invoice.due_at, ctx)}</dd></div>` : ''}
+      ${invoice.due_date ? html`<div class="fact"><dt>${pay.dueDate}</dt><dd>${timeEl(invoice.due_date, ctx)}</dd></div>` : ''}
       <div class="fact fact-strong"><dt>${pay.amountDueNow}</dt><dd>${money(due, { testid: 'ac-invoice-pay-amount', className: 'money-large' })}</dd></div>
     </dl>
     <p><a href="${path('/invoices', invoice.invoice_id)}/pdf" data-testid="ac-invoice-pay-pdf">${pay.downloadPdf}</a></p>`;

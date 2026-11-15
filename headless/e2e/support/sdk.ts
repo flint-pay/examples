@@ -40,18 +40,18 @@ export class VerifiedClients {
   constructor(config: Config, fixtures: Fixtures) { this.config = config; this.fixtures = fixtures; this.clients = { A: client(config, 'A', this.requestIds), B: client(config, 'B', this.requestIds) }; this.appClients = { A: client(config, 'A', this.requestIds, 'app'), B: client(config, 'B', this.requestIds, 'app') }; }
   async verifyContext(sandbox: Sandbox): Promise<void> {
     pinApiOrigin(this.config.apiOrigin);
-    const context = await this.clients[sandbox].developer.getAuthContext();
-    const appContext = await this.appClients[sandbox].developer.getAuthContext();
+    const context = await this.clients[sandbox].authContext.get();
+    const appContext = await this.appClients[sandbox].authContext.get();
     const p = this.config.pins[sandbox];
-    invariant(appContext.environment === 'sandbox' && appContext.auth_type === 'api_key' && appContext.merchant_id === p.merchantId && appContext.sandbox_id === p.sandboxId, 'APP_CREDENTIAL_CONTEXT_MISMATCH');
-    invariant(!appContext.scopes.some(s => s === '*' || s === 'commerce.gift_cards.secrets.write'), 'APP_PRIVILEGED_GIFT_SCOPE_FORBIDDEN');
+    invariant(appContext.mode === 'test' && appContext.auth_type === 'api_key' && appContext.merchant_id === p.merchantId && appContext.sandbox_id === p.sandboxId, 'APP_CREDENTIAL_CONTEXT_MISMATCH');
+    invariant(!appContext.scopes?.some(s => s === '*' || s === 'commerce.gift_cards.secrets.write'), 'APP_PRIVILEGED_GIFT_SCOPE_FORBIDDEN');
     const readiness = this.fixtures.readiness[sandbox];
     invariant(readiness.mode === 'test' && readiness.merchantId === p.merchantId && readiness.sandboxId === p.sandboxId && readiness.providerId === p.providerId, 'PROVIDER_TUPLE_MISMATCH');
-    invariant(context.environment === 'sandbox' && context.auth_type === 'api_key' && context.merchant_id === p.merchantId && context.sandbox_id === p.sandboxId, 'CREDENTIAL_CONTEXT_MISMATCH');
+    invariant(context.mode === 'test' && context.auth_type === 'api_key' && context.merchant_id === p.merchantId && context.sandbox_id === p.sandboxId, 'CREDENTIAL_CONTEXT_MISMATCH');
   }
   async verify(sandbox: Sandbox): Promise<void> {
     await this.verifyContext(sandbox);
-    const merchant = await this.clients[sandbox].merchants.get();
+    const merchant = await this.clients[sandbox].merchant.get();
     const caps = merchant.readiness.capabilities.filter(c => c.domain === 'payments');
     const card = caps.find(c => c.capability === 'accept_card_payments');
     invariant(card?.status === 'ready' && this.fixtures.readiness[sandbox].cards, 'PAYMENT_READINESS_CONTRADICTION');

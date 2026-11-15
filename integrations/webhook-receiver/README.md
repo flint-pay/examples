@@ -4,7 +4,7 @@ A small server that receives Flint webhooks the way a production integration sho
 
 The example acts on one event, `order.paid`, and records a fulfillment for the order. Replace that handler with your own work.
 
-This example uses the `@flintpay/node` 3.0.0 beta, so names and shapes can still change. It runs in test mode only.
+This example uses the `@flintpay/node` 8.0.0-beta.3, so names and shapes can still change. It runs in test mode only.
 
 ## What it shows
 

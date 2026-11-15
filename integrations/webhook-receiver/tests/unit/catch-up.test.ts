@@ -1,3 +1,4 @@
+import {errors} from '@flintpay/node';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { SdkError } from '@flintpay/node';
@@ -15,7 +16,7 @@ const listed = (id: string): WebhookEvent => ({
   webhook_event_id: id,
   event_type: 'order.paid',
   created_at: '2026-10-15T12:00:00Z',
-  api_version: '2026-09-07',
+  event_source:'merchant',sandbox_id:'sandbox_example',api_version: '2026-09-07',
   test: false,
   resource_type: 'order',
 }) as WebhookEvent;
@@ -119,7 +120,7 @@ test('a resend reuses its saved idempotency key when the answer was lost, and ge
       webhookDeliveries: {
         resend: async (_id: string, _params: unknown, options: { idempotencyKey: string }) => {
           keys.push(options.idempotencyKey);
-          if (lose) throw new SdkError('transport', 'socket hang up', 'unknown', true);
+          if (lose) throw new errors.ConnectionError('socket hang up',{outcome:'unknown',retryAllowed:true});
           return { webhook_event_id: 'whev_example_one', attempt_number: 2, attempt_status: 'delivered', delivery_status: 'delivered' };
         },
       },

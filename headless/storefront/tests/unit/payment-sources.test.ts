@@ -1,3 +1,4 @@
+import {errors} from '@flintpay/node';
 import test from 'node:test';
 import type {TestContext} from 'node:test';
 import assert from 'node:assert/strict';
@@ -22,8 +23,8 @@ type Call={id:string;expand?:string[];authMode:string;apiKey?:string};
 function fixture(t:TestContext,type='affirm'){
   const store=new Store(':memory:'),identity=new IdentityStore(':memory:');
   const config=readConfig({FLINT_API_KEY:MERCHANT_KEY,FLINT_API_BASE_URL:'https://api.staging.withflintpay.com',APP_ORIGIN:'http://localhost:4100',PORT:'4100'});
-  const order={order_id:'ord_fixture',status:'open',payment_status:'unpaid',version:'1',line_items:[],payment_intent_ids:['pi_leg'],settlement_amounts:{outstanding_money:money,paid_money:{amount:'0',currency:'USD'}},
-    active_payment_attempt:{order_payment_attempt_id:'opa_fixture',status:type==='affirm'?'requires_action':'processing',is_resumable:type==='affirm',pending_actions:[],payment_intents:[{payment_intent_id:'pi_leg',status:type==='affirm'?'requires_action':'processing',amount_money:money}]}} as unknown as Order;
+  const order={order_id:'ord_fixture',status:'open',payment_status:'unpaid',version:1,line_items:[],payment_intent_ids:['pi_leg'],settlement_amounts:{outstanding_money:money,paid_money:{amount:'0',currency:'USD'}},
+    active_payment_attempt:{order_id:'ord_example',supported_actions:[],order_payment_attempt_id:'opa_fixture',status:type==='affirm'?'requires_action':'processing',is_resumable:type==='affirm',pending_actions:[],payment_intents:[{payment_intent_id:'pi_leg',status:type==='affirm'?'requires_action':'processing',amount_money:money}]}} as unknown as Order;
   const session={checkout_session_id:'cs_fixture',order_id:order.order_id,status:'open',page_origin:config.appOrigin} as CheckoutSession;
   const calls:Call[]=[];
   const state:{expansion?:Record<string,unknown>;fail?:Error}={};
@@ -32,7 +33,7 @@ function fixture(t:TestContext,type='affirm'){
     orders:{get:async(id:string,params:{expand?:string[]}|undefined,options:RequestOptions)=>{
       const authMode=(options as {checkoutToken?:string}).checkoutToken?'checkout':'merchant';calls.push({id,expand:params?.expand,authMode,apiKey:(options as {apiKey?:string}).apiKey});
       if(!params?.expand)return order;
-      if(authMode==='checkout')throw new SdkError('validation','Expansion refused','response',false,{status:400,headers:{},attempts:1,durationMs:1},'EXPANSION_NOT_ALLOWED');
+      if(authMode==='checkout')throw new errors.InvalidRequestError('Expansion refused',{outcome:'response',retryAllowed:false,...({status:400,headers:{},attempts:1,durationMs:1}),code:'EXPANSION_NOT_ALLOWED'});
       return {...order,order_id:'ord_fixture',customer_id:'cus_private',metadata:{internal:'x'},payment_intents:[expandedRow],...state.expansion};
     },getPaymentAttempt:async()=>order.active_payment_attempt},
     paymentIntents:{get:async(id:string,_params:unknown,options:RequestOptions)=>{
@@ -40,7 +41,7 @@ function fixture(t:TestContext,type='affirm'){
       if(state.fail)throw state.fail;
       return {...expandedRow,...state.expansion};
     }},
-    checkoutSessions:{get:async()=>session,getCurrentDeliverySelection:async()=>({})},
+    checkoutSessions:{get:async()=>session,},deliverySelections:{get:async()=>({})},
   } as unknown as Client;
   const auth=createAuth(config.apiKey),carts=new Carts(store,{} as Catalog);
   store.run('INSERT INTO checkouts(checkout_ref,session_hash,kind,order_id,checkout_session_id,checkout_auth_token,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)','chk_fixture',identity.createSession().session.session_hash,'order',order.order_id,session.checkout_session_id,'fixture checkout credential',Date.now(),Date.now());
@@ -83,7 +84,7 @@ test('no lookup is made when the order has no payment intents',async t=>{
 
 test('a failed lookup leaves the session read intact and logs only a safe code',async t=>{
   const f=fixture(t);
-  f.state.fail=new SdkError('server','GET https://api.staging.withflintpay.com/v1/orders/ord_fixture?expand=payment_intents with flint_test_SECRETVALUE','response',true,{status:503,headers:{authorization:'Bearer flint_test_SECRETVALUE'},attempts:1,durationMs:1},'EXPANSION_DEPENDENCY_UNAVAILABLE');
+  f.state.fail=new errors.ServerError('GET https://api.staging.withflintpay.com/v1/orders/ord_fixture?expand=payment_intents with flint_test_SECRETVALUE',{outcome:'response',retryAllowed:true,...({status:503,headers:{authorization:'Bearer flint_test_SECRETVALUE'},attempts:1,durationMs:1}),code:'EXPANSION_DEPENDENCY_UNAVAILABLE'});
   assert.equal(await f.engine.withPaymentSources(f.record(),f.order),f.order);
   f.state.fail=new Error('socket closed at https://api.staging.withflintpay.com flint_test_SECRETVALUE');
   assert.equal(await f.engine.withPaymentSources(f.record(),f.order),f.order);
@@ -117,7 +118,7 @@ test('a bank debit leg reaches bank processing through the same lookup',async t=
 });
 
 test('a failed lookup during a checkout read still loads the checkout as before',async t=>{
-  const f=fixture(t);f.state.fail=new SdkError('server','Dependency down','response',true,{status:503,headers:{},attempts:1,durationMs:1},'EXPANSION_DEPENDENCY_UNAVAILABLE');
+  const f=fixture(t);f.state.fail=new errors.ServerError('Dependency down',{outcome:'response',retryAllowed:true,...({status:503,headers:{},attempts:1,durationMs:1}),code:'EXPANSION_DEPENDENCY_UNAVAILABLE'});
   const read=await f.app.read('chk_fixture');
   assert.equal(read.order.payment_intents,undefined);assert.equal(f.engine.next(read.result),'authenticate');
 });

@@ -1,3 +1,4 @@
+import {errors} from '@flintpay/node';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {SdkError} from '@flintpay/node';
@@ -13,14 +14,14 @@ const origin='http://localhost:4100';
 const money=(amount:string)=>({amount:amount as `${bigint}`,currency:'USD'});
 // Tax that is not ready refuses the payment as a shared code; the refusal's reason and resource say which.
 const taxNotReady=()=>flintError(409,'ACTION_NOT_ALLOWED',{reason:'configuration_required',resource_type:'order'});
-const sdkError=(code:string,status:number)=>new SdkError('conflict','fixture rejection','response',false,{status,headers:{},attempts:1,durationMs:1},code);
+const sdkError=(code:string,status:number)=>new errors.ConflictError('fixture rejection',{outcome:'response',retryAllowed:false,...({status,headers:{},attempts:1,durationMs:1}),code:code});
 function fixture(){
-  const order={order_id:'fixture-order',status:'open',payment_status:'unpaid',version:'1',settlement_amounts:{outstanding_money:money('2400')},tax:{enabled:true,status:'calculated'},payment_collection:{stripe:{}}} as unknown as Order;
-  const session={checkout_session_id:'fixture-session',order_id:order.order_id,status:'open',buyer_fields:{require_email:true},delivery_selection_required:false} as CheckoutSession;
+  const order={order_id:'fixture-order',status:'open',payment_status:'unpaid',version:1,settlement_amounts:{outstanding_money:money('2400')},tax:{enabled:true,status:'calculated'},payment_collection:{stripe:{}}} as unknown as Order;
+  const session={checkout_session_id:'fixture-session',order_id:order.order_id,status:'open',buyer_fields:{require_email:true as const},delivery_selection_required:false} as CheckoutSession;
   const remote={pays:[] as {body:unknown;key:string|undefined}[],updates:[] as {body:unknown;key:string|undefined;authMode:unknown}[],staleTax:true,refreshedTotal:'2400',refreshError:undefined as SdkError|undefined,refreshLosesResponse:false};
   const client={
     orders:{get:async()=>order,
-      pay:async(request:{body:unknown},options:RequestOptions<'checkout'>)=>{
+      pay:async(orderId:string, body:any,options:RequestOptions<'checkout'>)=>{const request={order_id:orderId,body};
         remote.pays.push({body:structuredClone(request.body),key:options.idempotencyKey});
         if(remote.staleTax)throw taxNotReady();
         return {order,order_payment_attempt:{order_payment_attempt_id:'fixture-attempt',status:'succeeded'}};
@@ -29,11 +30,11 @@ function fixture(){
         remote.updates.push({body:structuredClone(body),key:options.idempotencyKey,authMode:options.checkoutToken?'checkout':undefined});
         if(remote.refreshError)throw remote.refreshError;
         remote.staleTax=false;order.settlement_amounts.outstanding_money=money(remote.refreshedTotal);
-        if(remote.refreshLosesResponse)throw new SdkError('transport','fixture lost response','unknown',true);
+        if(remote.refreshLosesResponse)throw new errors.ConnectionError('fixture lost response',{outcome:'unknown',retryAllowed:true});
         return order;
       },
       getPaymentAttempt:async()=>({order_payment_attempt_id:'fixture-attempt',status:'succeeded'})},
-    checkoutSessions:{get:async()=>session,getCurrentDeliverySelection:async()=>({delivery_selection:undefined})},
+    checkoutSessions:{get:async()=>session,},deliverySelections:{get:async()=>(undefined)},
   } as unknown as Client;
   const config:Config={apiKey:'local-tax-fixture',apiBaseUrl:'https://api.staging.withflintpay.com',giftChallengeOrigin:'https://checkout.staging.withflintpay.com',appOrigin:origin,port:4100,identityDatabasePath:':memory:',appDatabasePath:':memory:',cookieName:'tax_session',checkoutTtl:3600,storeName:'Example store'};
   const runtime=createApp({config,client,preflight:{sandboxId:'fixture-sandbox',cards:'enabled'},store:new Store(':memory:'),identity:new IdentityStore(':memory:')});

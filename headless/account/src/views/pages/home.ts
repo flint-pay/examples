@@ -56,7 +56,7 @@ export function attentionItems(data: HomeData): AttentionItem[] {
           id: invoice.invoice_id,
           href: action.is_available ? `${path('/invoices', invoice.invoice_id)}/pay` : path('/invoices', invoice.invoice_id),
           label: labelFor('pay', invoice.invoice_number ?? invoice.invoice_id),
-          due_at: action.due_at ?? invoice.due_at,
+          due_at: action.due_at ?? invoice.due_date,
         });
       }
     }
@@ -106,9 +106,9 @@ function invoiceRow(invoice: BuyerInvoice, ctx: RenderContext): Html {
   return html`<li class="row" data-testid="ac-home-invoice-${invoice.invoice_id}">
     <a class="row-link" href="${path('/invoices', invoice.invoice_id)}">
       <span class="row-title">${fill('Invoice {number}', { number: invoice.invoice_number ?? invoice.invoice_id })}</span>
-      ${invoice.due_at ? html`<span class="row-meta">Due ${fmt.date(invoice.due_at)}</span>` : ''}
+      ${invoice.due_date ? html`<span class="row-meta">Due ${fmt.date(invoice.due_date)}</span>` : ''}
     </a>
-    <span class="row-end">${badge(status.label, status.tone, { 'data-state': status.state })} ${money(invoice.outstanding_money)}</span>
+    <span class="row-end">${badge(status.label, status.tone, { 'data-state': status.state })} ${money(invoice.settlement_amounts.outstanding_money)}</span>
   </li>`;
 }
 

@@ -478,11 +478,11 @@ test('Account invoice and return submit jobs admit ephemeral provider authentica
     const url = `${verificationOrigin}/${resource}/unit-ref/pay/submit`;
     const secret = 'pi_PLACEHOLDER_secret_PLACEHOLDER';
     const allowed = await verificationGuard({ url });
-    allowed.browserResponse(JSON.stringify({ state: { attempt: { status: 'requires_action' } }, client_action: { client_secret: secret } }));
+    allowed.browserResponse(JSON.stringify({ state: { attempt: { status: 'requires_action' } }, client_action: {type:'stripe',expiresAt:'2099-01-01T00:00:00Z',stripe:{payment_intent:{client_secret:secret}}} }));
     await allowed.inspect(); allowed.scanner.assertClean();
     for (const status of ['processing', 'succeeded', 'requires_payment_method']) {
       const rejected = await verificationGuard({ url });
-      rejected.browserResponse(JSON.stringify({ state: { attempt: { status } }, client_action: { client_secret: secret } }));
+      rejected.browserResponse(JSON.stringify({ state: { attempt: { status } }, client_action: {type:'stripe',expiresAt:'2099-01-01T00:00:00Z',stripe:{payment_intent:{client_secret:secret}}} }));
       await assert.rejects(rejected.inspect, { code: 'CREDENTIAL_LEAK' });
     }
     const authority = await verificationGuard({ url });
@@ -493,5 +493,18 @@ test('Account invoice and return submit jobs admit ephemeral provider authentica
     const rejected = await verificationGuard({ url: verificationOrigin + path });
     rejected.browserResponse(JSON.stringify({ state: { attempt: { status: 'requires_action' } }, client_secret: 'pi_PLACEHOLDER_secret_PLACEHOLDER' }));
     await assert.rejects(rejected.inspect, { code: 'CREDENTIAL_LEAK' });
+  }
+});
+
+
+test('URL payment actions carry no provider secret, including mixed or unexpected branches',async()=>{
+  const url=`${verificationOrigin}/invoices/unit-ref/pay/submit`;
+  const safe=await verificationGuard({url});
+  safe.browserResponse(JSON.stringify({state:{attempt:{status:'requires_action'}},client_action:{type:'url',url:'https://payment-return.example.invalid/action/example',expiresAt:'2099-01-01T00:00:00Z'}}));
+  await safe.inspect();safe.scanner.assertClean();
+  for(const action of [{type:'url',stripe:{client_secret:'pi_example_secret_example'}},{type:'unknown',stripe:{client_secret:'pi_example_secret_example'}},{type:'stripe',stripe:{client_secret:'pi_example_secret_example'},extra:'pi_other_secret_example'}]){
+    const rejected=await verificationGuard({url});
+    rejected.browserResponse(JSON.stringify({state:{attempt:{status:'requires_action'}},client_action:action}));
+    await assert.rejects(rejected.inspect,{code:'CREDENTIAL_LEAK'});
   }
 });

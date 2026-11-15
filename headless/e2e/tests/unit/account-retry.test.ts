@@ -38,16 +38,16 @@ test('both recognized conflicts fail without exactly one new retry matching the 
 });
 
 function settled() {
-  const retry: SubscriptionPaymentRetry = { ...identity, idempotency_key: 'UNIT_EXAMPLE_KEY', status: 'succeeded', order_id: 'ord_UNIT_EXAMPLE', order_payment_attempt_id: 'attempt_UNIT_EXAMPLE', created_at: '2000-01-01T00:00:00Z', updated_at: '2000-01-01T00:00:00Z' };
+  const retry: SubscriptionPaymentRetry = { ...identity, payment_intent_id:'pi_UNIT_EXAMPLE',idempotency_key: 'UNIT_EXAMPLE_KEY', status: 'succeeded', order_id: 'ord_UNIT_EXAMPLE', created_at: '2000-01-01T00:00:00Z', updated_at: '2000-01-01T00:00:00Z' };
   const order = { order_id: retry.order_id, subscription_id: subscriptionId, customer_id: customerId, payment_status: 'paid', settlement_amounts: { outstanding_money: { amount: '0', currency: 'USD' } } };
-  const attempts = [{ order_payment_attempt_id: retry.order_payment_attempt_id, status: 'succeeded', payment_intents: [{ payment_intent_id: 'pi_UNIT_EXAMPLE', status: 'succeeded' }] }];
+  const attempts = [{ order_id:retry.order_id,order_payment_attempt_id:'attempt_UNIT_EXAMPLE', status: 'succeeded', payment_intents: [{ payment_intent_id: 'pi_UNIT_EXAMPLE', status: 'succeeded' }] }];
   return { retry, order, attempts };
 }
 
 test('retry settlement requires the exact retry, subscription, customer, order and succeeded attempt with one charge', () => {
   const { retry, order, attempts } = settled();
   assertRetrySettlement(retry, subscriptionId, retryId, customerId, order, attempts);
-  for (const change of [{ subscription_id: 'sub_UNIT_FOREIGN' }, { subscription_payment_retry_id: 'retry_UNIT_OTHER' }, { status: 'processing' }, { order_id: undefined }, { order_payment_attempt_id: undefined }, { order_payment_attempt_id: 'attempt_UNIT_OTHER' }]) {
+  for (const change of [{ subscription_id: 'sub_UNIT_FOREIGN' }, { subscription_payment_retry_id: 'retry_UNIT_OTHER' }, { status: 'processing' }, { order_id: undefined }, {payment_intent_id:undefined},{payment_intent_id:'pi_UNIT_OTHER'}]) {
     assert.throws(() => assertRetrySettlement({ ...retry, ...change }, subscriptionId, retryId, customerId, order, attempts));
   }
   for (const change of [{ order_id: 'ord_UNIT_OTHER' }, { subscription_id: 'sub_UNIT_FOREIGN' }, { customer_id: 'cus_UNIT_FOREIGN' }, { payment_status: 'unpaid' }, { settlement_amounts: { outstanding_money: { amount: '1', currency: 'USD' } } }]) {

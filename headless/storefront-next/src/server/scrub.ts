@@ -1,5 +1,5 @@
 // Keeps credentials and provider secrets out of the HTML document. The checkout
-// page embeds the buyer-safe state as JSON for public/js/checkout.js. Provider
+// page embeds the buyer-safe state as JSON for public/js/checkout.js. Action URLs and Stripe
 // client secrets only travel in the JSON response of the pay, resume, and
 // attempt jobs, never in a page.
 

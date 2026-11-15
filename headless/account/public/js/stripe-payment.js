@@ -377,7 +377,7 @@ async function run(root, boot) {
       return false;
     }
     teardownElements();
-    stripe = createStripe(StripeFactory, guidance.publishable_key, guidance.account_id);
+    stripe = createStripe(StripeFactory, guidance.publishable_key, guidance.account_id ?? undefined);
     const types = guidance.elements.payment_method_types.filter(
       (/** @type {string} */ type) => !['apple_pay', 'google_pay'].includes(type) && !(dropAffirm && type === 'affirm'),
     );

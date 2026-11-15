@@ -14,7 +14,7 @@ const DESCRIPTION = 'Flint examples webhook receiver';
 
 export type Step =
   | { kind: 'create'; url: string; events: string[] }
-  | { kind: 'update'; changes: { url?: string; enabled_events?: string[]; status?: 'active'; expected_version?: `${bigint}` } }
+  | { kind: 'update'; changes: { url?: string; enabled_events?: string[]; status?: 'active'; expected_version?: number } }
   | { kind: 'rotate' }
   | { kind: 'save_endpoint_id' }
   | { kind: 'needs_secret' };
@@ -27,7 +27,7 @@ export function planSetup(input: { endpoint?: WebhookEndpoint; url: string; save
   const { endpoint, url } = input;
   if (!endpoint) return [{ kind: 'create', url, events: [...handledEventTypes] }];
   const steps: Step[] = [];
-  const changes: { url?: string; enabled_events?: string[]; status?: 'active'; expected_version?: `${bigint}` } = {};
+  const changes: { url?: string; enabled_events?: string[]; status?: 'active'; expected_version?: number } = {};
   if (endpoint.url !== url) changes.url = url;
   // A wildcard means every event. Otherwise add the types this app handles.
   const missing = handledEventTypes.filter((type) => !endpoint.enabled_events.includes('*') && !endpoint.enabled_events.includes(type));
@@ -122,7 +122,7 @@ async function main() {
       // Keyed by the current secret: if the answer is lost, running again replays this rotation instead of starting another.
       const current = config.webhookSecrets[0];
       const key = current ? `examples-webhook-rotate-${createHash('sha256').update(current).digest('hex').slice(0, 24)}` : `examples-webhook-rotate-${randomUUID()}`;
-      const rotated = await client.webhookEndpoints.rotateWebhookSecret(endpointId!, {}, auth.merchant(key));
+      const rotated = await client.webhookEndpoints.rotateSecret(endpointId!, {}, auth.merchant(key));
       if (!rotated.secret) throw new Error('Rotation returned no signing secret. The saved secret was kept.');
       updateEnvFile(ENV_PATH, { FLINT_WEBHOOK_SECRET: rotated.secret, FLINT_WEBHOOK_PREVIOUS_SECRET: current ?? null });
       console.info('Rotated the signing secret and saved it to .env. Remove FLINT_WEBHOOK_PREVIOUS_SECRET after 24 hours.');

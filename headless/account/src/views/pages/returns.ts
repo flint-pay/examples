@@ -96,7 +96,7 @@ export function returnPage(ctx: RenderContext<ReturnData>): Html {
   const rows = [
     ...(!isZero(summary.returned_total_money) ? [{ label: returnsCopy.returned, value: money(summary.returned_total_money) }] : []),
     ...(!isZero(summary.replacement_total_money) ? [{ label: returnsCopy.replacement, value: money(summary.replacement_total_money) }] : []),
-    ...(!isZero(summary.credit_money) ? [{ label: returnsCopy.creditApplied, value: money(summary.credit_money) }] : []),
+    ...(!isZero(summary.credit_adjustment_money) ? [{ label: returnsCopy.creditApplied, value: money(summary.credit_adjustment_money) }] : []),
     ...(!isZero(summary.refunded_money) ? [{ label: returnsCopy.refunded, value: money(summary.refunded_money) }] : []),
     ...(!isZero(summary.due_from_buyer_money) ? [{ label: returnsCopy.balanceDue, value: money(summary.due_from_buyer_money, { testid: 'ac-return-balance' }), strong: true }] : []),
   ];

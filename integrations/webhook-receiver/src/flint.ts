@@ -36,8 +36,8 @@ export type Auth = ReturnType<typeof createAuth>;
 
 /** Confirms the key reaches a test sandbox, and the one in FLINT_SANDBOX_ID when it is set. */
 export async function preflight(client: Client, auth: Auth, sandboxGuard?: string): Promise<{ sandboxId: string }> {
-  const response = await client.merchants.getWithResponse(undefined, auth.merchant());
-  const headers = response.meta.headers;
+  const response = await client.merchant.get(undefined, auth.merchant());
+  const headers = response.lastResponse.headers;
   if (headers['flint-mode'] === 'live') throw new Error('Live API responses are refused');
   const sandboxId = headers['flint-sandbox-id'];
   if (!sandboxId || (sandboxGuard && sandboxGuard !== sandboxId)) throw new Error('Sandbox identity guard failed');
@@ -47,9 +47,9 @@ export async function preflight(client: Client, auth: Auth, sandboxGuard?: strin
 /** A short description of a failed Flint call that is safe to store and print: no bodies, no credentials. */
 export function describeError(error: unknown): string {
   if (error instanceof SdkError) {
-    const status = error.meta?.status ? ` ${error.meta.status}` : '';
-    const request = error.meta?.requestId ? ` (request ${error.meta.requestId})` : '';
-    return `${error.code ?? error.kind}${status}${request}`;
+    const status = error.status ? ` ${error.status}` : '';
+    const request = error.requestId ? ` (request ${error.requestId})` : '';
+    return `${error.code ?? error.name}${status}${request}`;
   }
   return error instanceof Error ? error.message : 'unknown error';
 }

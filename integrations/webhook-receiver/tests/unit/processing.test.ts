@@ -1,3 +1,4 @@
+import {errors} from '@flintpay/node';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { SdkError } from '@flintpay/node';
@@ -20,8 +21,8 @@ function recordOrderPaid(inbox: Inbox, id: string, orderId: string, now = Date.n
   inbox.record({ webhookEventId: id, eventType: 'order.paid', source: 'delivery', test: false, payload: JSON.stringify(event), process: true }, now);
 }
 
-const notFound = () => new SdkError('not_found', 'Order not found', 'response', false, { status: 404, headers: {}, attempts: 1, durationMs: 1 }, 'ORDER_NOT_FOUND');
-const unavailable = () => new SdkError('server', 'Unavailable', 'response', true, { status: 503, headers: {}, attempts: 3, durationMs: 1 }, 'UNAVAILABLE');
+const notFound = () => new errors.NotFoundError('Order not found',{outcome:'response',retryAllowed:false,...({ status: 404, headers: {}, attempts: 1, durationMs: 1 }),code:'ORDER_NOT_FOUND'});
+const unavailable = () => new errors.ServerError('Unavailable',{outcome:'response',retryAllowed:true,...({ status: 503, headers: {}, attempts: 3, durationMs: 1 }),code:'UNAVAILABLE'});
 
 test('order.paid reads the order again and records one fulfillment per order, whatever the number of events', async () => {
   const inbox = new Inbox(':memory:');

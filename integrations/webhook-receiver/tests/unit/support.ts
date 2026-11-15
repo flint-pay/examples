@@ -1,3 +1,4 @@
+import {webhookOrder} from './webhook-fixtures.ts';
 import { createHmac, randomBytes } from 'node:crypto';
 import { Client } from '@flintpay/node';
 import type { Envelope } from '../../src/events.ts';
@@ -9,8 +10,8 @@ export const newSecret = () => `whsec_${randomBytes(32).toString('base64')}`;
 export const sdk = () => new Client({ baseUrl: 'https://api.staging.withflintpay.com' });
 
 export function envelope(overrides: Partial<Envelope> & Record<string, unknown> = {}) {
-  return {
-    api_version: '2026-10-01',
+  return {test:false,
+    event_source:'merchant',sandbox_id:'sandbox_example',api_version: '2026-10-01',
     webhook_event_id: 'whev_example_one',
     event_type: 'order.paid',
     payload_version: 1,
@@ -18,7 +19,7 @@ export function envelope(overrides: Partial<Envelope> & Record<string, unknown> 
     merchant_id: 'mer_example',
     created_at: '2026-10-15T12:00:00Z',
     request: null,
-    data: { object: { order_id: 'ord_example_one' } },
+    data: { object: webhookOrder('ord_example_one') },
     ...overrides,
   };
 }

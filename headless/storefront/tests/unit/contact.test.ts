@@ -1,3 +1,4 @@
+import {errors} from '@flintpay/node';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {makeCheckoutBuyerContactRequest,SdkError} from '@flintpay/node';
@@ -13,19 +14,19 @@ const origin='http://localhost:4100';
 function fixture(){
   const money={amount:'2400',currency:'USD'};
   const remote={contact:{} as Contact,patches:[] as Contact[],quotes:0,error:undefined as SdkError|undefined};
-  const order={order_id:'fixture-order',status:'open',payment_status:'unpaid',version:'1',settlement_amounts:{outstanding_money:money},payment_collection:{stripe:{}}} as unknown as Order;
-  const session={checkout_session_id:'fixture-session',status:'open',buyer_fields:{require_email:true}} as unknown as CheckoutSession;
+  const order={order_id:'fixture-order',status:'open',payment_status:'unpaid',version:1,settlement_amounts:{outstanding_money:money},payment_collection:{stripe:{}}} as unknown as Order;
+  const session={checkout_session_id:'fixture-session',status:'open',buyer_fields:{require_email:true as const}} as unknown as CheckoutSession;
   const client={
     orders:{get:async()=>order},
     checkoutSessions:{
-      get:async()=>session,getCurrentDeliverySelection:async()=>({}),
+      get:async()=>session,
       update:async(_id:string,input:{buyer_contact:Contact})=>{
         makeCheckoutBuyerContactRequest(input.buyer_contact);
         if(remote.error)throw remote.error;
         remote.patches.push(input.buyer_contact);Object.assign(remote.contact,input.buyer_contact);return session;
       },
-      createDeliveryQuote:async()=>{remote.quotes++;return {delivery_quote_id:'fixture-quote',expires_at:new Date(Date.now()+60_000).toISOString(),choice_groups:[]};},
-    },
+
+    },deliverySelections:{get:async()=>({})},deliveryQuotes:{create:async()=>{remote.quotes++;return {delivery_quote_id:'fixture-quote',expires_at:new Date(Date.now()+60_000).toISOString(),choice_groups:[]};}},
   } as unknown as Client;
   const config:Config={apiKey:'local-contact-fixture',apiBaseUrl:'https://api.staging.withflintpay.com',giftChallengeOrigin:'https://checkout.staging.withflintpay.com',appOrigin:origin,port:4100,identityDatabasePath:':memory:',appDatabasePath:':memory:',cookieName:'contact_session',checkoutTtl:3600,storeName:'Example store'};
   const runtime=createApp({config,client,preflight:{sandboxId:'fixture-sandbox',cards:'enabled'},store:new Store(':memory:'),identity:new IdentityStore(':memory:')});
@@ -61,7 +62,7 @@ test('partial contact patches preserve omitted fields and forward explicit null 
 
 test('SDK validation rejected before dispatch returns 400 and permits a changed contact and delivery',async()=>{
   const app=fixture();try{
-    app.remote.error=new SdkError('validation','fixture validation','not_sent');
+    app.remote.error=new errors.InvalidInputError('fixture validation',{outcome:'not_sent',retryAllowed:false});
     const rejected=await app.post('/contact',{email:'buyer@example.test'});
     assert.equal(rejected.status,400);assert.equal((await rejected.json()).error.kind,'validation');
     assert.equal(app.store.get<{status:string}>("SELECT status FROM actions WHERE kind='contact'")?.status,'rejected');
@@ -73,8 +74,8 @@ test('SDK validation rejected before dispatch returns 400 and permits a changed 
 });
 
 for(const [label,error] of [
-  ['unknown transport',new SdkError('transport','fixture lost response','unknown',true)],
-  ['server response',new SdkError('server','fixture unavailable','response',true,{status:503,headers:{},attempts:1,durationMs:1})],
+  ['unknown transport',new errors.ConnectionError('fixture lost response',{outcome:'unknown',retryAllowed:true})],
+  ['server response',new errors.ServerError('fixture unavailable',{outcome:'response',retryAllowed:true,...({status:503,headers:{},attempts:1,durationMs:1})})],
 ] as const)test(`${label} keeps the contact reconciliation guard`,async()=>{
   const app=fixture();try{
     app.remote.error=error;assert.equal((await app.post('/contact',{email:'buyer@example.test'})).status,503);

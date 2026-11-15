@@ -1,4 +1,4 @@
-import type {CreateInvoiceRequestInput,CreateOrderRequestInput,InvoicePaymentPolicyInput,UpdateSettingsRequestInput} from '@flintpay/node';
+import type {CreateInvoiceRequestInput,CreateOrderRequestInput,InvoicePaymentPolicy,UpdateSettingsRequestInput} from '@flintpay/node';
 import type { PublicClient } from './sdk.ts';
 import { VerifiedClients } from './sdk.ts';
 import { Ledger } from './ledger.ts';
@@ -26,19 +26,18 @@ export const operations = {
   'giftCards.create': { creates: ['gift_card'], cleanup: 'gift_card' },
   'invoices.create': { creates: ['invoice', 'order'], cleanup: 'invoice' },
   'invoices.issue': { creates: [], cleanup: '' },
-  'invoices.createCheckoutSession': { creates: ['checkout_session'], cleanup: 'checkout_session' },
   'orders.create': { creates: ['order'], cleanup: 'review' },
-  'orders.addLineItems': { creates: ['order_line_item'], cleanup: 'review' },
+  'orders.createLineItems': { creates: ['order_line_item'], cleanup: 'review' },
   'checkoutSessions.create': { creates: ['checkout_session'], cleanup: 'checkout_session' },
   'customerSessions.create': { creates: ['customer_session'], cleanup: 'customer_session' },
-  'paymentMethods.save': { creates: ['payment_method'], cleanup: 'payment_method' },
-  'fulfillments.createShipment': { creates: ['shipment'], cleanup: 'review' },
-  'shipments.createPackage': { creates: ['package'], cleanup: 'review' },
+  'paymentMethods.create': { creates: ['payment_method'], cleanup: 'payment_method' },
+  'shipments.create': { creates: ['shipment'], cleanup: 'review' },
+  'packages.create': { creates: ['package'], cleanup: 'review' },
   'packages.createItem': { creates: ['package_item'], cleanup: 'review' },
-  'packages.transition': { creates: [], cleanup: '' },
-  'fulfillments.transition': { creates: [], cleanup: '' },
+  'packages.markShipped': { creates: [], cleanup: '' },
+  'fulfillments.accept': { creates: [], cleanup: '' },
   'returns.decide': { creates: [], cleanup: '' },
-  'returns.createResolution': { creates: ['return_resolution'], cleanup: 'return_resolution' },
+  'returnResolutions.create': { creates: ['return_resolution'], cleanup: 'return_resolution' },
   'returnResolutions.confirm': { creates: [], cleanup: '' },
   'subscriptions.update': { creates: [], cleanup: '' },
   'customerDeletionRequests.resolve': { creates: [], cleanup: '' },
@@ -65,12 +64,12 @@ export class Operator {
       if (!value || typeof value !== 'object') return;
       if ('amount' in value && 'currency' in value) money(value);
       for (const [key, field] of Object.entries(value)) {
-        // These published subscription fields use bounded numbers; modifiers and order integers use strings.
+        // These subscription quantities have extra bounds; every counter uses a safe integer number.
         const maxQuantity = key === 'quantity' && step.operation === 'subscriptionPlans.create' && path.length === 3 && path[0] === 0 && path[1] === 'line_items' && typeof path[2] === 'number' ? 9999
           : key === 'quantity' && step.operation === 'subscriptions.update' && path.length === 1 && path[0] === 1 ? 100
           : key === 'quantity' && step.operation === 'checkoutSessions.create' && path.length === 2 && path[0] === 0 && path[1] === 'subscription_terms' ? 100 : undefined;
         if (maxQuantity !== undefined) invariant(typeof field === 'number' && Number.isInteger(field) && field >= 1 && field <= maxQuantity, 'EXACT_FIXTURE_INTEGER_REQUIRED');
-        else if (['quantity', 'order_revision', 'expected_version'].includes(key)) invariant(typeof field === 'string' && /^(0|[1-9]\d*)$/.test(field), 'EXACT_FIXTURE_INTEGER_REQUIRED');
+        else if (['quantity', 'order_revision', 'expected_version'].includes(key)) invariant(typeof field === 'number' && Number.isSafeInteger(field) && field >= 0, 'EXACT_FIXTURE_INTEGER_REQUIRED');
         if (Array.isArray(field)) field.forEach((item, index) => exact(item, [...path, key, index])); else exact(field, [...path, key]);
       }
     }; step.args.forEach((arg, index) => exact(arg, [index]));
@@ -83,10 +82,10 @@ export class Operator {
       const client = await this.clients.writable(step.sandbox);
       const [resource, method] = step.operation.split('.');
       const target = (client as any)[resource];
-      invariant(typeof target?.[`${method}WithResponse`] === 'function', 'PUBLISHED_OPERATION_UNAVAILABLE');
-      const response = await target[`${method}WithResponse`](...step.args, { idempotencyKey: key });
+      invariant(typeof target?.[`${method}`] === 'function', 'PUBLISHED_OPERATION_UNAVAILABLE');
+      const response = await target[`${method}`](...step.args, { idempotencyKey: key });
       // Never persist raw HTTP request metadata, authorization or cookie headers.
-      return { data: response.body?.data, requestId: requestId(response.meta?.requestId) };
+      return { data: response, requestId: requestId(response.lastResponse?.requestId) };
     }, async response => {
       const creates = [...step.creates];
       const reviewAt = new Date(this.runDate() + 30 * 86400_000).toISOString();
@@ -94,7 +93,7 @@ export class Operator {
         for (const [path, type] of [['gift_card_load.gift_card_load_id', 'gift_card_load'], ['gift_card_notification.gift_card_notification_id', 'gift_card_notification']] as const) if (atPath(response.data, path)) creates.push({ path, type, cleanup: 'review', reviewAt });
         for (let i = 0; i < (response.data.gift_card_transaction_ids?.length ?? 0); i++) creates.push({ path: `gift_card_transaction_ids.${i}`, type: 'gift_card_transaction', cleanup: 'review', reviewAt });
       }
-      if (['orders.create', 'orders.addLineItems'].includes(step.operation)) for (let i = 0; i < (response.data.line_items?.length ?? 0); i++) creates.push({ path: `line_items.${i}.order_line_item_id`, type: 'order_line_item', cleanup: 'review', reviewAt });
+      if (['orders.create', 'orders.createLineItems'].includes(step.operation)) for (let i = 0; i < (response.data.line_items?.length ?? 0); i++) creates.push({ path: `line_items.${i}.order_line_item_id`, type: 'order_line_item', cleanup: 'review', reviewAt });
       for (const created of creates) {
         const id = atPath(response.data, created.path);
         if (typeof id !== 'string' || !id) continue;
@@ -107,14 +106,14 @@ export class Operator {
   async applyPlan(steps: PlanStep[]): Promise<void> {
     for (const step of steps) await this.execute(step);
   }
-  async issueInvoice(name: string, customerId: string, email: string, enabledPaymentOptions: InvoicePaymentPolicyInput['enabled_payment_options'] = ['card']): Promise<any> {
+  async issueInvoice(name: string, customerId: string, email: string, enabledPaymentOptions: NonNullable<NonNullable<CreateInvoiceRequestInput['collection']>['payment_policy']>['enabled_payment_options'] = ['card']): Promise<any> {
     const date = this.runDate();
     const reviewAt = new Date(date + 30 * 86400_000).toISOString();
     const ach = enabledPaymentOptions?.includes('ach_debit') === true;
     const service = ach ? this.fixtures.products?.['brewing-class'] : undefined;
     if (ach) invariant(service?.variantId, 'ACH_INVOICE_SERVICE_FIXTURE_REQUIRED');
     const orderInput: CreateOrderRequestInput = {
-      customer_id: customerId, line_items: ach ? [{ type: 'variant', variant_id: service!.variantId, quantity: '1' }] : [{ type: 'custom', name: 'Acceptance service', quantity: '1', unit_price_money: { amount: '12000', currency: 'USD' }, fulfillment: { requirement: 'none' }, tax: { taxable: true } }],
+      customer_id: customerId, line_items: ach ? [{ type: 'variant', variant_id: service!.variantId, quantity: 1 }] : [{ type: 'custom', name: 'Acceptance service', quantity: 1, unit_price_money: { amount: '12000', currency: 'USD' }, fulfillment: { requirement: 'none' }, tax: { taxable: true } }],
       tax: { enabled: true, location: { address_source: 'provided', address_type: 'billing_address', address: { line1: '11 Wall Street', city: 'New York', state: 'NY', postal_code: '10005', country: 'US' } } },
       metadata: { e2e_run: this.ledger.run },
     };
@@ -122,7 +121,7 @@ export class Operator {
     const invoiceInput: CreateInvoiceRequestInput = {
       type: 'order', order_id: order.data.order_id,
       collection: { mode: 'buyer_initiated', payment_policy: { enabled_payment_options: enabledPaymentOptions } },
-      payment_due: { type: 'date', due_at: new Date(date + 14 * 86400_000).toISOString() }, recipient_email: email, metadata: { e2e_run: this.ledger.run },
+      payment_due: { type: 'date', due_date: new Date(date + 14 * 86400_000).toISOString().slice(0,10) }, recipient_email: email, metadata: { e2e_run: this.ledger.run },
     };
     const response = await this.execute({ name, sandbox: 'A', operation: 'invoices.create', args: [invoiceInput], creates: [{ path: 'invoice_id', type: 'invoice', cleanup: 'invoice', reviewAt }], purpose: name });
     await this.execute({ name: `${name}-issue`, sandbox: 'A', operation: 'invoices.issue', args: [response.data.invoice_id, { delivery_mode: 'email' }], creates: [], purpose: name });
@@ -163,8 +162,8 @@ export class Operator {
     let lookups=0,tripped=false;
     for(let index=0;index<3&&!tripped;index++){
       const name=`challenge-probe-${++this.giftChallengeProbeSequence}`,reviewAt=new Date(this.runDate()+86400000).toISOString();
-      const order=await this.execute({name:`${name}-order`,sandbox:'A',operation:'orders.create',args:[{line_items:[{type:'custom',name:'Gift card verification probe',quantity:'1',unit_price_money:{amount:'200',currency:'USD'},fulfillment:{requirement:'none'},tax:{taxable:false}}],metadata:{e2e_run:this.ledger.run}}],creates:[{path:'order_id',type:'order',cleanup:'review',reviewAt}],purpose:'gift-challenge-probe'});
-      const launched=await this.execute({name:`${name}-session`,sandbox:'A',operation:'checkoutSessions.create',args:[{type:'order',order_id:order.data.order_id,surface:'embedded',page_origin:origin,payment_return_url:new URL('/',origin).href}],creates:[{path:'checkout_session_id',type:'checkout_session',cleanup:'checkout_session',reviewAt}],purpose:'gift-challenge-probe'});
+      const order=await this.execute({name:`${name}-order`,sandbox:'A',operation:'orders.create',args:[{line_items:[{type:'custom',name:'Gift card verification probe',quantity:1,unit_price_money:{amount:'200',currency:'USD'},fulfillment:{requirement:'none'},tax:{taxable:false}}],metadata:{e2e_run:this.ledger.run}}],creates:[{path:'order_id',type:'order',cleanup:'review',reviewAt}],purpose:'gift-challenge-probe'});
+      const launched=await this.execute({name:`${name}-session`,sandbox:'A',operation:'checkoutSessions.create',args:[{type:'order',order_id:order.data.order_id,surface:'headless',page_origin:origin,payment_return_url:new URL('/',origin).href}],creates:[{path:'checkout_session_id',type:'checkout_session',cleanup:'checkout_session',reviewAt}],purpose:'gift-challenge-probe'});
       const sessionId=launched.data.checkout_session_id,secret=launched.data.checkout_auth_token;
       invariant(sessionId&&secret,'CHALLENGE_PROBE_AUTHORITY_REQUIRED');
       try{
@@ -182,7 +181,7 @@ export class Operator {
           if(recent&&attempt===0){this.giftChallengeTrippedAt=0;this.ledger.state.giftChallengeTrippedAt=0;await this.ledger.save();}
         }
       }finally{
-        await this.ledger.action(`${name}-close`,'A','checkoutSessions.closeSession',[sessionId,{}],key=>client.checkoutSessions.closeSession(sessionId,{}, {idempotencyKey:key}),async()=>{});
+        await this.ledger.action(`${name}-close`,'A','checkoutSessions.close',[sessionId,{}],key=>client.checkoutSessions.close(sessionId,{}, {idempotencyKey:key}),async()=>{});
         const resource=this.ledger.state.resources.find(row=>row.sandbox==='A'&&row.resource===sessionId&&row.type==='checkout_session');invariant(resource,'CHALLENGE_PROBE_TRACKING_REQUIRED');await this.ledger.disposition(resource,'CLEANED UP');
       }
     }
@@ -237,11 +236,11 @@ export class Operator {
           invariant((await c.subscriptions.get(r.resource)).status === 'canceled', 'SUBSCRIPTION_CLEANUP_FAILED');
         } else if (r.cleanup === 'invoice') {
           const value = await c.invoices.get(r.resource);
-          if (!['paid', 'void', 'uncollectible'].includes(value.status)) await call('invoices.voidResource', [r.resource, {}], k => c.invoices.voidResource(r.resource, {}, { idempotencyKey: k }));
+          if (!['paid', 'void', 'uncollectible'].includes(value.status)) await call('invoices.void', [r.resource, {}], k => c.invoices.void(r.resource, {}, { idempotencyKey: k }));
           invariant(['paid', 'void', 'uncollectible'].includes((await c.invoices.get(r.resource)).status), 'INVOICE_CLEANUP_FAILED');
         } else if (r.cleanup === 'checkout_session') {
           const value = await c.checkoutSessions.get(r.resource);
-          if (!['closed', 'expired', 'paid', 'invalidated'].includes(value.status)) await call('checkoutSessions.closeSession', [r.resource, {}], k => c.checkoutSessions.closeSession(r.resource, {}, { idempotencyKey: k }));
+          if (!['closed', 'expired', 'paid', 'invalidated'].includes(value.status)) await call('checkoutSessions.close', [r.resource, {}], k => c.checkoutSessions.close(r.resource, {}, { idempotencyKey: k }));
           invariant(['closed', 'expired', 'paid', 'invalidated'].includes((await c.checkoutSessions.get(r.resource)).status), 'CHECKOUT_CLEANUP_FAILED');
         } else if (r.cleanup === 'customer_session') {
           const result = await call('customerSessions.revoke', [r.resource, {}], k => c.customerSessions.revoke(r.resource, {}, { idempotencyKey: k }));
@@ -250,12 +249,13 @@ export class Operator {
           const card = await c.giftCards.get(r.resource);
           if (!['frozen', 'closed'].includes(card.status)) {
             invariant(card.supported_actions.includes('close') || card.supported_actions.includes('freeze'), 'GIFT_CLEANUP_UNSUPPORTED');
-            const action = card.supported_actions.includes('close') ? { action: 'close' as const } : { action: 'freeze' as const, reason: 'customer_request' as const };
-            const request = { ...action, expected_version: card.version }; await call('giftCards.transition', [r.resource, request], k => c.giftCards.transition(r.resource, request, { idempotencyKey: k }));
+            const method=card.supported_actions.includes('close')?'close':'freeze';
+            const request={expected_version:card.version,reason:'customer_request' as const};
+            await call(`giftCards.${method}`, [r.resource,request],k=>method==='close'?c.giftCards.close(r.resource,{expected_version:card.version},{idempotencyKey:k}):c.giftCards.freeze(r.resource,request,{idempotencyKey:k}));
           }
           invariant(['frozen', 'closed'].includes((await c.giftCards.get(r.resource)).status), 'GIFT_CLEANUP_FAILED');
         } else if (r.cleanup === 'payment_method') {
-          const result = await call('paymentMethods.remove', [r.resource, {}], k => c.paymentMethods.remove(r.resource, {}, { idempotencyKey: k })); invariant(result.success === true, 'METHOD_CLEANUP_FAILED');
+          const result = await call('paymentMethods.delete', [r.resource, {}], k => c.paymentMethods.delete(r.resource, {}, { idempotencyKey: k })); invariant(result.success === true, 'METHOD_CLEANUP_FAILED');
         } else if (r.cleanup === 'return_resolution') {
           const resolution = await c.returnResolutions.get(r.resource);
           if (!['fulfilled', 'canceled'].includes(resolution.status)) { const request = { reason: 'created_in_error' as const, expected_version: resolution.version }; await call('returnResolutions.cancel', [r.resource, request], k => c.returnResolutions.cancel(r.resource, request, { idempotencyKey: k })); }

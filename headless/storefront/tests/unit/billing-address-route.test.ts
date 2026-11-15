@@ -1,3 +1,4 @@
+import {errors} from '@flintpay/node';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {Client,SdkError} from '@flintpay/node';
@@ -12,14 +13,14 @@ import {flintError,flintErrorBody} from './support/flint-error.ts';
 const origin='http://localhost:4100';
 const address={line1:'1 Example Street',city:'Austin',state:'TX',postal_code:'78701',country:'US' as const};
 const taxRequest={tax:{enabled:true,location:{address_source:'provided',address_type:'billing_address',address}}};
-type Saved={customer_address_id:string;address:Address;recipient_name:string;is_default_billing:boolean;is_default_shipping:boolean;version:string};
+type Saved={customer_address_id:string;address:Address;recipient_name:string;is_default_billing:boolean;is_default_shipping:boolean;version:number};
 type Written={op:'create'|'update';id:string;addressId?:string;body:CreateCustomerAddressRequestInput|UpdateCustomerAddressRequestInput;key:string|undefined;apiKey:string|undefined};
 function fixture(kind:'order'|'subscription'='order'){
   const money={amount:'2400' as const,currency:'USD'};
-  const order={order_id:'fixture-order',status:'open',payment_status:'unpaid',version:'1',settlement_amounts:{outstanding_money:money},tax:{enabled:true,status:'requires_location',available_location_inputs:['provided']},payment_collection:{stripe:{}}} as unknown as Order;
-  const session={checkout_session_id:'fixture-session',order_id:order.order_id,status:'open',buyer_fields:{require_email:true},delivery_selection_required:false} as unknown as CheckoutSession;
+  const order={order_id:'fixture-order',status:'open',payment_status:'unpaid',version:1,settlement_amounts:{outstanding_money:money},tax:{enabled:true,status:'requires_location',available_location_inputs:['provided']},payment_collection:{stripe:{}}} as unknown as Order;
+  const session={checkout_session_id:'fixture-session',order_id:order.order_id,status:'open',buyer_fields:{require_email:true as const},delivery_selection_required:false} as unknown as CheckoutSession;
   // A customer's billing and shipping addresses are read-only copies of its default saved addresses.
-  const customer={customer_id:'fixture-customer',email:'buyer@example.test',version:'1',billing_address:null,shipping_address:null} as unknown as Customer&{billing_address:Address|null;shipping_address:Address|null};
+  const customer={customer_id:'fixture-customer',email:'buyer@example.test',version:1,billing_address:null,shipping_address:null} as unknown as Customer&{billing_address:Address|null;shipping_address:Address|null};
   const saved:Saved[]=[];
   const remote={updates:[] as {body:unknown;key:string|undefined;authMode:unknown}[],error:undefined as SdkError|undefined,selection:undefined as unknown,order,session,customer,saved,
     customerReads:[] as {id:string;apiKey:string|undefined}[],customerUpdates:[] as Written[],
@@ -33,11 +34,11 @@ function fixture(kind:'order'|'subscription'='order'){
     let result:Saved;
     if(prior){assert.equal(prior.body,JSON.stringify(body),'a customer key must retain its original request');result=prior.result;}
     else{result=apply();customerRequests.set(options.idempotencyKey!,{body:JSON.stringify(body),result});}
-    if(remote.customerLoseResponse)throw new SdkError('transport','fixture lost customer response','unknown',true);
+    if(remote.customerLoseResponse)throw new errors.ConnectionError('fixture lost customer response',{outcome:'unknown',retryAllowed:true});
     return structuredClone(result);
   };
   const client={
-    orders:{get:async()=>order,update:async(_id:string,body:unknown,options:RequestOptions<'checkout'>)=>{
+    orders:{get:async()=>({...order,governing_delivery_selection_id:(remote.selection as {delivery_selection_id?:string}|undefined)?.delivery_selection_id??null}),update:async(_id:string,body:unknown,options:RequestOptions<'checkout'>)=>{
       remote.updates.push({body:structuredClone(body),key:options.idempotencyKey,authMode:options.checkoutToken?'checkout':undefined});
       if(remote.error)throw remote.error;
       order.tax!.status='calculated';
@@ -47,7 +48,7 @@ function fixture(kind:'order'|'subscription'='order'){
       remote.customerReads.push({id,apiKey:options.apiKey as string|undefined});if(remote.customerReadError)throw remote.customerReadError;return structuredClone(customer);
     },listAddresses:async()=>({data:structuredClone(saved)}),
     createAddress:async(id:string,body:CreateCustomerAddressRequestInput,options:RequestOptions<'merchant'>)=>write('create',id,undefined,body,options,()=>{
-      const row:Saved={customer_address_id:`addr_${saved.length+1}`,address:structuredClone(body.address) as Address,recipient_name:body.recipient_name,is_default_billing:!!body.is_default_billing,is_default_shipping:false,version:'1'};
+      const row:Saved={customer_address_id:`addr_${saved.length+1}`,address:structuredClone(body.address) as Address,recipient_name:body.recipient_name,is_default_billing:!!body.is_default_billing,is_default_shipping:false,version:1};
       if(row.is_default_billing){for(const other of saved)other.is_default_billing=false;customer.billing_address=structuredClone(row.address);}
       saved.push(row);return row;
     }),
@@ -55,11 +56,11 @@ function fixture(kind:'order'|'subscription'='order'){
       const row=saved.find(item=>item.customer_address_id===addressId)!;
       if(body.expected_version!==row.version)throw flintError(409,'VERSION_CONFLICT',{param:'expected_version'},{retry:'after_refresh'});
       if(body.address)row.address=structuredClone(body.address) as Address;
-      row.version=String(BigInt(row.version)+1n);
+      row.version=row.version+1;
       if(row.is_default_billing)customer.billing_address=structuredClone(row.address);
       return row;
     })},
-    checkoutSessions:{get:async()=>session,getCurrentDeliverySelection:async()=>({delivery_selection:remote.selection})},
+    checkoutSessions:{get:async()=>session,},deliverySelections:{get:async()=>(remote.selection)},
   } as unknown as Client;
   const config:Config={apiKey:'local-billing-fixture',apiBaseUrl:'https://api.staging.withflintpay.com',giftChallengeOrigin:'https://checkout.staging.withflintpay.com',appOrigin:origin,port:4100,identityDatabasePath:':memory:',appDatabasePath:':memory:',cookieName:'billing_session',checkoutTtl:3600,storeName:'Example store'};
   const runtime=createApp({config,client,preflight:{sandboxId:'fixture-sandbox',cards:'enabled'},store:new Store(':memory:'),identity:new IdentityStore(':memory:')});
@@ -112,7 +113,7 @@ for(const guard of ['delivery_required','delivery_quote','delivery_selection','t
 
 for(const guard of ['unknown_payment','active_attempt'] as const)test(`billing tax input keeps the existing ${guard} mutation fence`,async()=>{
   const app=fixture();try{
-    if(guard==='unknown_payment')app.payments.job(app.checkouts.record('chk_fixture'),'pay',{action:'pay',payment_source:{credential_type:'token' as const,token:'pm_fixture'}});
+    if(guard==='unknown_payment')app.payments.job(app.checkouts.record('chk_fixture'),'pay',{action:'pay',payment_source:{credential_type:'stripe_payment_method' as const,stripe:{payment_method:'pm_fixture'}}});
     else app.remote.order.active_payment_attempt={order_payment_attempt_id:'attempt_fixture',status:'processing',is_resumable:false} as Order['active_payment_attempt'];
     const response=await app.post(address);assert.equal(response.status,409);assert.equal((await response.json()).error.code,guard==='unknown_payment'?'CHECKOUT_PAYMENT_RESOLVING':'PAYMENT_ATTEMPT_IN_PROGRESS');
     assert.equal(app.remote.updates.length,0);assert.equal(app.details().billing_address,undefined);
@@ -122,7 +123,7 @@ for(const guard of ['unknown_payment','active_attempt'] as const)test(`billing t
 test('unknown billing tax mutation replays the exact request and key and saves prefill only after success',async()=>{
   const app=fixture();try{
     const previous={...address,line1:'Previous address'};app.checkouts.saveDetails(app.checkouts.record('chk_fixture'),{billing_address:previous});
-    app.remote.error=new SdkError('transport','fixture lost response','unknown',true);
+    app.remote.error=new errors.ConnectionError('fixture lost response',{outcome:'unknown',retryAllowed:true});
     assert.equal((await app.post(address)).status,503);assert.deepEqual(app.details().billing_address,previous);
     const pending=app.store.get<ActionRecord>("SELECT * FROM actions WHERE kind='tax_location'")!;assert.equal(pending.status,'unknown');
     const changed=await app.post({...address,line1:'Different address'});assert.equal(changed.status,409);assert.equal((await changed.json()).error.code,'ACTION_RECONCILIATION_REQUIRED');assert.equal(app.remote.updates.length,1);
@@ -183,9 +184,9 @@ test('a checkout can correct its own customer billing source but preserves a lat
   const app=fixture('subscription');try{
     await app.signIn();assert.equal((await app.post(address)).status,200);
     const corrected={...address,line1:'2 Corrected Street'};assert.equal((await app.post(corrected)).status,200);
-    assert.equal(app.remote.customerUpdates.length,2);assert.equal(app.remote.customerUpdates[1]?.op,'update');assert.equal(app.remote.customerUpdates[1]?.addressId,'addr_1');assert.deepEqual(app.remote.customerUpdates[1]?.body,{address:corrected,expected_version:'1'});
+    assert.equal(app.remote.customerUpdates.length,2);assert.equal(app.remote.customerUpdates[1]?.op,'update');assert.equal(app.remote.customerUpdates[1]?.addressId,'addr_1');assert.deepEqual(app.remote.customerUpdates[1]?.body,{address:corrected,expected_version:1});
     assert.deepEqual(app.details().customer_billing_address,corrected);
-    const external={...address,line1:'3 Saved Elsewhere'};app.remote.customer.billing_address=external;app.remote.customer.version='4';
+    const external={...address,line1:'3 Saved Elsewhere'};app.remote.customer.billing_address=external;app.remote.customer.version=4;
     assert.equal((await app.post({...address,line1:'4 Checkout Street'})).status,200);assert.equal(app.remote.customerUpdates.length,2);assert.deepEqual(app.remote.customer.billing_address,external);
   }finally{app.close();}
 });
@@ -193,7 +194,7 @@ test('a checkout can correct its own customer billing source but preserves a lat
 for(const failure of ['read','write'] as const)test(`customer ${failure} failure keeps order tax incomplete across reload and retries the original keys`,async()=>{
   const app=fixture('subscription');try{
     app.store.db.exec('PRAGMA reverse_unordered_selects=ON');
-    await app.signIn();const error=new SdkError('transport','fixture customer unavailable','unknown',true);
+    await app.signIn();const error=new errors.ConnectionError('fixture customer unavailable',{outcome:'unknown',retryAllowed:true});
     if(failure==='read')app.remote.customerReadError=error;else app.remote.customerError=error;
     assert.equal((await app.post(address)).status,503);assert.equal(app.remote.updates.length,0);assert.equal(app.details().billing_address,undefined);assert.equal(app.details().customer_billing_address,undefined);
     const pending=app.store.get<ActionRecord>("SELECT * FROM actions WHERE kind='tax_location'")!;assert.equal(pending.status,'unknown');
@@ -225,10 +226,10 @@ test('the saved address version fences a correction that races another edit',asy
     await app.signIn();assert.equal((await app.post(address)).status,200);assert.equal(app.remote.updates.length,1);
     // Someone relabels the saved address between the correction's read and write, which advances its version.
     const corrected={...address,line1:'2 Corrected Street'};
-    app.remote.beforeCustomerUpdate=()=>{app.remote.saved[0]!.version='2';};
+    app.remote.beforeCustomerUpdate=()=>{app.remote.saved[0]!.version=2;};
     const response=await app.post(corrected);assert.equal(response.status,409);assert.equal((await response.json()).error.code,'ORDER_CHANGED_REFRESH_REQUIRED');assert.equal(app.remote.updates.length,1);
     assert.deepEqual(app.remote.customer.billing_address,address);
-    assert.equal((await app.post(corrected)).status,200);assert.equal(app.remote.customerUpdates.length,3);assert.deepEqual(app.remote.customerUpdates[2]?.body,{address:corrected,expected_version:'2'});
+    assert.equal((await app.post(corrected)).status,200);assert.equal(app.remote.customerUpdates.length,3);assert.deepEqual(app.remote.customerUpdates[2]?.body,{address:corrected,expected_version:2});
   }finally{app.close();}
 });
 
@@ -236,10 +237,10 @@ test('an unknown saved address write retains its original version after the addr
   const app=fixture('subscription');try{
     await app.signIn();assert.equal((await app.post(address)).status,200);
     const corrected={...address,line1:'2 Corrected Street'};
-    app.remote.customerError=new SdkError('transport','fixture not applied','unknown',true);assert.equal((await app.post(corrected)).status,503);
-    app.remote.customerError=undefined;app.remote.saved[0]!.version='2';
+    app.remote.customerError=new errors.ConnectionError('fixture not applied',{outcome:'unknown',retryAllowed:true});assert.equal((await app.post(corrected)).status,503);
+    app.remote.customerError=undefined;app.remote.saved[0]!.version=2;
     const response=await app.post(corrected);assert.equal(response.status,409);assert.equal((await response.json()).error.code,'ORDER_CHANGED_REFRESH_REQUIRED');
-    assert.deepEqual(app.remote.customerUpdates[2],app.remote.customerUpdates[1]);assert.deepEqual(app.remote.customerUpdates[1]?.body,{address:corrected,expected_version:'1'});assert.equal(app.remote.updates.length,1);
+    assert.deepEqual(app.remote.customerUpdates[2],app.remote.customerUpdates[1]);assert.deepEqual(app.remote.customerUpdates[1]?.body,{address:corrected,expected_version:1});assert.equal(app.remote.updates.length,1);
     assert.deepEqual(app.details().customer_billing_address,address);
   }finally{app.close();}
 });
@@ -249,13 +250,13 @@ test('customer provenance survives a later tax rejection so this checkout can co
     await app.signIn();app.remote.error=flintError(400,'INVALID_REQUEST',{code:'INVALID_VALUE',param:'tax.location.address'});
     assert.equal((await app.post(address)).status,400);assert.deepEqual(app.details().customer_billing_address,address);assert.equal(app.details().billing_address,undefined);
     app.remote.error=undefined;const corrected={...address,line1:'2 Corrected Street'};assert.equal((await app.post(corrected)).status,200);
-    assert.deepEqual(app.remote.customerUpdates[1]?.body,{address:corrected,expected_version:'1'});assert.deepEqual(app.details().customer_billing_address,corrected);
+    assert.deepEqual(app.remote.customerUpdates[1]?.body,{address:corrected,expected_version:1});assert.deepEqual(app.details().customer_billing_address,corrected);
   }finally{app.close();}
 });
 
 test('a lost tax response replays its key after customer persistence without repeating the customer write',async()=>{
   const app=fixture('subscription');try{
-    await app.signIn();app.remote.error=new SdkError('transport','fixture lost tax response','unknown',true);assert.equal((await app.post(address)).status,503);
+    await app.signIn();app.remote.error=new errors.ConnectionError('fixture lost tax response',{outcome:'unknown',retryAllowed:true});assert.equal((await app.post(address)).status,503);
     assert.deepEqual(app.details().customer_billing_address,address);assert.equal(app.details().billing_address,undefined);assert.equal(app.remote.customerUpdates.length,1);
     app.remote.error=undefined;assert.equal((await app.post(address)).status,200);assert.equal(app.remote.customerUpdates.length,1);assert.deepEqual(app.remote.updates[1],app.remote.updates[0]);
   }finally{app.close();}
@@ -266,7 +267,7 @@ test('the installed SDK serializes a versioned saved address update with its own
   const client=new Client({baseUrl:'https://sdk.example.invalid',maxAttempts:1,transport:async(input,init)=>{
     request=new Request(input,init);return new Response(JSON.stringify({error:flintErrorBody(409,'VERSION_CONFLICT',{param:'expected_version'},{retry:'after_refresh'})}),{status:409,headers:{'Content-Type':'application/json'}});
   }});
-  await assert.rejects(()=>client.customers.updateAddress('fixture-customer','addr_1',{address,expected_version:'7'},{apiKey:'local-billing-fixture',idempotencyKey:'billing-fixture-key-customer'}),{code:'VERSION_CONFLICT'});
+  await assert.rejects(()=>client.customers.updateAddress('fixture-customer','addr_1',{address,expected_version:7},{apiKey:'local-billing-fixture',idempotencyKey:'billing-fixture-key-customer'}),{code:'VERSION_CONFLICT'});
   assert.ok(request);assert.equal(request.method,'PATCH');assert.equal(new URL(request.url).pathname,'/v1/customers/fixture-customer/addresses/addr_1');
   assert.deepEqual(await request.json(),{address,expected_version:7});assert.equal(request.headers.get('Idempotency-Key'),'billing-fixture-key-customer');
 });

@@ -103,7 +103,7 @@ export function productPage(ctx: PageContext<ProductData>): Html {
     const main = html`${noticeList(ctx)}<section class="state-panel" data-testid="sf-product-not-found"><h1>${copy.product.notFoundTitle}</h1><p>${copy.product.notFoundBody}</p><a class="button" href="/#shop">${copy.product.backToShop}</a></section>`;
     return shell(ctx, { pageId: 'sf-product', title: copy.product.notFoundTitle, main, testid: 'sf-product', state: 'not_found' });
   }
-  const variants = item.variants.filter((variant) => variant.available_for_sale !== false);
+  const variants = item.variants.filter((variant) => variant.is_available_for_sale !== false);
   const showGroup = item.variants.length > 1;
   const first = variants[0] ?? item.variants[0];
   const sellable = variants.length > 0;
@@ -124,7 +124,7 @@ export function productPage(ctx: PageContext<ProductData>): Html {
             ? html`<fieldset class="choice-group"><legend>${copy.product.variant}</legend>
               ${item.variants.map((variant) => {
                 const slug = slugify(variantLabel(variant));
-                const disabled = variant.available_for_sale === false;
+                const disabled = variant.is_available_for_sale === false;
                 const checked = first && variant.variant_id === first.variant_id;
                 return html`<label class="choice"><input type="radio" name="variant_id" value="${variant.variant_id}" ${checked ? raw('checked') : raw('')} ${disabled ? raw('disabled') : raw('')} data-testid="sf-variant-${slug}"><span>${variantLabel(variant)}</span></label>`;
               })}

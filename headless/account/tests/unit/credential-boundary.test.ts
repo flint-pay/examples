@@ -7,7 +7,7 @@ import ts from 'typescript';
 const allowed = new Map<string, Set<string>>([
   ['app.ts', new Set(['customers.list', 'customers.create', 'customerVerifications.create', 'customerVerifications.confirm', 'customers.linkGuestPurchases', 'returnReasons.list', 'settings.getEffective', 'customers.revokeSessions', 'emailPreferenceLinks.lookup', 'emailPreferenceLinks.unsubscribe'])],
   ['flint/customer-sessions.ts', new Set(['customerSessions.create', 'customerSessions.revoke', 'customers.revokeSessions', 'customerDeletionRequests.list'])],
-  ['flint/preflight.ts', new Set(['merchants.getWithResponse', 'settings.get'])],
+  ['flint/preflight.ts', new Set(['merchant.get', 'settings.get'])],
 ]);
 function walk(node: ts.Node, visit: (node: ts.Node) => void): void { visit(node); ts.forEachChild(node, child => walk(child, visit)); }
 function files(root: string): string[] { return readdirSync(root, { withFileTypes: true }).flatMap(e => e.isDirectory() ? files(join(root, e.name)) : e.name.endsWith('.ts') ? [join(root, e.name)] : []); }

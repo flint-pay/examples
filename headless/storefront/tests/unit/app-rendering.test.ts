@@ -14,25 +14,25 @@ import type {CheckoutState} from '../../src/views/types.ts';
 
 const origin='http://localhost:4100';const money={amount:'1800' as const,currency:'USD'};
 function fixture(){
-  const product={product_id:'fixture-product',name:'House blend',product_type:'physical',available_for_sale:true,default_variant_id:'fixture-variant',metadata:{example_catalog:'cedar-and-stone',example_slug:'house-blend'},price_range:{min_unit_price_money:money,max_unit_price_money:money}};
-  const variant={variant_id:'fixture-variant',available_for_sale:true,unit_price_money:money};
+  const product={product_id:'fixture-product',name:'House blend',product_type:'physical',is_available_for_sale:true,default_variant_id:'fixture-variant',metadata:{example_catalog:'cedar-and-stone',example_slug:'house-blend'},price_range:{min_unit_price_money:money,max_unit_price_money:money}};
+  const variant={variant_id:'fixture-variant',is_available_for_sale:true,unit_price_money:money};
   const remote={
-    order:{order_id:'fixture-order',order_number:'Example order',status:'open',payment_status:'unpaid',version:'1',line_items:[{order_line_item_id:'fixture-order-line',variant_id:variant.variant_id,name:product.name,quantity:'1',total_money:money}],pricing_amounts:{total_money:money},settlement_amounts:{outstanding_money:money,paid_money:{amount:'0',currency:'USD'}},buyer_contact:{email:'buyer@example.test'},payment_collection:{stripe:{}}} as unknown as Order,
-    session:{checkout_session_id:'fixture-flint-session',status:'open',buyer_fields:{require_email:true},buyer_contact:{email:'buyer@example.test'}} as unknown as CheckoutSession,
+    order:{order_id:'fixture-order',order_number:'Example order',status:'open',payment_status:'unpaid',version:1,line_items:[{order_line_item_id:'fixture-order-line',variant_id:variant.variant_id,name:product.name,quantity:1,total_money:money}],pricing_amounts:{total_money:money},settlement_amounts:{outstanding_money:money,paid_money:{amount:'0',currency:'USD'}},buyer_contact:{email:'buyer@example.test'},payment_collection:{stripe:{}}} as unknown as Order,
+    session:{checkout_session_id:'fixture-flint-session',status:'open',buyer_fields:{require_email:true as const},buyer_contact:{email:'buyer@example.test'}} as unknown as CheckoutSession,
     reads:0,mutations:0,readFailureAt:undefined as number|undefined,
   };
   const mutation=async()=>{remote.mutations++;throw new Error('rendering and locked cart requests must not mutate Flint');};
   const client={
     products:{listItems:async function*(){yield product;},listVariantsItems:async function*(){yield variant;}},
     subscriptionPlans:{listItems:async function*(){}},
-    checkoutSessions:{get:async()=>remote.session,getCurrentDeliverySelection:async()=>({}),create:mutation,update:mutation,closeSession:mutation,createDeliveryQuote:mutation},
-    orders:{get:async()=>{remote.reads++;if(remote.reads===remote.readFailureAt)throw new Error('local order read failure');return remote.order;},getPaymentAttempt:async()=>remote.order.active_payment_attempt,updateLineItem:mutation,deleteLineItem:mutation,addLineItems:mutation,pay:mutation},
+    checkoutSessions:{get:async()=>remote.session,create:mutation,update:mutation,close:mutation,},deliverySelections:{get:async()=>({})},deliveryQuotes:{create:mutation},
+    orders:{get:async()=>{remote.reads++;if(remote.reads===remote.readFailureAt)throw new Error('local order read failure');return remote.order;},getPaymentAttempt:async()=>remote.order.active_payment_attempt,updateLineItem:mutation,deleteLineItem:mutation,createLineItems:mutation,pay:mutation},
   } as unknown as Client;
   const config:Config={apiKey:'local-render-fixture',apiBaseUrl:'https://api.staging.withflintpay.com',giftChallengeOrigin:'https://checkout.staging.withflintpay.com',appOrigin:origin,port:4100,identityDatabasePath:':memory:',appDatabasePath:':memory:',cookieName:'render_session',checkoutTtl:3600,storeName:'Example store'};
   const runtime=createApp({config,preflight:{sandboxId:'fixture-sandbox',cards:'enabled'},client,store:new Store(':memory:'),identity:new IdentityStore(':memory:')});
   const identitySession=runtime.identity.createSession();const cookie=`render_session=${identitySession.token}`;
   const get=(path:string,method='GET')=>runtime.app.request(origin+path,{method,headers:{Cookie:cookie}});
-  const post=(path:string,fields:Record<string,string>,json=false)=>runtime.app.request(origin+path,{method:'POST',headers:{Cookie:cookie,Origin:origin,'X-CSRF-Token':identitySession.session.csrf_token,'Content-Type':json?'application/json':'application/x-www-form-urlencoded',Accept:json?'application/json':'text/html'},body:json?JSON.stringify(fields):new URLSearchParams(fields).toString()});
+  const post=(path:string,fields:Record<string,string|number>,json=false)=>runtime.app.request(origin+path,{method:'POST',headers:{Cookie:cookie,Origin:origin,'X-CSRF-Token':identitySession.session.csrf_token,'Content-Type':json?'application/json':'application/x-www-form-urlencoded',Accept:json?'application/json':'text/html'},body:json?JSON.stringify(fields):new URLSearchParams(Object.fromEntries(Object.entries(fields).map(([k,v])=>[k,String(v)]))).toString()});
   const checkout=()=>{
     const cart=runtime.carts.current(identitySession.session);
     runtime.store.run('INSERT INTO cart_lines VALUES(?,?,?,?,?)','fixture-line',cart.cart_id,product.product_id,variant.variant_id,1);
@@ -68,7 +68,7 @@ test('browser assets are served when launched from the repository root',async()=
 });
 test('the non-JavaScript add-to-cart redirect supplies its settled notice to the real renderer',async()=>{
   const app=fixture();try{
-    const added=await app.post('/cart/items',{product_slug:'house-blend',variant_id:'fixture-variant',quantity:'1'});assert.equal(added.status,303);assert.equal(added.headers.get('location'),'/products/house-blend?notice=added_to_cart');
+    const added=await app.post('/cart/items',{product_slug:'house-blend',variant_id:'fixture-variant',quantity:1});assert.equal(added.status,303);assert.equal(added.headers.get('location'),'/products/house-blend?notice=added_to_cart');
     const page=await app.get(added.headers.get('location')!);assert.equal(page.status,200);const html=await page.text();assert.match(html,/data-notice="added_to_cart"/);assert.match(html,/data-count="1"/);assert.equal(app.remote.mutations,0);
   }finally{app.close();}
 });
@@ -132,7 +132,7 @@ test('CSRF rejection never captures or echoes identity form values',async()=>{
 });
 test('checkout flash survives JSON reads and is consumed once by HTML without releasing payment or reconciliation state',async()=>{
   const app=fixture();try{
-    const {record}=app.checkout();const action=app.payments.job(record,'pay',{action:'pay',payment_source:{credential_type:'token' as const,token:'pm_original'},expected_outstanding_money:money});
+    const {record}=app.checkout();const action=app.payments.job(record,'pay',{action:'pay',payment_source:{credential_type:'stripe_payment_method' as const,stripe:{payment_method:'pm_original'}},expected_outstanding_money:money});
     app.store.run("UPDATE actions SET status='unknown' WHERE action_id=?",action.action_id);app.store.run('UPDATE checkouts SET cart_dirty=1,needs_replacement=1,flash=?,details=? WHERE checkout_ref=?',JSON.stringify(['checkout_refreshed','affirm_incomplete','reconciliation-marker']),JSON.stringify({verification:{customer_verification_id:'private-proof',status:'code_sent'}}),record.checkout_ref);
     const journal=app.store.get<ActionRecord>('SELECT * FROM actions WHERE action_id=?',action.action_id)!;
     for(const route of ['state','attempt']){
@@ -164,13 +164,13 @@ test('paid checkout redirects leave flash for the completion page to display',as
 });
 test('the locked cart is reachable for an unknown payment and rejected edits preserve the journal and cart',async()=>{
   const app=fixture();try{
-    const {cart,record}=app.checkout();const action=app.payments.job(record,'pay',{action:'pay',payment_source:{credential_type:'token' as const,token:'pm_original'}});app.store.run("UPDATE actions SET status='unknown' WHERE action_id=?",action.action_id);
+    const {cart,record}=app.checkout();const action=app.payments.job(record,'pay',{action:'pay',payment_source:{credential_type:'stripe_payment_method' as const,stripe:{payment_method:'pm_original'}}});app.store.run("UPDATE actions SET status='unknown' WHERE action_id=?",action.action_id);
     const journal=app.store.get<ActionRecord>('SELECT * FROM actions WHERE action_id=?',action.action_id)!;const lines=app.carts.lines(cart);
     const response=await app.get('/cart');assert.equal(response.status,200);const html=await response.text();assert.match(html,/data-testid="sf-cart" data-state="locked"/);assert.match(html,/href="\/checkout\/chk_fixture"/);assert.doesNotMatch(html,/action="\/cart\/items\//);assert.equal(app.remote.reads,0);
     for(const route of ['/cart/items/fixture-line','/cart/items/fixture-line/remove']){
-      const rejected=await app.post(route,{quantity:'2'});assert.equal(rejected.status,409);const rendered=await rejected.text();assert.match(rendered,/data-testid="sf-cart" data-state="locked"/);assert.match(rendered,/data-notice="cart_locked_payment"/);
+      const rejected=await app.post(route,{quantity:2});assert.equal(rejected.status,409);const rendered=await rejected.text();assert.match(rendered,/data-testid="sf-cart" data-state="locked"/);assert.match(rendered,/data-notice="cart_locked_payment"/);
     }
-    const json=await app.post('/cart/items/fixture-line',{quantity:'2'},true);assert.equal(json.status,409);const error=await json.json() as {error:{code:string;message_key:string}};assert.equal(error.error.code,'CHECKOUT_PAYMENT_RESOLVING');assert.equal(error.error.message_key,'cart_locked_payment');
+    const json=await app.post('/cart/items/fixture-line',{quantity:2},true);assert.equal(json.status,409);const error=await json.json() as {error:{code:string;message_key:string}};assert.equal(error.error.code,'CHECKOUT_PAYMENT_RESOLVING');assert.equal(error.error.message_key,'cart_locked_payment');
     assert.deepEqual(app.carts.lines(cart),lines);assert.deepEqual(app.store.get<ActionRecord>('SELECT * FROM actions WHERE action_id=?',action.action_id),journal);assert.equal(app.checkouts.record(record.checkout_ref).cart_dirty,0);assert.equal(app.remote.mutations,0);
     const other=app.identity.createSession();const unrelated=await app.app.request(origin+'/cart',{headers:{Cookie:`render_session=${other.token}`}});assert.doesNotMatch(await unrelated.text(),/\/checkout\/chk_fixture|data-state="locked"/);
   }finally{app.close();}
@@ -179,7 +179,7 @@ test('active-attempt cart locks use fresh reads and terminal attempts restore th
   const app=fixture();try{
     const {cart}=app.checkout();app.remote.order={...app.remote.order,active_payment_attempt:{order_payment_attempt_id:'fixture-attempt',status:'processing',is_resumable:false} as OrderPaymentAttempt};
     const locked=await app.get('/cart');assert.equal(locked.status,200);assert.match(await locked.text(),/data-testid="sf-cart" data-state="locked"/);assert.equal(app.remote.mutations,0);
-    const rejected=await app.post('/cart/items/fixture-line',{quantity:'2'});assert.equal(rejected.status,409);assert.match(await rejected.text(),/data-notice="cart_locked_payment"/);assert.equal(app.carts.lines(cart)[0]!.quantity,1);
+    const rejected=await app.post('/cart/items/fixture-line',{quantity:2});assert.equal(rejected.status,409);assert.match(await rejected.text(),/data-notice="cart_locked_payment"/);assert.equal(app.carts.lines(cart)[0]!.quantity,1);
     app.remote.order={...app.remote.order,active_payment_attempt:{...app.remote.order.active_payment_attempt!,status:'failed'}};
     const unlocked=await app.get('/cart');assert.equal(unlocked.status,200);const html=await unlocked.text();assert.match(html,/data-testid="sf-cart" data-state="filled"/);assert.match(html,/action="\/cart\/items\/fixture-line"/);assert.doesNotMatch(html,/href="\/checkout\/chk_fixture"/);assert.equal(app.remote.mutations,0);
   }finally{app.close();}
@@ -187,15 +187,15 @@ test('active-attempt cart locks use fresh reads and terminal attempts restore th
 test('a failed lock refresh after a rejected cart edit keeps the rejection and never offers an editable cart',async()=>{
   const app=fixture();try{
     const {cart}=app.checkout();app.remote.order={...app.remote.order,active_payment_attempt:{order_payment_attempt_id:'fixture-attempt',status:'processing',is_resumable:false} as OrderPaymentAttempt};app.remote.readFailureAt=2;
-    const rejected=await app.post('/cart/items/fixture-line',{quantity:'2'});assert.equal(rejected.status,409);const html=await rejected.text();assert.match(html,/data-page="error"/);assert.match(html,/Your payment is still being confirmed/);assert.doesNotMatch(html,/action="\/cart\/items\//);assert.equal(app.carts.lines(cart)[0]!.quantity,1);assert.equal(app.remote.mutations,0);
+    const rejected=await app.post('/cart/items/fixture-line',{quantity:2});assert.equal(rejected.status,409);const html=await rejected.text();assert.match(html,/data-page="error"/);assert.match(html,/Your payment is still being confirmed/);assert.doesNotMatch(html,/action="\/cart\/items\//);assert.equal(app.carts.lines(cart)[0]!.quantity,1);assert.equal(app.remote.mutations,0);
   }finally{app.close();}
 });
 
 type VerificationBody={state?:{verification?:Record<string,unknown>};error?:{code:string;message_key:string}};
 function verificationClient(app:ReturnType<typeof fixture>,fail?:string){
   const calls:Record<string,unknown>[]=[];
-  (app.client.checkoutSessions as unknown as Record<string,unknown>).createCustomerVerification=async(input:{body:Record<string,unknown>})=>{
-    const params=input.body;calls.push(params);if(fail)throw new LocalError(fail,409);
+  (app.client.checkoutSessions as unknown as Record<string,unknown>).createCustomerVerification=async(_id:string,params:Record<string,unknown>)=>{
+    calls.push(params);if(fail)throw new LocalError(fail,409);
     return {checkout_session_customer_verification_id:`private-verification-${calls.length}`,channel:params.channel==='auto'?'sms':params.channel,...(params.channel==='email'?{email:'b•••@example.test'}:{phone_last_digits:'67'})};
   };
   return calls;
@@ -277,10 +277,21 @@ test('the real completion route sends an unstarted $0 trial back to checkout wit
 });
 test('the real completion route keeps a $0 trial with an unknown payment outcome on the confirming page',async()=>{
   const app=fixture();try{
-    const record=unstartedTrial(app);const action=app.payments.job(record,'pay',{action:'setup',setup_payment_source:{credential_type:'token' as const,token:'pm_trial'}});
+    const record=unstartedTrial(app);const action=app.payments.job(record,'pay',{action:'setup',setup_payment_source:{credential_type:'stripe_payment_method' as const,stripe:{payment_method:'pm_trial'}}});
     app.store.run("UPDATE actions SET status='unknown' WHERE action_id=?",action.action_id);
     const response=await app.get(`/checkout/${record.checkout_ref}/complete`);
     assert.equal(response.status,200);assert.equal(response.headers.get('location'),null);assert.match(await response.text(),/data-testid="sf-complete"/);
     assert.deepEqual(JSON.parse(app.checkouts.record(record.checkout_ref).flash),[]);assert.equal(app.remote.mutations,0);
+  }finally{app.close();}
+});
+
+
+test('payment return reads the holding attempt without confirming or resuming',async()=>{
+  const app=fixture();try{
+    app.checkout();
+    app.remote.order.active_payment_attempt={order_payment_attempt_id:'attempt_example',status:'requires_action',is_resumable:true,pending_actions:[]} as unknown as OrderPaymentAttempt;
+    const response=await app.get('/checkout/chk_fixture/return');
+    assert.equal(response.status,303);assert.equal(response.headers.get('location'),'/checkout/chk_fixture');
+    assert.equal(app.remote.mutations,0);assert.ok(app.remote.reads>0);
   }finally{app.close();}
 });

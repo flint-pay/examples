@@ -1,5 +1,5 @@
 import {serve} from '@hono/node-server';
-import {SdkError} from '@flintpay/node';
+import {SdkError,errors} from '@flintpay/node';
 import {readConfig} from './config.ts';
 import {createClient} from './flint/client.ts';
 import {createAuth} from './flint/auth.ts';
@@ -15,5 +15,5 @@ async function main(){
   for(const signal of ['SIGTERM','SIGINT'] as const)process.once(signal,()=>{clearInterval(cleanup);server.close(()=>{runtime.store.close();runtime.identity.close();process.exit(0);});});
 }
 try{await main();}catch(error){
-  console.error(error instanceof SdkError?`Startup failed: ${error.code??error.kind}${error.meta?.requestId?` (request ${error.meta.requestId})`:''}`:error instanceof Error?error.message:'Startup failed');process.exitCode=1;
+  console.error(error instanceof SdkError?`Startup failed: ${error.code??error.name}${error.requestId?` (request ${error.requestId})`:''}`:error instanceof Error?error.message:'Startup failed');process.exitCode=1;
 }

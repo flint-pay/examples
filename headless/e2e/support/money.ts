@@ -11,7 +11,7 @@ export function equalMoney(actual: unknown, expected: unknown): void {
   invariant(a.amount === b.amount && a.currency === b.currency, 'MONEY_MISMATCH');
 }
 export function giftAllocation(order: Record<string, any>): Record<string, unknown> {
-  invariant(typeof order.version === 'string' && /^[1-9]\d*$/.test(order.version), 'EXPECTED_REVISION_REQUIRED');
+  invariant(typeof order.version==='number'&&Number.isSafeInteger(order.version)&&order.version>0, 'EXPECTED_REVISION_REQUIRED');
   const e = order.gift_card_estimate;
   invariant(e && Array.isArray(e.gift_cards) && e.gift_cards.length > 0, 'GIFT_ESTIMATE_REQUIRED');
   const cards = e.gift_cards.map((c: any) => ({ gift_card_id: c.gift_card_id, amount_money: money(c.amount_money) }));
@@ -27,7 +27,7 @@ export function settlementRequest(order: Record<string, any>, source?: Record<st
   const allocation = order.gift_cards?.length ? giftAllocation(order) : undefined;
   const processor = allocation ? money(allocation.processor_money) : expected;
   invariant(processor.amount === '0' ? !source : !!source, 'PROCESSOR_SOURCE_REQUIREMENT');
-  return { action: 'pay', expected_outstanding_money: expected, ...(allocation ? { expected_version: order.version, accepted_gift_card_allocation: allocation } : {}), ...(source ? { payment_source: source } : {}) };
+  return { action: 'pay', expected_outstanding_money: expected, ...(allocation ? { accepted_gift_card_allocation: allocation } : {}), ...(source ? { payment_source: source } : {}) };
 }
 export function assertOneCharge(order: Record<string, any>, attempts: Record<string, any>[], count = 1): void {
   invariant(attempts.filter(a => a.status === 'succeeded').length === 1, 'SUCCEEDED_ATTEMPT_COUNT');

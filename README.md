@@ -4,7 +4,7 @@ Example apps that use Flint Pay from your own server and your own pages. Each ex
 
 ## Before you start
 
-- The examples use the `@flintpay/node` 3.0.0 beta SDK, pinned to an exact version. Beta means method and field names can still change before 3.0.0 is final.
+- The examples use the `@flintpay/node` 8.0.0-beta.3 SDK, pinned to an exact version. Beta means method and field names can still change before 8.0.0 is final.
 - Every example runs in test mode only. Use a sandbox test key (`flint_test_...`) and Stripe test cards. The apps refuse live keys, and no money moves.
 - Each example needs a Flint sandbox with payments set up. The `README.md` in each example lists its requirements, the sandbox settings it changes, and the capabilities it can use. An example that needs something your sandbox does not have, such as ACH debit or Affirm, says so and stays usable without it.
 - Node.js 24 or later.

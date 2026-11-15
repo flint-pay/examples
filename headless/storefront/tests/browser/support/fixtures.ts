@@ -8,7 +8,7 @@ export const usd = (amount: number | string | bigint): Money => ({ amount: Strin
 const variant = (id: string, name: string | undefined, price: number) => ({
   variant_id: id,
   ...(name ? { name } : {}),
-  available_for_sale: true,
+  is_available_for_sale: true,
   unit_price_money: usd(price),
 });
 
@@ -93,7 +93,7 @@ export function baseOrder(config: FakeConfig): Order {
     order_id: 'ord_fixture_1',
     order_number: 'CS-1001',
     customer_id: undefined,
-    version: '3',
+    version: 3,
     status: 'open',
     payment_status: 'unpaid',
     line_items: config.lines,

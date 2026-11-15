@@ -146,7 +146,7 @@ test('preference relays require all five unique routing hints bound to the audit
     for (const change of ['missing', 'wrong', 'duplicate']) {
       const url = new URL(destination);
       if (change === 'missing') url.searchParams.delete(key);
-      if (change === 'wrong') url.searchParams.set(key, value === 'sandbox' ? 'live' : 'OTHER');
+      if (change === 'wrong') url.searchParams.set(key, value === 'test' ? 'live' : 'OTHER');
       if (change === 'duplicate') url.searchParams.append(key, value);
       assert.throws(() => validate(url.href, preferenceBinding), { message: 'PREFERENCE_RELAY_ROUTING_REQUIRED' });
     }

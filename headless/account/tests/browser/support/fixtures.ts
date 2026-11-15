@@ -81,10 +81,10 @@ export function order(overrides: Partial<Order> = {}): Order {
     fulfillment_status: 'fulfilled',
     buyer_actions: [action('start_return', true), action('resend_receipt', true)],
     line_items: [
-      {
+      {backordered_quantity:0,expected_ship_date:null,order_edit_id:null,order_id:'ord_UNIT_FAKE',payment_link_line_item_key:null,product_type:'service',release_date:null,removed_quantity:0,type:'custom',
         order_line_item_id: ids.line,
         name: 'House blend coffee, 12 oz',
-        quantity: '2',
+        quantity: 2,
         selected_options: [{ option_id: 'opt_1', option_name: 'Grind', option_value_id: 'val_1', value: 'Whole bean' }],
         unit_price_money: usd(1800),
         subtotal_money: usd(3600),
@@ -92,10 +92,10 @@ export function order(overrides: Partial<Order> = {}): Order {
         discount_money: usd(0),
         modifier_total_money: usd(0),
         refunded_money: usd(0),
-        refunded_quantity: '0',
+        refunded_quantity: 0,
         tax_money: usd(297),
         total_money: usd(3897),
-        version: '1',
+        version: 1,
       },
     ],
     pricing_amounts: {
@@ -182,11 +182,11 @@ export function invoice(overrides: Partial<BuyerInvoice> = {}): BuyerInvoice {
     paid_money: usd(0),
     refunded_money: usd(0),
     refund_status: 'none',
-    version: '1',
+    version: 1,
     buyer_actions: [action('pay', true, { is_required: true, due_at: '2026-10-15T15:00:00Z' })],
     snapshot: {
       line_items: [
-        { invoice_line_item_id: 'ili_1', name: 'Office coffee service, October', quantity: '1', unit_price_money: usd(12000), subtotal_money: usd(12000), total_money: usd(12000), tax_money: usd(0), base_subtotal_money: usd(12000), discount_money: usd(0), modifier_total_money: usd(0) },
+        { invoice_line_item_id: 'ili_1', name: 'Office coffee service, October', quantity: 1, unit_price_money: usd(12000), subtotal_money: usd(12000), total_money: usd(12000), tax_money: usd(0), base_subtotal_money: usd(12000), discount_money: usd(0), modifier_total_money: usd(0) },
       ],
       pricing_amounts: { subtotal_money: usd(12000), discount_money: usd(0), charge_money: usd(0), requested_tip_money: usd(0), tax_money: usd(0), total_money: usd(12000) },
     },
@@ -206,7 +206,7 @@ export function returnResource(overrides: Partial<ReturnResource> = {}): ReturnR
     resolution_status: 'not_selected',
     created_at: asOf,
     updated_at: asOf,
-    version: '1',
+    version: 1,
     metadata: {},
     buyer_actions: [action('withdraw', true), action('ship_items', false, { unavailable_reason: 'not_in_state' }), action('pay_balance', false, { unavailable_reason: 'not_in_state' })],
     supported_actions: ['cancel'],
@@ -216,13 +216,13 @@ export function returnResource(overrides: Partial<ReturnResource> = {}): ReturnR
       collected_money: zero, credit_money: zero, deduction_money: zero, due_from_buyer_money: zero, due_to_buyer_money: zero, refunded_money: zero,
       replacement_total_money: zero, returned_discount_money: zero, returned_subtotal_money: usd(1800), returned_tax_money: usd(149), returned_total_money: usd(1949),
     },
-    line_items: [{ return_line_item_id: 'rli_1', order_line_item_id: ids.line, name: 'House blend coffee, 12 oz', requested_quantity: '1', return_reason_name: 'Changed my mind', status: 'requested' }],
+    line_items: [{ return_line_item_id: 'rli_1', order_line_item_id: ids.line, name: 'House blend coffee, 12 oz', requested_quantity: 1, return_reason_name: 'Changed my mind', status: 'requested' }],
     ...overrides,
   } as unknown as ReturnResource;
 }
 
 export function eligibility(): ReturnEligibilityCheck {
-  const eligible = { allowed_resolution_types: ['refund'], eligible_quantity: '2', reason: 'eligible_under_policy', reason_message: 'Eligible.', status: 'eligible', expires_at: '2026-11-06T00:00:00Z', policy_adjustment_proposals: [] };
+  const eligible = { allowed_resolution_types: ['refund'], eligible_quantity: 2, reason: 'eligible_under_policy', reason_message: 'Eligible.', status: 'eligible', expires_at: '2026-11-06T00:00:00Z', policy_adjustment_proposals: [] };
   return {
     evaluated_at: asOf,
     order_id: ids.order,
@@ -231,7 +231,7 @@ export function eligibility(): ReturnEligibilityCheck {
     policy_evaluation: { line_items: [], reason: 'eligible_under_policy', reason_message: 'Eligible.', status: 'eligible' },
     line_items: [
       { order_line_item_id: ids.line, fulfillment_id: ids.fulfillment, name: 'House blend coffee, 12 oz', can_buyer_request: true, eligibility: eligible, suggested_return_reasons: [{ return_reason_id: 'rr_1', handle: 'changed-mind', name: 'Changed my mind', is_note_required: false }, { return_reason_id: 'rr_2', handle: 'damaged', name: 'Arrived damaged', is_note_required: true }], bundle_components: [], modifiers: [], selected_options: [] },
-      { order_line_item_id: 'oli_example_002', fulfillment_id: ids.fulfillment, name: 'Stoneware mug', can_buyer_request: true, eligibility: { ...eligible, eligible_quantity: '0', status: 'ineligible', reason: 'return_window_expired' }, suggested_return_reasons: [], bundle_components: [], modifiers: [], selected_options: [] },
+      { order_line_item_id: 'oli_example_002', fulfillment_id: ids.fulfillment, name: 'Stoneware mug', can_buyer_request: true, eligibility: { ...eligible, eligible_quantity: 0, status: 'ineligible', reason: 'return_window_expired' }, suggested_return_reasons: [], bundle_components: [], modifiers: [], selected_options: [] },
     ],
   } as unknown as ReturnEligibilityCheck;
 }
@@ -267,12 +267,12 @@ export const giftCard: BuyerGiftCard = {
   last_redeemed_at: null,
   created_at: asOf,
   updated_at: asOf,
-  version: '1',
+  version: 1,
 };
 
 export const giftTransactions: BuyerGiftCardTransaction[] = [
-  { gift_card_id: ids.giftCard, gift_card_transaction_id: 'gct_2', sequence: '2', transaction_type: 'redeem', amount_money: { amount: '-500', currency: 'USD' }, balance_before_money: usd(3000), balance_after_money: usd(2500), posted_at: '2026-10-05T12:00:00Z' },
-  { gift_card_id: ids.giftCard, gift_card_transaction_id: 'gct_1', sequence: '1', transaction_type: 'load', amount_money: usd(3000), balance_before_money: usd(0), balance_after_money: usd(3000), posted_at: '2026-10-01T12:00:00Z' },
+  { gift_card_id: ids.giftCard, gift_card_transaction_id: 'gct_2', sequence: 2, transaction_type: 'redeem', amount_money: { amount: '-500', currency: 'USD' }, balance_before_money: usd(3000), balance_after_money: usd(2500), posted_at: '2026-10-05T12:00:00Z' },
+  { gift_card_id: ids.giftCard, gift_card_transaction_id: 'gct_1', sequence: 1, transaction_type: 'load', amount_money: usd(3000), balance_before_money: usd(0), balance_after_money: usd(3000), posted_at: '2026-10-01T12:00:00Z' },
 ];
 
 export const events: BuyerFulfillmentEvent[] = [
@@ -286,7 +286,7 @@ export const packages: Package[] = [
 ];
 
 export const fulfillments: Fulfillment[] = [
-  { fulfillment_id: ids.fulfillment, order_id: ids.order, type: 'shipment', status: 'completed', request_status: 'accepted', line_items: [], supported_actions: [], version: '1' } as unknown as Fulfillment,
+  { fulfillment_id: ids.fulfillment, order_id: ids.order, type: 'shipment', status: 'completed', request_status: 'accepted', line_items: [], supported_actions: [], version: 1 } as unknown as Fulfillment,
 ];
 
 export const payments: PaymentIntent[] = [

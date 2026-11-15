@@ -1,3 +1,4 @@
+import {errors} from '@flintpay/node';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {Client,SdkError} from '@flintpay/node';
@@ -17,7 +18,7 @@ async function harness(api:unknown,appConfig=config,realRendering=false){
   const headers={Cookie:`${config.cookieName}=${session.token}`,Origin:config.appOrigin,'X-CSRF-Token':session.session.csrf_token,'Content-Type':'application/json'};
   return {app,identity,store,user,session,headers,rendered:()=>rendered,close:()=>{store.close();identity.close();}};
 }
-const credentialRejected=()=>new SdkError('authentication','Session rejected','response',false,{status:401,headers:{},attempts:1,durationMs:0},'INVALID_CREDENTIAL',{type:'authentication_error',code:'INVALID_CREDENTIAL',message:'Session rejected',doc_url:'https://developers.withflintpay.com/docs/errors#invalid_credential',error_source:'integration',remediation:null,request_id:`req_${'0'.repeat(26)}`,details:[{code:'INVALID_CREDENTIAL',message:'Session rejected',reason:'unknown'}]});
+const credentialRejected=()=>new errors.AuthenticationError('Session rejected',{outcome:'response',retryAllowed:false,...({status:401,headers:{},attempts:1,durationMs:0}),code:'INVALID_CREDENTIAL',details:({type:'authentication_error',code:'INVALID_CREDENTIAL',message:'Session rejected',doc_url:'https://developers.withflintpay.com/docs/errors#invalid_credential',error_source:'integration',remediation:null,request_id:`req_${'0'.repeat(26)}`,details:[{code:'INVALID_CREDENTIAL',message:'Session rejected',reason:'unknown'}]} as any)?.details??[],param:({type:'authentication_error',code:'INVALID_CREDENTIAL',message:'Session rejected',doc_url:'https://developers.withflintpay.com/docs/errors#invalid_credential',error_source:'integration',remediation:null,request_id:`req_${'0'.repeat(26)}`,details:[{code:'INVALID_CREDENTIAL',message:'Session rejected',reason:'unknown'}]} as any)?.param,remediation:({type:'authentication_error',code:'INVALID_CREDENTIAL',message:'Session rejected',doc_url:'https://developers.withflintpay.com/docs/errors#invalid_credential',error_source:'integration',remediation:null,request_id:`req_${'0'.repeat(26)}`,details:[{code:'INVALID_CREDENTIAL',message:'Session rejected',reason:'unknown'}]} as any)?.remediation,body:{type:'authentication_error',code:'INVALID_CREDENTIAL',message:'Session rejected',doc_url:'https://developers.withflintpay.com/docs/errors#invalid_credential',error_source:'integration',remediation:null,request_id:`req_${'0'.repeat(26)}`,details:[{code:'INVALID_CREDENTIAL',message:'Session rejected',reason:'unknown'}]}});
 test('health exposes configured source identity and process start without inventing a build',async()=>{
   const sha='a'.repeat(40),build=readConfig({FLINT_API_KEY:'flint_test_PLACEHOLDER',FLINT_API_BASE_URL:config.apiBaseUrl,APP_ORIGIN:config.appOrigin,PORT:'4200',BUILD_SHA:sha,BUILD_ARTIFACT_ID:sha+':headless/account'});
   for(const configured of [config,build]){
@@ -58,7 +59,7 @@ test('concurrent distinct retry nonces reach the API with independent keys and p
     createSubscriptionPaymentRetry:async(id:string,body:unknown,options:RequestOptions)=>{
       assert.equal(id,'sub_example');assert.deepEqual(body,{});assert.equal(options.customerToken,'example customer authority');assert.equal(options.apiKey,undefined);keys.push(options.idempotencyKey!);
       if(keys.length===1){await bothRead;return retry;}
-      throw new SdkError('api','Synthetic retry in progress','response',false,{status:409,headers:{},attempts:1,durationMs:1},'SUBSCRIPTION_PAYMENT_RETRY_IN_PROGRESS');
+      throw new errors.ApiError('Synthetic retry in progress',{outcome:'response',retryAllowed:false,...({status:409,headers:{},attempts:1,durationMs:1}),code:'SUBSCRIPTION_PAYMENT_RETRY_IN_PROGRESS'});
     },
   }});try{
     const responses=await Promise.all(['retry-primary','retry-competing'].map(action=>h.app.request('/subscriptions/sub_example/retry-payment',{method:'POST',headers:{...h.headers,'X-Action-ID':action},body:'{}'})));
@@ -81,7 +82,7 @@ test('a completed retry removes the competing capability before another write an
   }finally{h.close();}
 });
 test('foreign resource mutations and payment launches stop at the buyer ownership read',async()=>{
-  let writes=0;const h=await harness({me:{getOrder:async()=>{throw new LocalError('NOT_FOUND',404);},getInvoice:async()=>{throw new LocalError('NOT_FOUND',404);},sendOrderReceipt:async()=>{writes++;},createInvoiceCheckoutSession:async()=>{writes++;}}});try{
+  let writes=0;const h=await harness({me:{getOrder:async()=>{throw new LocalError('NOT_FOUND',404);},getInvoice:async()=>{throw new LocalError('NOT_FOUND',404);},sendOrderReceipt:async()=>{writes++;},createCheckoutSession:async(launch:any,opts:RequestOptions)=>{const {type,invoice_id,return_resolution_id,...body}=launch;writes++;}}});try{
     const receipt=await h.app.request('/orders/ord_foreign/receipt',{method:'POST',headers:h.headers,body:'{}'});assert.equal(receipt.status,404);
     const pay=await h.app.request('/invoices/inv_foreign/pay',{headers:{Cookie:h.headers.Cookie,Accept:'application/json'}});assert.equal(pay.status,404);assert.equal(writes,0);assert.equal(h.store.all('SELECT * FROM payment_checkouts').length,0);
     assert.equal(JSON.stringify(await receipt.json()).includes('cus_example'),false);
@@ -124,19 +125,20 @@ test('sign-in accepts only session-ended query notices and preserves existing fl
   }finally{h.close();}
 });
 test('published buyer SDK data reaches gift history and order summaries through customer-only transports',async()=>{
+  const giftId=`gc_${'0'.repeat(26)}`,orderId=`ord_${'0'.repeat(26)}`;
   const money={amount:'2000' as const,currency:'USD'},zero={amount:'0' as const,currency:'USD'},postedAt='2026-01-02T12:00:00Z';
-  const transaction={gift_card_id:'gfc_example',gift_card_transaction_id:'gct_example',transaction_type:'redeem',posted_at:'2026-01-02T12:00:00Z',sequence:'2',amount_money:{amount:'-500',currency:'USD'},balance_before_money:{amount:'2500',currency:'USD'},balance_after_money:money} satisfies BuyerGiftCardTransaction;
+  const transaction={gift_card_id:giftId,gift_card_transaction_id:'gct_example',transaction_type:'redeem',posted_at:'2026-01-02T12:00:00Z',sequence:2,amount_money:{amount:'-500',currency:'USD'},balance_before_money:{amount:'2500',currency:'USD'},balance_after_money:money} satisfies BuyerGiftCardTransaction;
   const source={type:'card',card:{brand:'visa',last4:'4242'}} satisfies PaymentSourceSummary;
   const pickup={location_name:'Example Store',address:{line1:'123 Example Street',city:'Example City',state:'NY',postal_code:'10001',country:'US'},instructions:'Collect at the counter.',ready_at:'2026-01-02T12:00:00Z',window_start_at:'2026-01-02T12:00:00Z',window_end_at:'2026-01-02T13:00:00Z',timezone:'America/New_York'} satisfies PickupFulfillmentDetails;
-  const giftCard={gift_card_id:'gfc_example',merchant_id:'mer_example',status:'active',currency:'USD',last4:'MPLE',balance_money:money,available_money:money,reserved_money:zero,created_at:postedAt,updated_at:postedAt,last_loaded_at:postedAt,last_redeemed_at:postedAt,version:'1'} satisfies BuyerGiftCard;
-  const paidOrder={order_id:'ord_example',status:'closed',payment_status:'paid',refund_status:'none',buyer_actions:[],line_items:[],charges:[],checkout_session_ids:[],discounts:[],fulfillments:[],gift_card_settlements:[],gift_card_tender_enabled:false,gift_cards:[],governing_delivery_selection_id:null,payment_intent_ids:[],refund_ids:[],return_credit_settlements:[],tips:[],version:'1',pricing_amounts:{total_money:money,subtotal_money:money,charge_money:zero,discount_money:zero,requested_tip_money:zero,tax_money:zero,additive_tax_money:zero,inclusive_tax_money:zero},settlement_amounts:{written_off_money:zero,balance_money:zero,credit_money:zero,net_collected_money:money,outstanding_money:zero,paid_money:money,refunded_money:zero,settled_tip_money:zero},tax:{enabled:false,mode:'external',status:'not_required'}} satisfies BuyerOrder;
-  const payment={payment_intent_id:'intent_example',status:'succeeded',amount_money:money,payment_source:source,payment_flow:'checkout',payment_options:['card'],last_payment_error:null,risk:null,support_reference:'EXAMPLE',metadata:{},supported_actions:[],version:'1'} satisfies PaymentIntent;
+  const giftCard={gift_card_id:giftId,merchant_id:'mer_example',status:'active',currency:'USD',last4:'MPLE',balance_money:money,available_money:money,reserved_money:zero,created_at:postedAt,updated_at:postedAt,last_loaded_at:postedAt,last_redeemed_at:postedAt,version:1} satisfies BuyerGiftCard;
+  const paidOrder={merchant_id:'mer_example',created_at:'2000-01-01T00:00:00Z',deferred_promotions:[],invoice_id:null,paid_at:null,prepayment_order_id:null,subscription_delivery_number:null,buyer_actions:[],updated_at:'2000-01-01T00:00:00Z',order_id:orderId,status:'closed',payment_status:'paid',refund_status:'none',line_items:[],charges:[],checkout_session_ids:[],discounts:[],fulfillments:[],gift_card_settlements:[],gift_card_tender_enabled:false,gift_cards:[],governing_delivery_selection_id:null,payment_intent_ids:[],refund_ids:[],return_credit_settlements:[],tips:[],version:1,pricing_amounts:{total_money:money,subtotal_money:money,charge_money:zero,discount_money:zero,requested_tip_money:zero,tax_money:zero,additive_tax_money:zero,inclusive_tax_money:zero},settlement_amounts:{dispute_lost_money:{amount:'0',currency:'USD'},disputed_money:{amount:'0',currency:'USD'},overpaid_money:{amount:'0',currency:'USD'},released_money:{amount:'0',currency:'USD'},removed_money:{amount:'0',currency:'USD'},written_off_money:zero,net_collected_money:money,outstanding_money:zero,paid_money:money,refunded_money:zero,settled_tip_money:zero},tax:{enabled:false,mode:'external',status:'not_required'}} satisfies BuyerOrder;
+  const payment={customer_presence:'present',refund_expires_at:null,statement_descriptor:null,payment_intent_id:'intent_example',status:'succeeded',amount_money:money,payment_source:source,payment_flow:'checkout',payment_options:['card'],last_payment_error:null,risk:null,support_reference:'EXAMPLE',metadata:{},supported_actions:[],version:1} satisfies PaymentIntent;
   const replies:Record<string,unknown>={
-    '/v1/me/gift-cards/gfc_example':{data:giftCard},
-    '/v1/me/gift-cards/gfc_example/transactions':{data:[{...transaction,metadata:{private:'private'}}]},
-    '/v1/me/orders/ord_example':{data:paidOrder},
+    [`/v1/me/gift-cards/${giftId}`]:{data:giftCard},
+    '/v1/me/gift-card-transactions':{data:[{...transaction,metadata:{private:'private'}}]},
+    [`/v1/me/orders/${orderId}`]:{data:paidOrder},
     '/v1/me/payment-intents':{data:[{...payment,payment_source:{...source,card:{...source.card,fingerprint:'private'}}}]},
-    '/v1/me/fulfillments':{data:[{fulfillment_id:'ful_example',order_id:'ord_example',type:'pickup',status:'ready',line_items:[],request_status:'accepted',scheduled_start_at:null,supported_actions:[],version:'1',pickup_details:{...pickup,metadata:{private:'private'}}}]},
+    '/v1/me/fulfillments':{data:[{created_at:postedAt,updated_at:postedAt,fulfillment_id:'ful_example',order_id:orderId,type:'pickup',status:'ready',line_items:[],request_status:'accepted',scheduled_start_at:null,supported_actions:[],version:1,pickup_details:{...pickup,metadata:{private:'private'}}}]},
     '/v1/me/refunds':{data:[]},'/v1/me/shipments':{data:[]},'/v1/me/packages':{data:[]},'/v1/me/fulfillment-events':{data:[]}
   };
   const requests:URL[]=[];
@@ -147,13 +149,13 @@ test('published buyer SDK data reaches gift history and order summaries through 
     return new Response(JSON.stringify({...(replies[url.pathname] as object),request_id:`req_${'0'.repeat(26)}`}),{headers:{'Content-Type':'application/json','Flint-Mode':'test','Flint-Sandbox-ID':'sandbox_example'}});
   }});
   const h=await harness(client);try{
-    assert.equal((await h.app.request('/gift-cards/gfc_example',{headers:{Cookie:h.headers.Cookie}})).status,200);
+    assert.equal((await h.app.request(`/gift-cards/${giftId}`,{headers:{Cookie:h.headers.Cookie}})).status,200);
     const gift=h.rendered() as {pageId:string;data:{transactions:{status:string;value:BuyerGiftCardTransaction[]}}};assert.equal(gift.pageId,'ac-gift-card');assert.equal(gift.data.transactions.status,'ok');assert.equal(gift.data.transactions.value[0]?.transaction_type,'redeem');assert.equal(gift.data.transactions.value[0]?.posted_at,transaction.posted_at);assert.equal('metadata'in gift.data.transactions.value[0]!,false);
-    assert.equal((await h.app.request('/orders/ord_example',{headers:{Cookie:h.headers.Cookie}})).status,200);
+    assert.equal((await h.app.request(`/orders/${orderId}`,{headers:{Cookie:h.headers.Cookie}})).status,200);
     const order=h.rendered() as {data:{payments:{status:string;value:{payment_source:PaymentSourceSummary}[]};fulfillments:{status:string;value:{pickup_details:PickupFulfillmentDetails}[]}}};
     assert.equal(order.data.payments.status,'ok');assert.deepEqual(order.data.payments.value[0]?.payment_source,source);assert.equal(order.data.fulfillments.status,'ok');assert.deepEqual(order.data.fulfillments.value[0]?.pickup_details,pickup);
     assert.equal(requests.length,Object.keys(replies).length);
-    for(const request of requests.filter(url=>!url.pathname.includes('/gift-cards/')&&!url.pathname.includes('/orders/')))assert.equal(request.searchParams.get('order_id'),'ord_example');
+    for(const request of requests.filter(url=>!url.pathname.includes('/gift-card')&&!url.pathname.includes('/orders/')))assert.equal(request.searchParams.get('order_id'),orderId);
   }finally{h.close();await client.close();}
 });
 test('list envelopes are composed and customer reads carry no merchant or checkout authority',async()=>{
@@ -192,7 +194,7 @@ test('wrong password attempts use a real local rate limit',async()=>{
   }finally{h.close();}
 });
 test('pending email changes reserve the new email in the shared canonical identity store',async()=>{
-  const h=await harness({me:{createEmailChangeRequest:async(body:{new_email:string})=>({email_change_request_id:'email_change_example',customer_id:'cus_example',new_email:body.new_email,confirmed:false,current_email_confirmation_required:true,created_at:new Date().toISOString(),expires_at:new Date(Date.now()+3600000).toISOString()})}});try{
+  const h=await harness({me:{createEmailChangeRequest:async(body:{new_email:string})=>({email_change_request_id:'email_change_example',customer_id:'cus_example',new_email:body.new_email,confirmed_at:null,current_email_confirmation_required:true,created_at:new Date().toISOString(),expires_at:new Date(Date.now()+3600000).toISOString()})}});try{
     const response=await h.app.request('/profile/email',{method:'POST',headers:h.headers,body:JSON.stringify({new_email:'new-buyer@example.invalid'})});assert.equal(response.status,200);assert.equal('customer_id'in(await response.json()).request,false);
     await assert.rejects(h.identity.createUser('Another','new-buyer@example.invalid','another example password'),/email_reserved/);
   }finally{h.close();}
@@ -206,15 +208,15 @@ test('a revoked customer-session 404 sends the buyer to sign-in instead of redir
 });
 test('confirmed email changes replace revoked authority, rotate the proving browser, and support new-email login',async()=>{
   const newEmail='new-buyer@example.invalid',oldAuthority='example customer authority',newAuthority='new example authority',keys:string[]=[];let revoked=false;
-  const emailRequest={email_change_request_id:'email_change_example',customer_id:'cus_example',new_email:newEmail,confirmed:false,current_email_confirmation_required:true,created_at:new Date().toISOString(),expires_at:new Date(Date.now()+3600000).toISOString()};
+  const emailRequest={email_change_request_id:'email_change_example',customer_id:'cus_example',new_email:newEmail,confirmed_at:null,current_email_confirmation_required:true,created_at:new Date().toISOString(),expires_at:new Date(Date.now()+3600000).toISOString()};
   const h=await harness({
     me:{
       createEmailChangeRequest:async()=>emailRequest,
-      confirmEmailChangeRequest:async(_id:string,body:unknown,options:RequestOptions)=>{assert.deepEqual(body,{new_email_code:'654321',current_email_code:'123456'});assert.equal(options.customerToken,oldAuthority);revoked=true;return {...emailRequest,confirmed:true};},
+      confirmEmailChangeRequest:async(_id:string,body:unknown,options:RequestOptions)=>{assert.deepEqual(body,{new_email_code:'654321',current_email_code:'123456'});assert.equal(options.customerToken,oldAuthority);revoked=true;return {...emailRequest,confirmed_at:'2000-01-01T00:00:00Z'};},
       get:async(_body:unknown,options:RequestOptions)=>{assert.ok(revoked);assert.equal(options.customerToken,newAuthority);assert.equal(options.apiKey,undefined);return {customer_id:'cus_example',email:newEmail,name:'Example'};}
     },
     customerSessions:{
-      create:async(body:unknown,options:RequestOptions)=>{assert.ok(revoked);assert.deepEqual(body,{customer_id:'cus_example',expires_in_seconds:BigInt(config.sessionTtl)});assert.ok(options.idempotencyKey);keys.push(options.idempotencyKey!);return {customer_id:'cus_example',customer_session_id:'new_session_example',secret:newAuthority,refresh_token:'new example refresh',expires_at:new Date(Date.now()+3600000).toISOString(),refresh_token_expires_at:new Date(Date.now()+86400000).toISOString()};},
+      create:async(body:unknown,options:RequestOptions)=>{assert.ok(revoked);assert.deepEqual(body,{customer_id:'cus_example',expires_in_seconds:config.sessionTtl});assert.ok(options.idempotencyKey);keys.push(options.idempotencyKey!);return {supported_actions:[],customer_id:'cus_example',customer_session_id:'new_session_example',secret:newAuthority,refresh_token:'new example refresh',expires_at:new Date(Date.now()+3600000).toISOString(),refresh_token_expires_at:new Date(Date.now()+86400000).toISOString()};},
       revoke:async()=>({})
     }
   });try{
@@ -237,13 +239,13 @@ test('an old profile 404 waits for email-confirmation replacement creation witho
   let startOld!:()=>void,releaseOld!:()=>void,startCreate!:()=>void,releaseCreate!:()=>void;
   const oldStarted=new Promise<void>(resolve=>{startOld=resolve;}),oldReleased=new Promise<void>(resolve=>{releaseOld=resolve;});
   const createStarted=new Promise<void>(resolve=>{startCreate=resolve;}),createReleased=new Promise<void>(resolve=>{releaseCreate=resolve;});
-  const emailRequest={email_change_request_id:'email_change_example',customer_id:'cus_example',new_email:newEmail,confirmed:false,current_email_confirmation_required:true,created_at:new Date().toISOString(),expires_at:new Date(Date.now()+3600000).toISOString()};
+  const emailRequest={email_change_request_id:'email_change_example',customer_id:'cus_example',new_email:newEmail,confirmed_at:null,current_email_confirmation_required:true,created_at:new Date().toISOString(),expires_at:new Date(Date.now()+3600000).toISOString()};
   const h=await harness({
-    me:{createEmailChangeRequest:async()=>emailRequest,confirmEmailChangeRequest:async()=>({...emailRequest,confirmed:true}),get:async(_body:unknown,options:RequestOptions)=>{
+    me:{createEmailChangeRequest:async()=>emailRequest,confirmEmailChangeRequest:async()=>({...emailRequest,confirmed_at:'2000-01-01T00:00:00Z'}),get:async(_body:unknown,options:RequestOptions)=>{
       if(options.customerToken==='example customer authority'){startOld();await oldReleased;throw credentialRejected();}
       assert.equal(options.customerToken,newAuthority);return {customer_id:'cus_example',email:newEmail};
     }},
-    customerSessions:{create:async()=>{startCreate();await createReleased;return {customer_id:'cus_example',customer_session_id:'replacement_session_example',secret:newAuthority,refresh_token:'replacement example refresh',expires_at:new Date(Date.now()+3600000).toISOString(),refresh_token_expires_at:new Date(Date.now()+86400000).toISOString()};}}
+    customerSessions:{create:async()=>{startCreate();await createReleased;return {supported_actions:[],customer_id:'cus_example',customer_session_id:'replacement_session_example',secret:newAuthority,refresh_token:'replacement example refresh',expires_at:new Date(Date.now()+3600000).toISOString(),refresh_token_expires_at:new Date(Date.now()+86400000).toISOString()};}}
   });try{
     assert.equal((await h.app.request('/profile/email',{method:'POST',headers:h.headers,body:JSON.stringify({new_email:newEmail})})).status,200);
     const oldProfile=h.app.request('/profile',{headers:{Cookie:h.headers.Cookie}});await oldStarted;

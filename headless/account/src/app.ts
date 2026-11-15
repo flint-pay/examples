@@ -1,3 +1,4 @@
+import {counter} from './security/money.ts';
 import {Hono} from 'hono';
 import type {Context} from 'hono';
 import {getCookie,setCookie} from 'hono/cookie';
@@ -5,7 +6,7 @@ import {bodyLimit} from 'hono/body-limit';
 import {serveStatic} from '@hono/node-server/serve-static';
 import {fileURLToPath} from 'node:url';
 import {randomUUID} from 'node:crypto';
-import type {Client,RequestOptions,BuyerInvoiceCheckoutSessionResult,BuyerCheckoutSessionWithSecret,BuyerAction,AddressRequestInput,EmailChangeRequest,ReturnLineItemRequestInput} from '@flintpay/node';
+import type {Client,RequestOptions,BuyerCheckoutSessionWithSecret,BuyerAction,AddressRequestInput,EmailChangeRequest,ReturnLineItemRequestInput} from '@flintpay/node';
 import {renderPage} from './views/index.ts';
 import type {PageId,RenderContext} from './views/types.ts';
 type Renderer=(pageId:PageId,context:RenderContext)=>string|Promise<string>;
@@ -264,7 +265,7 @@ export function createApp(deps:Dependencies){
       if(seen.has(key)||!eligible||!eligible.can_buyer_request||eligible.eligibility.status==='ineligible'||!/^\d+$/.test(quantity)||BigInt(quantity)<1n||BigInt(quantity)>BigInt(eligible.eligibility.eligible_quantity)||!data.reasons.some(r=>r.return_reason_id===reason))throw new LocalError('RETURN_SELECTION_INVALID');
       const buyerNote=row.buyer_note?text(row.buyer_note,500):undefined;
       if(data.reasons.find(r=>r.return_reason_id===reason)?.is_note_required&&!buyerNote)throw new LocalError('RETURN_REASON_NOTE_REQUIRED');
-      seen.add(key);return {order_line_item_id:lineId,fulfillment_id:fulfillmentId,requested_quantity:quantity as `${bigint}`,return_reason_id:reason,buyer_note:buyerNote};
+      seen.add(key);return {order_line_item_id:lineId,fulfillment_id:fulfillmentId,requested_quantity:counter(quantity),return_reason_id:reason,buyer_note:buyerNote};
     });
     if(!lines.length)throw new LocalError('RETURN_SELECTION_REQUIRED');
     const created=await mutate(c,'create-return',`order:${orderId}`,{order_id:orderId,line_items:lines},opts=>client.me.createReturn({order_id:orderId,line_items:lines},opts));flash(c,'return_requested');return finish(c,`/returns/${created.return_id}`,{return:project('return',created)});
@@ -285,7 +286,7 @@ export function createApp(deps:Dependencies){
   app.get('/invoices',async c=>page(c,'ac-invoices',{invoices:await loaded(async()=>list('invoice',await me(c,opts=>client.me.listInvoices(pagination(c),opts)))),page_token:c.req.query('page')}));
   app.get('/invoices/:invoiceId',async c=>{
     const invoiceId=id(c.req.param('invoiceId')),invoice=await ownedInvoice(c,invoiceId);
-    return page(c,'ac-invoice',{invoice:project('invoice',invoice),credit_notes:await loaded(async()=>items('credit',await me(c,opts=>client.me.listCreditNotes(invoiceId,{page_size:100},opts)))),awaiting_payment:c.req.query('payment')==='received'});
+    return page(c,'ac-invoice',{invoice:project('invoice',invoice),credit_notes:await loaded(async()=>items('credit',await me(c,opts=>client.me.listCreditNotes({invoice_id:invoiceId,page_size:100},opts)))),awaiting_payment:c.req.query('payment')==='received'});
   });
   app.get('/invoices/:invoiceId/status',async c=>c.json({invoice:project('invoice',await ownedInvoice(c,id(c.req.param('invoiceId'))))}));
   app.get('/invoices/:invoiceId/pdf',async c=>{
@@ -295,8 +296,8 @@ export function createApp(deps:Dependencies){
   });
   app.get('/invoices/:invoiceId/credit-notes/:creditNoteId/pdf',async c=>{
     const invoiceId=id(c.req.param('invoiceId')),creditId=id(c.req.param('creditNoteId'));await ownedInvoice(c,invoiceId);
-    await me(c,opts=>client.me.getCreditNote(invoiceId,creditId,undefined,opts));
-    const result=await me(c,opts=>client.me.getCreditNotePDF(invoiceId,creditId,undefined,opts));c.header('Content-Type','application/pdf');c.header('Content-Disposition','attachment; filename="credit-note.pdf"');return c.body(result.data as Uint8Array<ArrayBuffer>);
+    await me(c,opts=>client.me.getCreditNote(creditId,undefined,opts));
+    const result=await me(c,opts=>client.me.getCreditNotePDF(creditId,undefined,opts));c.header('Content-Type','application/pdf');c.header('Content-Disposition','attachment; filename="credit-note.pdf"');return c.body(result.data as Uint8Array<ArrayBuffer>);
   });
   const paymentRecord=(c:C,type:'invoice'|'return',resourceId:string)=>{
     const record=store.checkout(user(c).user_id,preflight.sandboxId,type,resourceId);if(!record)throw new LocalError('NOT_FOUND',404);return record;
@@ -319,19 +320,18 @@ export function createApp(deps:Dependencies){
           if(!canPay)return previous!;
           const resolutionId=type==='return'?('completion_blockers'in resource?resource.completion_blockers.find(blocker=>(blocker.code==='resolution_requires_action'||blocker.code==='resolution_pending')&&blocker.return_resolution_id)?.return_resolution_id:undefined):undefined;
           if(type==='return'&&!resolutionId)throw new LocalError('RETURN_PAYMENT_NOT_AVAILABLE',409);
-          const generation=(previous?.generation??0)+1,returnUrl=`${config.appOrigin}/${root}/${resourceId}/pay/return`,freshBody={surface:'embedded' as const,page_origin:config.appOrigin,payment_return_url:returnUrl};
+          const generation=(previous?.generation??0)+1,returnUrl=`${config.appOrigin}/${root}/${resourceId}/pay/return`,freshBody={surface:'headless' as const,page_origin:config.appOrigin,payment_return_url:returnUrl};
           const launchResource=`${preflight.sandboxId}:${current.user_id}:launch:${type}:${resourceId}`,launchNonce=`generation:${generation}`,actionId=createHash('sha256').update(`${launchResource}:launch:${launchNonce}`).digest('hex');
           const prior=store.get<ActionRecord>('SELECT * FROM actions WHERE action_id=?',actionId);
           const replay=prior&&(prior.status==='pending'||prior.status==='unknown')&&prior.body;
           const journalBody=replay?JSON.parse(prior.body!) as typeof freshBody&{generation:number;resolutionId?:string}:{...freshBody,generation,resolutionId};
           const {generation:storedGeneration,resolutionId:storedResolutionId,...body}=journalBody;
           const result=await store.mutate(launchResource,'launch',journalBody,async key=>{
-            const launched=await sessions.call<BuyerInvoiceCheckoutSessionResult|BuyerCheckoutSessionWithSecret>(current,opts=>type==='invoice'?client.me.createInvoiceCheckoutSession(resourceId,body,opts):client.me.createReturnResolutionCheckoutSession(storedResolutionId!,body,opts),key);
-            // An invoice launch wraps its session; a return resolution launch is the session itself.
-            const session='checkout_session'in launched?launched.checkout_session:launched;
+            const launched=await sessions.call<BuyerCheckoutSessionWithSecret>(current,opts=>client.me.createCheckoutSession(type==='invoice'?{...body,type:'invoice',invoice_id:resourceId}:{...body,type:'return_resolution',return_resolution_id:storedResolutionId!},opts),key);
+            const session=launched;
             return {checkout_session:{...session,gift_card_challenge:undefined},checkout_auth_token:launched.checkout_auth_token};
           },launchNonce);
-          if(!result.checkout_session.order_id||result.checkout_session.surface!=='embedded'||!result.checkout_auth_token)throw new LocalError('CHECKOUT_LAUNCH_INVALID',503);
+          if(!result.checkout_session.order_id||result.checkout_session.surface!=='headless'||!result.checkout_auth_token)throw new LocalError('CHECKOUT_LAUNCH_INVALID',503);
           if(!replay&&body.page_origin&&result.checkout_session.page_origin!==body.page_origin){logLaunchInvalid('page_origin_mismatch');throw new LocalError('CHECKOUT_LAUNCH_INVALID',503);}
           if(previous&&previous.checkout_session_id!==result.checkout_session.checkout_session_id)store.closeGiftChallenges(previous.checkout_ref);
           const ref=previous?.checkout_ref??randomUUID(),now=Date.now();
@@ -342,7 +342,7 @@ export function createApp(deps:Dependencies){
     }
     let state=null;
     if(record&&launch==='ready'){
-      const result=returned?await engine.resume(record.checkout_ref):await engine.status(record.checkout_ref),job=await engine.view(record,result,returned);state=job.state;
+      const result=await engine.status(record.checkout_ref),job=await engine.view(record,result,returned);state=job.state;
       if(job.next==='done'||job.next==='bank_processing'){flash(c,type==='return'?'return_payment_received':job.next==='done'?'invoice_payment_received':'invoice_payment_processing');return c.redirect(`/${root}/${resourceId}${type==='invoice'?'?payment=received':''}`,303);}
     }
     return page(c,type==='invoice'?'ac-invoice-pay':'ac-return-pay',{surface:type,resource_id:resourceId,buyer:{name:current.name,email:current.email},summary:{[type]:project(type,resource)},launch,state,returned});
@@ -363,7 +363,7 @@ export function createApp(deps:Dependencies){
         let credential:PayInput['credential'];if(body.credential){const value=object(body.credential),kind=value.kind;if(kind!=='confirmation_token'&&kind!=='payment_method_token'&&kind!=='saved_payment_method')throw new LocalError('INVALID_INPUT');credential={kind,value:required(value.value,2048)};}
         const collection=body.approved_collection_kind;if(collection!=='processor'&&collection!=='settlement')throw new LocalError('INVALID_INPUT');
         let giftMoney:PayInput['approved_gift_card_money'];if(body.approved_gift_card_money){const value=object(body.approved_gift_card_money),giftAmount=required(value.amount,30),giftCurrency=required(value.currency,3);if(!/^\d+$/.test(giftAmount)||!/^[A-Z]{3}$/.test(giftCurrency))throw new LocalError('INVALID_INPUT');giftMoney={amount:giftAmount as `${bigint}`,currency:giftCurrency};}
-        payInput={approved_outstanding_money:{amount:amount as `${bigint}`,currency},approved_collection_kind:collection,approved_order_revision:body.approved_order_revision===undefined?undefined:required(body.approved_order_revision,200),approved_gift_card_money:giftMoney,credential};
+        payInput={approved_outstanding_money:{amount:amount as `${bigint}`,currency},approved_collection_kind:collection,approved_order_revision:body.approved_order_revision===undefined?undefined:counter(body.approved_order_revision),approved_gift_card_money:giftMoney,credential};
       }
       const result=kind==='submit'?await engine.start(record.checkout_ref,payInput!,nonce(c)):kind==='resume'?await engine.resume(record.checkout_ref,nonce(c)):kind==='cancel'?await engine.cancel(record.checkout_ref):await engine.status(record.checkout_ref);
       return c.json(await engine.view(record,result));
@@ -462,7 +462,7 @@ export function createApp(deps:Dependencies){
     const previous=pending?await me(c,opts=>client.me.getPaymentMethod(pending.payment_method_id,undefined,opts)):undefined;
     const resource=`${preflight.sandboxId}:${user(c).user_id}:card-setup`;
     const sequence=store.get<{n:number}>('SELECT COUNT(*) AS n FROM actions WHERE resource=?',resource)!.n;
-    const result=await store.mutate(resource,'card-setup',{type:'card',generation:previous?.status==='pending'?sequence-1:sequence},key=>sessions.call(user(c),opts=>client.me.savePaymentMethod({type:'card'},opts),key),nonce(c));
+    const result=await store.mutate(resource,'card-setup',{type:'card',generation:previous?.status==='pending'?sequence-1:sequence},key=>sessions.call(user(c),opts=>client.me.createPaymentMethod({type:'card'},opts),key),nonce(c));
     if(!result.client_setup?.stripe?.setup_intent?.client_secret)throw new LocalError('CARD_SETUP_UNAVAILABLE',503);
     store.run('INSERT OR REPLACE INTO pending_cards VALUES(?,?,?,?,?)',user(c).user_id,preflight.sandboxId,result.payment_method_id,returnPath(c.get('body').return_to,'/payment-methods'),Date.now());
     return c.json({payment_method:{payment_method_id:result.payment_method_id,status:result.status},client_setup:{stripe:result.client_setup.stripe}});
@@ -481,7 +481,7 @@ export function createApp(deps:Dependencies){
     const method=await me(c,opts=>client.me.getPaymentMethod(methodId,undefined,opts));
     if(action==='default'&&(method.status!=='active'||method.usage!=='off_session'))throw new LocalError('PAYMENT_METHOD_NOT_USABLE');
     // The default is a customer field now; the card itself is unchanged by it.
-    const result=action==='default'?(await mutate(c,action,`method:${methodId}`,{},opts=>client.me.update({default_payment_method_id:methodId},opts)),method):await mutate(c,action,`method:${methodId}`,{},opts=>client.me.removePaymentMethod(methodId,undefined,opts));
+    const result=action==='default'?(await mutate(c,action,`method:${methodId}`,{},opts=>client.me.update({default_payment_method_id:methodId},opts)),method):await mutate(c,action,`method:${methodId}`,{},opts=>client.me.deletePaymentMethod(methodId,undefined,opts));
     return finish(c,'/payment-methods',{payment_method:project('method',result)});
   };
   app.post('/payment-methods/:methodId/default',c=>cardAction(c,'default'));app.post('/payment-methods/:methodId/delete',c=>cardAction(c,'remove'));app.post('/payment-methods/:methodId/remove',c=>cardAction(c,'remove'));
@@ -513,17 +513,17 @@ export function createApp(deps:Dependencies){
   });
   app.post('/profile/email/confirm',async c=>{
     c.set('errorReturn','/profile/email');const pending=pendingEmail(c),current=user(c),b=c.get('body');
-    if(!pending)throw new LocalError('EMAIL_CHANGE_REQUEST_REQUIRED');
+    if(!pending?.new_email)throw new LocalError('EMAIL_CHANGE_REQUEST_REQUIRED');
     const existing=identity.userByEmail(pending.new_email);if(existing&&existing.user_id!==current.user_id)throw new LocalError('EMAIL_ALREADY_USED',409);
     if(!limiter.take(`email-confirm:${currentKey(c)}`,10,900000))throw new LocalError('RATE_LIMITED',429);
     const request={new_email_code:code(b.new_email_code),current_email_code:pending.current_email_confirmation_required?code(b.current_email_code):undefined};
     const confirmed=await mutate(c,'email-confirm',`email:${pending.email_change_request_id}`,request,opts=>client.me.confirmEmailChangeRequest(pending.email_change_request_id,request,opts));
-    if(!confirmed.confirmed||confirmed.new_email!==pending.new_email)throw new LocalError('EMAIL_CHANGE_NOT_CONFIRMED',409);
+    if(!confirmed.confirmed_at||!confirmed.new_email||confirmed.new_email!==pending.new_email)throw new LocalError('EMAIL_CHANGE_NOT_CONFIRMED',409);
     // Flint revoked the old address's sessions. Keep only the browser that proved both inboxes.
     await sessions.locks.locked(`customer-session:${preflight.sandboxId}:${current.user_id}`,async()=>{
       identity.db.exec('BEGIN IMMEDIATE');
       try{
-        identity.db.prepare('UPDATE users SET email=? WHERE user_id=?').run(normalizeEmail(confirmed.new_email),current.user_id);
+        identity.db.prepare('UPDATE users SET email=? WHERE user_id=?').run(normalizeEmail(confirmed.new_email!),current.user_id);
         identity.db.prepare('DELETE FROM sessions WHERE user_id=? AND session_hash<>?').run(current.user_id,c.get('session').session_hash);
         sessions.resetVault(current);identity.db.prepare('DELETE FROM account_email_reservations WHERE user_id=?').run(current.user_id);identity.db.exec('COMMIT');
       }catch(error){identity.db.exec('ROLLBACK');throw error;}
@@ -591,7 +591,7 @@ export function createApp(deps:Dependencies){
   app.get('/gift-cards/:giftCardId',async c=>{
     const cardId=id(c.req.param('giftCardId'));let card;
     try{card=await me(c,opts=>client.me.getGiftCard(cardId,undefined,opts));}catch(error){if(errorStatus(error)!==404)throw error;return page(c,'ac-gift-card',{gift_card:null,transactions:{status:'ok',value:[]}});}
-    return page(c,'ac-gift-card',{gift_card:project('gift',card),transactions:await loaded(async()=>items('transaction',await me(c,opts=>client.me.listGiftCardTransactions(cardId,{page_size:100},opts))))});
+    return page(c,'ac-gift-card',{gift_card:project('gift',card),transactions:await loaded(async()=>items('transaction',await me(c,opts=>client.me.listGiftCardTransactions({gift_card_id:cardId,page_size:100},opts))))});
   });
   app.post('/gift-cards/:giftCardId/remove',async c=>{
     c.set('errorReturn','/gift-cards');const cardId=id(c.req.param('giftCardId'));await me(c,opts=>client.me.getGiftCard(cardId,undefined,opts));await mutate(c,'gift-remove',`gift:${cardId}`,{},opts=>client.me.removeGiftCard(cardId,undefined,opts));return finish(c,'/gift-cards');

@@ -12,7 +12,7 @@ import { newSecret } from './support.ts';
 const base = { FLINT_API_KEY: 'flint_test_unit', FLINT_API_BASE_URL: 'https://api.staging.withflintpay.com', PORT: '4500' };
 const url = 'https://receiver.example.com/webhooks/flint';
 const endpoint = (overrides: Partial<WebhookEndpoint> = {}): WebhookEndpoint => ({
-  webhook_endpoint_id: 'we_example', url, status: 'active', enabled_events: ['order.paid'], api_version: 'default', version: '1', signing_methods: ['hmac'], ...overrides,
+  created_at:'2000-01-01T00:00:00Z',updated_at:'2000-01-01T00:00:00Z',partner_app_install_id:null,webhook_endpoint_id: 'we_example', url, status: 'active', enabled_events: ['order.paid'], api_version: 'default', version: 1, signing_methods: ['hmac'], ...overrides,
 });
 
 test('config refuses live keys, malformed secrets, and a lookback longer than Flint keeps payloads', () => {
@@ -49,7 +49,7 @@ test('setup updates the URL of the saved endpoint instead of creating a second o
 
 test('setup adds missing event types, keeps an all-events subscription, and enables a disabled endpoint', () => {
   assert.deepEqual(planSetup({ endpoint: endpoint({ enabled_events: ['refund.updated'], status: 'inactive' }), url, savedEndpointId: 'we_example', hasSecret: true, rotate: false }),
-    [{ kind: 'update', changes: { enabled_events: ['refund.updated', 'order.paid'], status: 'active', expected_version: '1' } }]);
+    [{ kind: 'update', changes: { enabled_events: ['refund.updated', 'order.paid'], status: 'active', expected_version: 1 } }]);
   assert.deepEqual(planSetup({ endpoint: endpoint({ enabled_events: ['*'] }), url, savedEndpointId: 'we_example', hasSecret: true, rotate: false }), []);
 });
 

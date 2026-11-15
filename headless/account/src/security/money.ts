@@ -1,3 +1,4 @@
+import {LocalError} from '../flint/errors.ts';
 import type {MoneyValue} from '@flintpay/node';
 export function moneyEqual(a:MoneyValue,b:MoneyValue):boolean{return a.currency===b.currency&&BigInt(a.amount)===BigInt(b.amount);}
 export function decimalMinor(value:string):string {
@@ -12,3 +13,5 @@ export function formatMoney(money:MoneyValue):string {
   const integers=new Intl.NumberFormat('en-US',{maximumFractionDigits:0}).format(absolute/scale);
   return parts.map(part=>part.type==='integer'?integers:part.type==='fraction'?(absolute%scale).toString().padStart(digits,'0'):part.type==='group'?'':part.value).join('');
 }
+
+export function counter(value:unknown):number{const number=typeof value==='number'?value:typeof value==='string'&&/^\d+$/.test(value)?Number(value):NaN;if(!Number.isSafeInteger(number)||number<1)throw new LocalError('INVALID_COUNTER');return number;}

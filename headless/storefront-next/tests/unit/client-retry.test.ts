@@ -13,6 +13,6 @@ test('the SDK client retries a read up to three attempts and sends a journaled w
   await assert.rejects(client.orders.get('ord_example',undefined,auth.merchant()));
   assert.equal(calls,3);
   calls=0;
-  await assert.rejects(client.orders.pay({order_id:'ord_example',body:{action:'pay',expected_outstanding_money:{amount:'100',currency:'USD'}}},auth.merchant('pay-example')));
+  await assert.rejects(client.orders.pay('ord_example',{action:'pay',expected_outstanding_money:{amount:'100',currency:'USD'}},auth.merchant('pay-example')));
   assert.equal(calls,1);
 });

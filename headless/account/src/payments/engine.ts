@@ -1,3 +1,4 @@
+import {errors} from '@flintpay/node';
 import type {Client,PaymentSourceCredentialInput,MoneyValue,Order,OrderPaymentAttempt,PayOrderRequestInput,OrderGiftCardAllocationAcceptanceInput} from '@flintpay/node';
 import type {Auth} from '../flint/auth.ts';
 import {LocalError,unknownOutcome,appError,checkoutSessionUnusable} from '../flint/errors.ts';
@@ -11,7 +12,7 @@ import {moneyEqual} from '../security/money.ts';
 import {nextStep,attemptOpen} from './next-step.ts';
 import {safePaymentOrder,safeAttempt,safeMethod,clientAction} from '../flint/projection.ts';
 export type Credential={kind:'confirmation_token'|'payment_method_token'|'saved_payment_method';value:string};
-export type PayInput={credential?:Credential;approved_outstanding_money:MoneyValue;approved_collection_kind:'processor'|'settlement';approved_order_revision?:string;approved_gift_card_money?:MoneyValue};
+export type PayInput={credential?:Credential;approved_outstanding_money:MoneyValue;approved_collection_kind:'processor'|'settlement';approved_order_revision?:number;approved_gift_card_money?:MoneyValue};
 export type PaymentResult={order:Order;attempt?:OrderPaymentAttempt;unknown:boolean;totalChanged?:boolean;expired?:boolean;recovery?:boolean};
 export const GIFT_SETTLE_MS=600000;
 export function collectionKind(order:Order):'processor'|'settlement'|'unavailable'{
@@ -40,7 +41,7 @@ export class PaymentEngine {
   unresolvedGift(record:CheckoutRecord){return this.store.get<ActionRecord>("SELECT * FROM actions WHERE resource=? AND status IN ('pending','unknown')",this.giftResource(record));}
   reconcileGift(record:CheckoutRecord,order:Order):void{
     const pending=this.unresolvedGift(record);if(!pending)return;
-    const revision=pending.body?(JSON.parse(pending.body) as {order_revision?:string}).order_revision:undefined,deadline=pending.retry_after||pending.created_at+GIFT_SETTLE_MS;
+    const revision=pending.body?(JSON.parse(pending.body) as {order_revision?:number}).order_revision:undefined,deadline=pending.retry_after||pending.created_at+GIFT_SETTLE_MS;
     if(!revision||order.version!==revision||Date.now()>=deadline){
       this.store.run("UPDATE actions SET status='rejected',body=NULL WHERE action_id=? AND status IN ('pending','unknown')",pending.action_id);this.store.closeGiftChallenges(record.checkout_ref);
     }
@@ -81,10 +82,10 @@ export class PaymentEngine {
       const record=this.record(ref),resource=this.giftResource(record),order=await this.giftReady(record),pending=this.unresolvedGift(record);
       const hash=createHash('sha256').update(giftCardCode).digest('hex');
       if(pending){
-        const saved=pending.body?JSON.parse(pending.body) as {code_hash:string;order_revision:string}:undefined;
+        const saved=pending.body?JSON.parse(pending.body) as {code_hash:string;order_revision:number}:undefined;
         if(pending.kind!=='gift_apply'||saved?.code_hash!==hash)throw new LocalError('GIFT_CARD_CHANGE_UNCONFIRMED',409);
         this.store.abandonGiftChallenges(ref,resource);
-        try{await this.store.replayAction(pending,async key=>{const result=await this.client.orders.applyGiftCard(record.order_id,{code:giftCardCode,expected_version:saved!.order_revision as `${bigint}`},this.auth.checkout(record,key));return {order_id:result.order_id,order_revision:result.version};},error=>challengeFromError(error,expectedOrigin)?'challenge':undefined,true);}
+        try{await this.store.replayAction(pending,async key=>{const result=await this.client.orders.applyGiftCard(record.order_id,{code:giftCardCode,expected_version:saved!.order_revision},this.auth.checkout(record,key));return {order_id:result.order_id,order_revision:result.version};},error=>challengeFromError(error,expectedOrigin)?'challenge':undefined,true);}
         catch(error){return this.giftOutcome(record,pending,error,expectedOrigin);}
         return;
       }
@@ -92,13 +93,13 @@ export class PaymentEngine {
       if(observedPending&&this.store.get<ActionRecord>('SELECT * FROM actions WHERE action_id=?',observedPending.action_id)?.status==='succeeded')throw new LocalError('ACTION_IN_PROGRESS',409);
       const actionId=createHash('sha256').update(`${resource}:gift_apply:${nonce}`).digest('hex');
       const previous=this.store.get<ActionRecord>('SELECT * FROM actions WHERE action_id=?',actionId);
-      const saved=previous?.body?JSON.parse(previous.body) as {code_hash:string;order_revision:string}:undefined;
+      const saved=previous?.body?JSON.parse(previous.body) as {code_hash:string;order_revision:number}:undefined;
       if(saved&&saved.code_hash!==hash)throw new LocalError('ACTION_BODY_MISMATCH',409);
       const revision=saved?.order_revision??order.version;if(!revision)throw new LocalError('ORDER_CHANGED_REFRESH_REQUIRED',409);
       const body={code_hash:hash,order_revision:revision};
       this.store.abandonGiftChallenges(ref,resource);
       try{
-        await this.store.mutate(resource,'gift_apply',body,async key=>{const result=await this.client.orders.applyGiftCard(record.order_id,{code:giftCardCode,expected_version:body.order_revision as `${bigint}`},this.auth.checkout(record,key));return {order_id:result.order_id,order_revision:result.version};},nonce,error=>challengeFromError(error,expectedOrigin)?'challenge':undefined,true);
+        await this.store.mutate(resource,'gift_apply',body,async key=>{const result=await this.client.orders.applyGiftCard(record.order_id,{code:giftCardCode,expected_version:body.order_revision},this.auth.checkout(record,key));return {order_id:result.order_id,order_revision:result.version};},nonce,error=>challengeFromError(error,expectedOrigin)?'challenge':undefined,true);
       }catch(error){const action=this.store.get<ActionRecord>('SELECT * FROM actions WHERE action_id=?',actionId);if(!action)throw error;return this.giftOutcome(record,action,error,expectedOrigin);}
     });
   }
@@ -111,7 +112,7 @@ export class PaymentEngine {
       if(row.status!=='open'||row.expires_at<=Date.now())throw new LocalError('GIFT_CHALLENGE_EXPIRED',409);
       const reject=(code:string):never=>{this.store.closeGiftChallenges(ref);this.store.run("UPDATE actions SET status='rejected',body=NULL WHERE action_id=? AND status='challenge'",row.action_id);throw new LocalError(code,409);};
       if(this.unresolved(record))reject('PAYMENT_ATTEMPT_IN_PROGRESS');
-      const action=this.store.get<ActionRecord>('SELECT * FROM actions WHERE action_id=?',row.action_id),saved=action?.body?JSON.parse(action.body) as {code_hash:string;order_revision:string}:undefined;
+      const action=this.store.get<ActionRecord>('SELECT * FROM actions WHERE action_id=?',row.action_id),saved=action?.body?JSON.parse(action.body) as {code_hash:string;order_revision:number}:undefined;
       if(action?.kind!=='gift_apply'||action.status!=='challenge'||saved?.code_hash!==createHash('sha256').update(giftCardCode).digest('hex'))reject('GIFT_CHALLENGE_CODE_CHANGED');
       let order:Order;try{order=await this.giftReady(record);}catch(error){this.store.closeGiftChallenges(ref);throw error;}
       if(order.version!==saved!.order_revision)reject('GIFT_CHALLENGE_ORDER_CHANGED');
@@ -130,21 +131,21 @@ export class PaymentEngine {
     return this.store.locked(this.resource(initial),async()=>{
       const record=this.record(ref),order=await this.giftReady(record),resource=this.giftResource(record),pending=this.unresolvedGift(record);
       if(pending){
-        const saved=pending.body?JSON.parse(pending.body) as {gift_card_id:string;order_revision:string}:undefined;
+        const saved=pending.body?JSON.parse(pending.body) as {gift_card_id:string;order_revision:number}:undefined;
         if(pending.kind!=='gift_remove'||saved?.gift_card_id!==giftCardId)throw new LocalError('GIFT_CARD_CHANGE_UNCONFIRMED',409);
         this.store.abandonGiftChallenges(ref,resource);
-        await this.store.replayAction(pending,async key=>{const result=await this.client.orders.removeGiftCard(record.order_id,giftCardId,{expected_version:saved!.order_revision as `${bigint}`},this.auth.checkout(record,key));return {order_id:result.order_id,order_revision:result.version};},undefined,true);return;
+        await this.store.replayAction(pending,async key=>{const result=await this.client.orders.removeGiftCard(record.order_id,giftCardId,{expected_version:saved!.order_revision},this.auth.checkout(record,key));return {order_id:result.order_id,order_revision:result.version};},undefined,true);return;
       }
       // Keep concurrent checks bound to the change they started while it was unresolved.
       if(observedPending&&this.store.get<ActionRecord>('SELECT * FROM actions WHERE action_id=?',observedPending.action_id)?.status==='succeeded')throw new LocalError('ACTION_IN_PROGRESS',409);
       const actionId=createHash('sha256').update(`${resource}:gift_remove:${nonce}`).digest('hex');
-      const prior=this.store.get<ActionRecord>('SELECT * FROM actions WHERE action_id=?',actionId),saved=prior?.body?JSON.parse(prior.body) as {gift_card_id:string;order_revision:string}:undefined;
+      const prior=this.store.get<ActionRecord>('SELECT * FROM actions WHERE action_id=?',actionId),saved=prior?.body?JSON.parse(prior.body) as {gift_card_id:string;order_revision:number}:undefined;
       if(saved&&saved.gift_card_id!==giftCardId)throw new LocalError('ACTION_BODY_MISMATCH',409);
       if(!saved&&!order.gift_cards?.some(card=>card.gift_card_id===giftCardId))throw new LocalError('NOT_FOUND',404);
       const revision=saved?.order_revision??order.version;if(!revision)throw new LocalError('ORDER_CHANGED_REFRESH_REQUIRED',409);
       const body={gift_card_id:giftCardId,order_revision:revision};
       this.store.abandonGiftChallenges(ref,resource);
-      await this.store.mutate(resource,'gift_remove',body,async key=>{const result=await this.client.orders.removeGiftCard(record.order_id,giftCardId,{expected_version:body.order_revision as `${bigint}`},this.auth.checkout(record,key));return {order_id:result.order_id,order_revision:result.version};},nonce,undefined,true);
+      await this.store.mutate(resource,'gift_remove',body,async key=>{const result=await this.client.orders.removeGiftCard(record.order_id,giftCardId,{expected_version:body.order_revision},this.auth.checkout(record,key));return {order_id:result.order_id,order_revision:result.version};},nonce,undefined,true);
     });
   }
   async attempt(record:CheckoutRecord,order:Order):Promise<OrderPaymentAttempt|undefined>{
@@ -185,10 +186,24 @@ export class PaymentEngine {
       try{
         const response=job.kind==='cancel'
           ?await this.client.orders.cancelPaymentAttempt(record.order_id,job.attempt_id??record.last_attempt_id!,{cancellation_reason:'abandoned'},this.auth.checkout(record,job.idempotency_key))
-          :await this.client.orders.pay({order_id:record.order_id,body:JSON.parse(job.body) as PayOrderRequestInput},this.auth.checkout(record,job.idempotency_key));
+          :await this.client.orders.pay(record.order_id,JSON.parse(job.body!) as PayOrderRequestInput,this.auth.checkout(record,job.idempotency_key));
         assertOwnership();this.complete(job,response.order_payment_attempt);this.remember(record,response.order_payment_attempt);
         try{return await this.reconcile(this.record(record.checkout_ref));}catch{return {order:response.order,attempt:response.order_payment_attempt,unknown:false};}
       }catch(error){
+        if(job.kind!=='cancel'&&error instanceof errors.ApiError&&error.code==='ACTION_NOT_ALLOWED'&&error.details.some(detail=>detail&&typeof detail==='object'&&'reason'in detail&&detail.reason==='provider_action_unsupported')){
+          const original=JSON.parse(job.body!) as PayOrderRequestInput;
+          if(original.client_action_type==='stripe')throw error;
+          const order=await this.read(record);
+          const attempt=await this.attempt(record,order);
+          const body:PayOrderRequestInput=attemptOpen(attempt)
+            ?{action:'resume',order_payment_attempt_id:attempt!.order_payment_attempt_id,client_action_type:'stripe'}
+            :{...original,client_action_type:'stripe'};
+          assertOwnership();
+          const json=JSON.stringify(body),key=`${job.idempotency_key}-stripe`;
+          this.store.run("UPDATE actions SET body=?,body_hash=?,idempotency_key=?,attempt_id=? WHERE action_id=?",json,createHash('sha256').update(json).digest('hex'),key,attempt?.order_payment_attempt_id??null,job.action_id);
+          job={...job,body:json,idempotency_key:key,attempt_id:attempt?.order_payment_attempt_id??null};
+          continue;
+        }
         if(!unknownOutcome(error)){
           this.store.run("UPDATE actions SET status='rejected',body=NULL WHERE action_id=?",job.action_id);
           const code=error&&typeof error==='object'&&'code'in error?String(error.code):'';
@@ -227,10 +242,10 @@ export class PaymentEngine {
           if(!methods.data.some(method=>method.payment_method_id===credential.value&&method.status==='active'))throw new LocalError('PAYMENT_SOURCE_UNAVAILABLE');
           source={credential_type:'payment_method',payment_method_id:credential.value};
         }else if(credential.kind==='confirmation_token'&&/^ctoken_[A-Za-z0-9_]+$/.test(credential.value))source={credential_type:'stripe_confirmation_token',stripe:{confirmation_token:credential.value}};
-        else if(credential.kind==='payment_method_token'&&/^pm_[A-Za-z0-9_]+$/.test(credential.value))source={credential_type:'token',token:credential.value};
+        else if(credential.kind==='payment_method_token'&&/^pm_[A-Za-z0-9_]+$/.test(credential.value))source={credential_type:'stripe_payment_method',stripe:{payment_method:credential.value}};
         else throw new LocalError('PAYMENT_SOURCE_REQUIRED');
       }
-      const body:PayOrderRequestInput={action:'pay',...(source?{payment_source:source}:{}),expected_outstanding_money:input.approved_outstanding_money,...(allocation?{accepted_gift_card_allocation:allocation}:{})};
+      const body:PayOrderRequestInput={action:'pay',client_action_type:'url',...(source?{payment_source:source}:{}),expected_outstanding_money:input.approved_outstanding_money,...(allocation?{accepted_gift_card_allocation:allocation}:{})};
       try{return await this.execute(record,this.job(record,'pay',body,nonce),assertOwnership);}
       catch(error){
         if(!(error&&typeof error==='object'&&'code'in error&&error.code==='PAYMENT_LEG_SELECTION_REQUIRED')||!source)throw error;
@@ -238,7 +253,7 @@ export class PaymentEngine {
         if(!approvalMatches(fresh,input))return {order:fresh,unknown:false,totalChanged:true};
         const legs=fresh.payment_collection?.stripe?.elements?.selectable_payment_intents;
         if(legs?.length!==1)throw new LocalError('PAYMENT_LEG_SELECTION_REQUIRED',409);
-        const retry:PayOrderRequestInput={action:'confirm_payment_intents',payment_intents:[{payment_intent_id:legs[0]!.payment_intent_id,...source}],expected_outstanding_money:input.approved_outstanding_money,...(allocation?{accepted_gift_card_allocation:acceptedAllocation(fresh)}:{})};
+        const retry:PayOrderRequestInput={action:'confirm_payment_intents',client_action_type:'url',payment_intents:[{payment_intent_id:legs[0]!.payment_intent_id,payment_source:source}],expected_outstanding_money:input.approved_outstanding_money,...(allocation?{accepted_gift_card_allocation:acceptedAllocation(fresh)}:{})};
         return this.execute(record,this.job(record,'pay',retry,nonce?`${nonce}:selected`:undefined),assertOwnership);
       }
     });

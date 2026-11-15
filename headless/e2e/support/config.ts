@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { invariant } from './safe.ts';
 
 export const API_ORIGIN = 'https://api.staging.withflintpay.com';
-export const SDK_VERSION = '7.0.0';
+export const SDK_VERSION = '8.0.0-beta.3';
 export type Sandbox = 'A' | 'B';
 export type Buyer = 'b1' | 'b2' | 'd' | 'b1b';
 export type Pin = { merchantId: string; sandboxId: string; providerId: string; key: string };

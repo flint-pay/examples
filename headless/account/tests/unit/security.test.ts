@@ -30,7 +30,7 @@ test('allowlisted DTOs discard unknown fields, merchant metadata, and credential
   assert.equal(clientAction(undefined),undefined);
 });
 test('gift history retains published transaction names and dates without legacy aliases',()=>{
-  const transaction={gift_card_id:'gfc_example',gift_card_transaction_id:'gct_example',transaction_type:'redeem',posted_at:'2026-01-02T12:00:00Z',sequence:'2',amount_money:{amount:'-500',currency:'USD'},balance_before_money:{amount:'2500',currency:'USD'},balance_after_money:{amount:'2000',currency:'USD'}} satisfies BuyerGiftCardTransaction;
+  const transaction={gift_card_id:'gfc_example',gift_card_transaction_id:'gct_example',transaction_type:'redeem',posted_at:'2026-01-02T12:00:00Z',sequence:2,amount_money:{amount:'-500',currency:'USD'},balance_before_money:{amount:'2500',currency:'USD'},balance_after_money:{amount:'2000',currency:'USD'}} satisfies BuyerGiftCardTransaction;
   const safe=project('transaction',{...transaction,type:'private legacy type',created_at:'private legacy date',metadata:{private:'private'}});
   assert.deepEqual(safe,{gift_card_transaction_id:transaction.gift_card_transaction_id,transaction_type:transaction.transaction_type,amount_money:transaction.amount_money,balance_after_money:transaction.balance_after_money,posted_at:transaction.posted_at});
 });

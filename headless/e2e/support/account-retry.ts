@@ -21,6 +21,6 @@ export function assertRetrySettlement(retry: SubscriptionPaymentRetry, subscript
   invariant(retry.subscription_id === subscriptionId && retry.subscription_payment_retry_id === retryId, 'RETRY_READ_IDENTITY');
   invariant(retry.status === 'succeeded', 'RETRY_NOT_SUCCEEDED');
   invariant(typeof retry.order_id === 'string' && retry.order_id.length > 0 && order.order_id === retry.order_id && order.subscription_id === subscriptionId && order.customer_id === customerId, 'RETRY_ORDER_IDENTITY');
-  invariant(typeof retry.order_payment_attempt_id === 'string' && retry.order_payment_attempt_id.length > 0 && attempts.some(a => a.order_payment_attempt_id === retry.order_payment_attempt_id && a.status === 'succeeded'), 'RETRY_ATTEMPT_NOT_SUCCEEDED');
+  invariant(typeof retry.payment_intent_id==='string'&&attempts.some(a=>a.status==='succeeded'&&a.payment_intents?.some((leg:{payment_intent_id:string})=>leg.payment_intent_id===retry.payment_intent_id)),'RETRY_ATTEMPT_NOT_SUCCEEDED');
   assertOneCharge(order, attempts);
 }

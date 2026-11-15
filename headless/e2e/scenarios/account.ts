@@ -118,12 +118,12 @@ export const account: Record<string, Scenario> = {
     invariant(firstOrderNumber === secondOrderNumber, 'INVOICE_RELAUNCH_CHANGED_ORDER');
     const buyer = await createBuyerClient(d, 'invoice-buyer-authority', d.fixtures.buyers.b1.customerId!);
     const sessions = await d.operator.clients.clients.A.checkoutSessions.list({ order_id: invoice.order_id, status: ['open'], page_size: 100 });
-    invariant(sessions.data.length === 1 && !sessions.next_page_token && sessions.data[0]!.surface === 'embedded', 'INVOICE_SESSION_NOT_REUSED');
+    invariant(sessions.data.length === 1 && !sessions.next_page_token && sessions.data[0]!.surface === 'headless', 'INVOICE_SESSION_NOT_REUSED');
     const reused = await buyerInvoiceLaunch(d, buyer, 'invoice-reuse', invoice.invoice_id); invariant(reused.checkout_session.checkout_session_id === sessions.data[0]!.checkout_session_id, 'INVOICE_SESSION_NOT_REUSED');
     invariant(reused.checkout_session.order_id === invoice.order_id, 'INVOICE_RELAUNCH_CHANGED_ORDER');
     const idle = await d.operator.issueInvoice('idle-invoice', d.fixtures.buyers.b1.customerId!, d.fixtures.buyers.b1.email);
     const hosted = await hostedInvoiceLaunch(d, 'idle-hosted', idle.invoice_id); const embedded = await buyerInvoiceLaunch(d, buyer, 'idle-embedded-replace', idle.invoice_id);
-    invariant(embedded.checkout_session.surface === 'embedded' && hosted.checkout_session.checkout_session_id !== embedded.checkout_session.checkout_session_id, 'HOSTED_IDLE_NOT_REPLACED');
+    invariant(embedded.checkout_session.surface === 'headless' && hosted.checkout_session.checkout_session_id !== embedded.checkout_session.checkout_session_id, 'HOSTED_IDLE_NOT_REPLACED');
     const conflict = await d.operator.issueInvoice('conflict-invoice', d.fixtures.buyers.b1.customerId!, d.fixtures.buyers.b1.email);
     const pending = await hostedInvoiceLaunch(d, 'conflict-hosted', conflict.invoice_id); await beginHostedAuthentication(d, 'conflict-hosted-pay', pending);
     await d.goto(page, d.config.origins.accountA, `/invoices/${conflict.invoice_id}/pay`); await expect(page.getByTestId('ac-payment')).toHaveAttribute('data-state', 'surface_conflict');
@@ -282,7 +282,7 @@ export const account: Record<string, Scenario> = {
         const customerId = d.fixtures.buyers.d.customerId!, requestId = request.customer_deletion_request_id;
         // Approval revokes the buyer's session, so completion is read through merchant authority.
         await expect.poll(async () => {
-          const deletion = await d.operator.clients.clients.A.customers.getDeletionRequest(customerId, requestId);
+          const deletion = await d.operator.clients.clients.A.customerDeletionRequests.get(requestId);
           return deletion.customer_id === customerId && deletion.customer_deletion_request_id === requestId && deletion.status === 'completed' && typeof deletion.resolved_at === 'string' && Number.isFinite(Date.parse(deletion.resolved_at));
         }, { timeout: 60_000 }).toBe(true);
         await page.reload();

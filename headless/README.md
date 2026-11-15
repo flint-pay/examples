@@ -9,7 +9,7 @@ Two apps that show a merchant running checkout and the buyer account on its own 
 | [`account`](account/) | Orders, invoices, return balances, subscriptions, saved cards, and profile for the same buyers | http://localhost:4200 |
 | [`e2e`](e2e/) | Browser journeys across both apps against Flint staging | not an app |
 
-The apps are beta. They use the `@flintpay/node` 3.0.0 beta, and they run in test mode only.
+The apps are beta. They use the `@flintpay/node` 8.0.0-beta.3, and they run in test mode only.
 
 ## Two credentials, two jobs
 

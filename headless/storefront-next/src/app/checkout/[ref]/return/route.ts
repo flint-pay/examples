@@ -19,7 +19,7 @@ export async function GET(request: Request, { params }: Params) {
   }
   const current = await projectState(rt, ref, user);
   const attempt = current.read.result.attempt;
-  const result = attempt?.status === 'requires_action' && attempt.is_resumable ? await rt.payments.resume(ref, true) : current.read.result;
+  const result = current.read.result;
   const next = rt.payments.next(result);
   const path = `/checkout/${encodeURIComponent(ref)}`;
   if (next === 'done') return to(`${path}/complete`);

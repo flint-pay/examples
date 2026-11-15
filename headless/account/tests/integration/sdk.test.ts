@@ -1,3 +1,4 @@
+import {errors} from '@flintpay/node';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {Client,SdkError} from '@flintpay/node';
@@ -27,7 +28,7 @@ test('published SDK emits only the named authority and preserves list envelopes'
 });
 test('client refuses a live response before decoding any buyer data',async()=>{
   const client=createClient('https://api.staging.withflintpay.com',async()=>new Response(JSON.stringify({data:[]}),{headers:{'Content-Type':'application/json','Flint-Mode':'live'}}));
-  try{await assert.rejects(client.me.listOrders(undefined,{customerToken:'flint_cses_PLACEHOLDER'}),error=>error instanceof SdkError&&error.kind==='transport');}finally{await client.close();}
+  try{await assert.rejects(client.me.listOrders(undefined,{customerToken:'flint_cses_PLACEHOLDER'}),error=>error instanceof SdkError&&error instanceof errors.ConnectionError);}finally{await client.close();}
 });
 test('binary published PDF binding keeps opaque bytes and customer authority',async()=>{
   const bytes=new Uint8Array([37,80,68,70,45,255]);
@@ -42,17 +43,17 @@ test('requires-action card and Affirm legs retain payment options using publishe
       const url=new URL(String(input)),headers=new Headers(init?.headers);paths.push(url.pathname);
       assert.equal(headers.get('Authorization'),'Bearer example checkout authority');assert.equal(headers.get('X-API-Key'),null);assert.equal(headers.get('X-Checkout-Session-ID'),null);assert.equal(headers.get('X-Checkout-Session-Secret'),null);
       assert.ok(['/v1/payment-intents/intent_example','/v1/checkout-sessions/session_example'].includes(url.pathname),url.pathname);
-      const data=url.pathname.includes('/payment-intents/')?{payment_intent_id:'intent_example',status:'requires_action',amount_money:money,selected_payment_option:paymentOption,payment_flow:'invoice',payment_options:[paymentOption],last_payment_error:null,risk:null,support_reference:'EXAMPLE',metadata:{},supported_actions:[],version:'1'}:{checkout_session_id:'session_example',status:'open',surface:'embedded',type:'invoice',version:'1',is_in_recovery:false,delivery_method_ids:[],delivery_selection_required:false,problems:[]};
+      const data=url.pathname.includes('/payment-intents/')?{customer_presence:'present',refund_expires_at:null,statement_descriptor:null,payment_intent_id:'intent_example',status:'requires_action',amount_money:money,selected_payment_option:paymentOption,payment_flow:'invoice',payment_options:[paymentOption],last_payment_error:null,risk:null,support_reference:'EXAMPLE',metadata:{},supported_actions:[],version:1}:{can_apply_promotion_code:true,client_reference:null,created_at:'2000-01-01T00:00:00Z',custom_field_answers:[],merchant_id:'mer_UNIT_FAKE',supported_actions:[],updated_at:'2000-01-01T00:00:00Z',checkout_session_id:'session_example',status:'open',surface:'headless',type:'invoice',version:1,is_in_recovery:false,delivery_method_ids:[],delivery_selection_required:false,problems:[]};
       return new Response(JSON.stringify({data,request_id:`req_${'0'.repeat(26)}`}),{headers:{'Content-Type':'application/json','Flint-Mode':'test','Flint-Sandbox-ID':'sandbox_example'}});
     }});
     try{
       store.run('INSERT INTO payment_checkouts(checkout_ref,user_id,sandbox_id,resource_type,resource_id,order_id,checkout_session_id,checkout_auth_token,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)','checkout_example','user_example','sandbox_example','invoice','inv_example','ord_example','session_example','example checkout authority',Date.now(),Date.now());
       const record=store.checkout('user_example','sandbox_example','invoice','inv_example')!;
-      const attempt={order_payment_attempt_id:'attempt_example',status:'requires_action',is_resumable:true,mode:'payment',expected_outstanding_money:money,gift_card_redemptions:[],payment_intents:[{payment_intent_id:'intent_example',status:'requires_action',amount_money:money,tip_money:{amount:'0',currency:'USD'}}],pending_actions:[{pending_action_id:'action_example',action_type:'payment_authentication',subject:{payment_intent:{payment_intent_id:'intent_example'}},client_action:{stripe:{account_id:'acct_example',publishable_key:'pk_test_PLACEHOLDER',payment_intent:{client_secret:'pi_example_secret_PLACEHOLDER',stripe_js_call:'handle_next_action'}}}}]} satisfies OrderPaymentAttempt;
+      const attempt={order_id:'ord_example',supported_actions:[],order_payment_attempt_id:'attempt_example',status:'requires_action',is_resumable:true,mode:'payment',expected_outstanding_money:money,gift_card_redemptions:[],payment_intents:[{payment_intent_id:'intent_example',status:'requires_action',amount_money:money,tip_money:{amount:'0',currency:'USD'}}],pending_actions:[{expires_at:'2099-01-01T00:00:00Z',pending_action_id:'action_example',action_type:'payment_authentication',subject:{payment_intent:{payment_intent_id:'intent_example'}},client_action:{type:'stripe',stripe:{account_id:'acct_example',publishable_key:'pk_test_PLACEHOLDER',payment_intent:{client_secret:'pi_example_secret_PLACEHOLDER',stripe_js_call:'handle_next_action'}}}}]} satisfies OrderPaymentAttempt;
       const order={order_id:'ord_example',payment_status:'unpaid',status:'open',line_items:[],pricing_amounts:{total_money:money},settlement_amounts:{outstanding_money:money},...(source==='summary'?{payment_intents:[{payment_intent_id:'intent_example',payment_source:{type:paymentOption}}]}:{})} as unknown as Order;
       const engine=new PaymentEngine(client,createAuth('flint_test_PLACEHOLDER'),store,async()=>{});
       const view=await engine.view(record,{order,attempt,unknown:false},true);
-      assert.equal(view.next,'authenticate');assert.equal(view.state.returned,true);assert.equal(view.state.attempt?.legs?.[0]?.payment_option,paymentOption);assert.equal(view.state.pending_action_id,'action_example');assert.equal(view.client_action?.payment_intent?.client_secret,'pi_example_secret_PLACEHOLDER');
+      assert.equal(view.next,'authenticate');assert.equal(view.state.returned,true);assert.equal(view.state.attempt?.legs?.[0]?.payment_option,paymentOption);assert.equal(view.state.pending_action_id,'action_example');assert.equal((view.client_action?.type==='stripe'?view.client_action.stripe.payment_intent?.client_secret:undefined),'pi_example_secret_PLACEHOLDER');
       assert.equal(JSON.stringify(view.state).includes('pi_example_secret_PLACEHOLDER'),false);assert.equal(JSON.stringify(view.state).includes(record.checkout_auth_token),false);
       assert.deepEqual(paths,source==='summary'?['/v1/checkout-sessions/session_example']:['/v1/payment-intents/intent_example','/v1/checkout-sessions/session_example']);
       const completed=await engine.view(record,{order:{...order,payment_status:'paid'},attempt:{...attempt,status:'succeeded'},unknown:false});assert.equal(completed.client_action,undefined);

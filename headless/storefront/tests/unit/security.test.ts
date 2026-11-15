@@ -1,3 +1,4 @@
+import {errors} from '@flintpay/node';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {makeMoneyValue,SdkError} from '@flintpay/node';
@@ -20,11 +21,11 @@ test('rate limit admission caps the bucket and isolates distinct keys',()=>{
   const limits=new RateLimiter();assert.equal(limits.take('buyer-a',2,1000),true);assert.equal(limits.take('buyer-a',2,1000),true);assert.equal(limits.take('buyer-a',2,1000),false);assert.equal(limits.take('buyer-b',2,1000),true);
 });
 test('buyer projections remove Flint and provider credentials recursively, including SDK models',()=>{
-  const apiKey=['flint','test','fixture'].join('_');const safe=buyerSafe({label:'Safe item',nested:{checkout_session_id:'example-session',checkout_auth_token:'private',refresh_token:'private',secret:'private',client_secret:'pi_fixture_secret_fixture',client_action:{stripe:{secret:'private'}},metadata:{private:'value'},note:apiKey},items:[{name:'one',secret:'private'}],price:makeMoneyValue({amount:'18',currency:'USD'})});
+  const apiKey=['flint','test','fixture'].join('_');const safe=buyerSafe({label:'Safe item',nested:{checkout_session_id:'example-session',checkout_auth_token:'private',refresh_token:'private',secret:'private',client_secret:'pi_fixture_secret_fixture',client_action:{type:'stripe',stripe:{secret:'private'}},metadata:{private:'value'},note:apiKey},items:[{name:'one',secret:'private'}],price:makeMoneyValue({amount:'18',currency:'USD'})});
   assert.deepEqual(safe,{label:'Safe item',nested:{},items:[{name:'one'}],price:{amount:'18',currency:'USD'}});
 });
 test('provider action secrets stay out of initial order and attempt projections',()=>{
-  const attempt={status:'requires_action',pending_actions:[{pending_action_id:'example-action',client_action:{stripe:{payment_intent:{client_secret:'pi_fixture_secret_fixture'}}}}]} as unknown as OrderPaymentAttempt;
+  const attempt={status:'requires_action',pending_actions:[{expires_at:'2099-01-01T00:00:00Z',pending_action_id:'example-action',client_action:{type:'stripe',stripe:{payment_intent:{client_secret:'pi_fixture_secret_fixture'}}}}]} as unknown as OrderPaymentAttempt;
   const serialized=JSON.stringify(safeOrder({active_payment_attempt:attempt} as Order));assert.equal(serialized.includes('_secret_'),false);assert.equal(serialized.includes('client_action'),false);
   assert.equal(JSON.stringify(safeAttempt({...attempt,status:'processing'})).includes('pending_actions'),false);
 });
@@ -33,7 +34,17 @@ test('logs redact API credentials, provider secrets, and verification codes',()=
   assert.equal(redact(value),'[redacted] [redacted] [redacted]');
 });
 test('unknown outcomes and unavailable gift backing stay retryable without leaking SDK details',()=>{
-  const error=new SdkError('server','sensitive provider text','response',true,{status:503,headers:{},attempts:1,durationMs:1,requestId:'example-request'},'SERVICE_UNAVAILABLE');
+  const error=new errors.ServerError('sensitive provider text',{outcome:'response',retryAllowed:true,...({status:503,headers:{},attempts:1,durationMs:1,requestId:'example-request'}),code:'SERVICE_UNAVAILABLE'});
   assert.equal(unknownOutcome(error),true);assert.deepEqual(appError(error),{kind:'unknown_outcome',code:'SERVICE_UNAVAILABLE',message_key:'service_unavailable',request_id:'example-request'});
   assert.equal(JSON.stringify(appError(error)).includes('sensitive'),false);
+});
+
+
+test('both action variants are excluded from document state',()=>{
+  for(const client_action of [{type:'url',url:'https://payment-return.example.invalid/action/example'},{type:'stripe',stripe:{payment_intent:{client_secret:'pi_example_secret_example'}}}]){
+    const attempt={status:'requires_action',pending_actions:[{pending_action_id:'action_example',expires_at:'2099-01-01T00:00:00Z',client_action}]} as unknown as OrderPaymentAttempt;
+    const state=JSON.stringify(safeAttempt(attempt));
+    assert.equal(state.includes('payment-return.example.invalid'),false);
+    assert.equal(state.includes('_secret_'),false);
+  }
 });

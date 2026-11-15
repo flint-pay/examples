@@ -49,7 +49,7 @@ export async function addToCart(_previous:FormState,form:FormData):Promise<FormS
     const found=await changeRequest();const {catalog,carts,checkouts}=found.rt;
     const slug=text(field(form,'product_slug'));const item=await catalog.product(slug);
     const variantId=text(field(form,'variant_id')??item.product.default_variant_id);const quantity=carts.quantity(field(form,'quantity')??1);
-    if(!item.variants.some(variant=>variant.variant_id===variantId&&variant.available_for_sale))throw new LocalError('PRODUCT_UNAVAILABLE');
+    if(!item.variants.some(variant=>variant.variant_id===variantId&&variant.is_available_for_sale))throw new LocalError('PRODUCT_UNAVAILABLE');
     const cart=carts.current(found.session,found.user);
     await checkouts.editCart(cart,()=>carts.add(cart,slug,variantId,quantity));
     revalidatePath('/','layout');

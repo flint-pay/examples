@@ -40,7 +40,7 @@ export function profilePage(ctx: RenderContext<ProfileData>): Html {
 export function profileEmailPage(ctx: RenderContext<ProfileEmailData>): Html {
   const { current_email, request, new_email } = ctx.data;
   const errors = ctx.error?.field_errors;
-  const sent = Boolean(request && !request.confirmed);
+  const sent = Boolean(request && !request.confirmed_at);
   const needCurrent = Boolean(request?.current_email_confirmation_required);
   const target = request?.new_email ?? new_email ?? '';
   const body = sent

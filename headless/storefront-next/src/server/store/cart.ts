@@ -17,7 +17,7 @@ export class Carts {
   quantity(value:unknown):number{const quantity=Number(value);if(!Number.isInteger(quantity)||quantity<1||quantity>20)throw new LocalError('INVALID_QUANTITY');return quantity;}
   async add(cart:Cart,slug:string,variantId:string,quantity:unknown):Promise<CartLine>{
     const item=await this.catalog.product(slug);const variant=item.variants.find(variant=>variant.variant_id===variantId);
-    if(!variant?.available_for_sale)throw new LocalError('PRODUCT_UNAVAILABLE');
+    if(!variant?.is_available_for_sale)throw new LocalError('PRODUCT_UNAVAILABLE');
     const amount=this.quantity(quantity);const existing=this.lines(cart).find(line=>line.variant_id===variantId);
     if(existing){this.store.run('UPDATE cart_lines SET quantity=? WHERE line_id=?',Math.min(20,existing.quantity+amount),existing.line_id);return {...existing,quantity:Math.min(20,existing.quantity+amount)};}
     const line:CartLine={line_id:randomReference('ln_'),cart_id:cart.cart_id,product_id:item.product.product_id,variant_id:variantId,quantity:amount};
