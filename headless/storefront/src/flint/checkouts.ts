@@ -24,7 +24,7 @@ export type PickupPreview={postal_code:string;country:string;evaluated_at:string
 export type Details={name?:string;contact?:{email?:string|null;phone?:string|null};billing_address?:OrderTaxLocationFullAddressRequestInput;customer_billing_address?:OrderTaxLocationFullAddressRequestInput;delivery_quote?:Quote;delivery_selection?:{delivery_selection_id?:string;[key:string]:unknown};pickup_preview?:PickupPreview;quote_basis?:{selection_id:string|null};quote_input?:{destination_address?:DeliveryAddressRequestInput;buyer_location?:DeliveryBuyerLocationRequestInput;pickup_location_id?:string};verification?:{customer_verification_id:string;status:string;purpose?:string;channel?:string;email?:string;phone_last_digits?:string};receipt_sent_at?:number;gift_origin_replaced_at?:number};
 export type ReadCheckout={record:CheckoutRecord;session:CheckoutSession;order:SourcedOrder;result:PaymentResult};
 export type MutationContext={order_version?:number;delivery_selection_id:string|null;delivery_quote_id?:string;customer_verification_id?:string};
-const displayNotices=new Set(['checkout_refreshed','delivery_released','total_changed','gift_card_changed','affirm_incomplete','trial_not_started','signed_in_mid_checkout','delivery_requoted']);
+const displayNotices=new Set(['checkout_refreshed','delivery_released','total_changed','gift_card_changed','affirm_incomplete','payment_action_incomplete','trial_not_started','signed_in_mid_checkout','delivery_requoted']);
 
 const bodyHash=(body:unknown)=>createHash('sha256').update(JSON.stringify(body)).digest('hex');
 

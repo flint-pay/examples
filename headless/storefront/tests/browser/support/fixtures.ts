@@ -41,7 +41,7 @@ export function cartData(lines: { id: string; slug: string; variant: number; qua
 
 export type Scenario =
   | 'card' | 'pickup' | 'service' | 'subtrial' | 'subpaid' | 'gift' | 'expired' | 'recovery' | 'unavailable'
-  | 'authenticating' | 'waiting' | 'bank' | 'affirm' | 'declined' | 'methoddeclined' | 'remaining' | 'paid' | 'bankdone' | 'signedin' | 'returning' | 'wallet' | 'lostresume' | 'stuckresume' | 'resumefail'
+  | 'authenticating' | 'waiting' | 'bank' | 'affirm' | 'urlreturn' | 'urlreturnaffirm' | 'urlreturnexpired' | 'declined' | 'methoddeclined' | 'remaining' | 'paid' | 'bankdone' | 'signedin' | 'returning' | 'wallet' | 'lostresume' | 'stuckresume' | 'resumefail'
   | 'subtrialdeclined' | 'subtrialwaiting'
   | 'taxneeded' | 'taxset' | 'subtrialtax'
   | 'guestsave' | 'guestemail' | 'guestnotext' | 'guestsaved' | 'guestexpired' | 'guestleft';
@@ -125,6 +125,9 @@ export function scenarioConfig(scenario: Scenario): FakeConfig {
       return { lines: [], needsDelivery: false, kind: 'subscription', trial: false };
     case 'pickup':
     case 'affirm':
+    case 'urlreturn':
+    case 'urlreturnaffirm':
+    case 'urlreturnexpired':
       return { lines: [lineFor('pour-over-kit', 0, 1, 'li_1')], needsDelivery: true, kind: 'order', trial: false };
     default:
       return { lines: [lineFor('house-blend', 0, 2, 'li_1'), lineFor('stoneware-mug', 0, 1, 'li_2')], needsDelivery: true, kind: 'order', trial: false };

@@ -41,6 +41,7 @@ import {viewPath} from './flint/view-data.ts';
 import {renderPage} from './views/index.ts';
 import {trialSetupNotStarted} from './views/pages/complete.ts';
 import type {CheckoutState} from './views/types.ts';
+import {hasAffirmAction} from '../public/js/checkout-logic.js';
 
 type Env={Bindings:{incoming?:IncomingMessage};Variables:{session:Session;user:User|undefined;requestId:string;returnNext?:string;form?:ViewContext['form']}};
 export type AppOptions={config:Config;preflight:Preflight;client?:Client;store?:Store;identity?:IdentityStore};
@@ -378,7 +379,9 @@ export function createApp(options:AppOptions){
     try{own(c);}catch{return page(c,'return-elsewhere');}
     const current=await state(c);const result=current.read.result;
     if(payments.next(result)==='done')return c.redirect(`/checkout/${c.req.param('ref')}/complete`,303);
-    if(payments.next(result)==='authenticate')checkouts.notice(current.read.record,'affirm_incomplete');return c.redirect(`/checkout/${c.req.param('ref')}`,303);
+    // The return route only reads the payment. An unfinished action is never opened here: the checkout page
+    // shows it with Continue and Pay another way, worded for Affirm or for any other Flint-hosted step.
+    if(payments.next(result)==='authenticate')checkouts.notice(current.read.record,hasAffirmAction(current.state as unknown as CheckoutState)?'affirm_incomplete':'payment_action_incomplete');return c.redirect(`/checkout/${c.req.param('ref')}`,303);
   });
   app.get('/checkout/:ref/complete',async c=>{
     own(c);const current=await state(c);let subscription:unknown;

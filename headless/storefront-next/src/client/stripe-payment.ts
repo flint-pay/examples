@@ -12,12 +12,17 @@ import type { Money } from '../shared/money.ts';
 import type { StripeGuidance } from '../shared/types.ts';
 
 export type StripeInfo = NonNullable<StripeGuidance['stripe']>;
-export type ClientAction = {
+export type StripeAction = {
   publishable_key: string;
-  account_id?: string;
+  account_id?: string | null;
   payment_intent?: { client_secret: string; stripe_js_call: string } | null;
   setup_intent?: { client_secret: string; stripe_js_call: string } | null;
 };
+/**
+ * The pending action the app hands the page: a closed union on `type`. The page branches on `type` and
+ * never guesses the variant from whether `stripe` is present.
+ */
+export type ClientAction = { type: 'url'; url: string; expiresAt: string } | { type: 'stripe'; stripe: StripeAction; expiresAt: string };
 export type Credential = { kind: 'confirmation_token' | 'payment_method_token'; value: string };
 export type Billing = { name: string; email: string; country?: string; postal_code?: string };
 export type Shipping = { name: string; address: { line1?: string; line2?: string; city?: string; state?: string; postal_code?: string; country?: string } } | null;
@@ -62,16 +67,60 @@ async function stripeFor(publishableKey: string, accountId?: string): Promise<St
 }
 
 /**
- * Runs a pending provider action with no Elements, guidance or card form. Only the action Flint
- * returned is used. Anything but `handle_next_action` is refused without calling Stripe.
- * `invoked` is true once Stripe was called, whether or not it returned an error.
+ * True when the action's own expiry has passed. A missing or unreadable expiry is not treated as
+ * expired: the server decides, and the resume that follows reads the true outcome.
  */
-export async function runClientAction(action: ClientAction | null | undefined, hooks?: { onInvoke?: () => void }): Promise<{ invoked: boolean; error?: StripeError }> {
-  const call = action?.payment_intent ?? action?.setup_intent;
-  if (!action?.publishable_key || !call?.client_secret || call.stripe_js_call !== 'handle_next_action') return { invoked: false, error: { message: 'missing_client_action' } };
+export function isActionExpired(action: { expiresAt?: unknown } | null | undefined, now: number = Date.now()): boolean {
+  if (!action || typeof action.expiresAt !== 'string') return false;
+  const at = Date.parse(action.expiresAt);
+  return Number.isFinite(at) && at <= now;
+}
+
+/** Only an http or https address is followed, so a malformed or script address never navigates. */
+function redirectTarget(value: unknown): string | null {
+  if (typeof value !== 'string' || !value) return null;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.href : null;
+  } catch {
+    return null;
+  }
+}
+
+export type ClientActionRun = { invoked: boolean; redirected?: boolean; expired?: boolean; error?: StripeError };
+
+/**
+ * Opens a pending action by its type, with no Elements, guidance or card form. Only the action Flint
+ * returned is used.
+ *
+ * - `url`: a top-level redirect to the Flint-hosted page. The buyer returns through this app's return route.
+ * - `stripe`: Stripe.js `handleNextAction`. Anything but `handle_next_action` is refused without calling Stripe.
+ * - an unknown `type`, an unusable action, or one past its `expiresAt` is not opened.
+ *
+ * `invoked` is true once the redirect started or Stripe was called, whether or not Stripe returned an error.
+ * `redirected` is true for a redirect: the page is leaving, so the caller must not resume or read.
+ * The client secret is used once and never logged or written to the page.
+ */
+export async function runClientAction(
+  action: ClientAction | null | undefined,
+  hooks?: { onInvoke?: () => void; navigate?: (url: string) => void; now?: number },
+): Promise<ClientActionRun> {
+  if (!action || typeof action !== 'object') return { invoked: false, error: { message: 'missing_client_action' } };
+  if (isActionExpired(action, hooks?.now)) return { invoked: false, expired: true, error: { message: 'client_action_expired' } };
+  if (action.type === 'url') {
+    const target = redirectTarget(action.url);
+    if (!target) return { invoked: false, error: { message: 'missing_client_action' } };
+    hooks?.onInvoke?.();
+    (hooks?.navigate ?? ((url: string) => window.location.assign(url)))(target);
+    return { invoked: true, redirected: true };
+  }
+  if ((action as { type?: unknown }).type !== 'stripe') return { invoked: false, error: { message: 'unsupported_client_action' } };
+  const stripe = action.stripe;
+  const call = stripe?.payment_intent ?? stripe?.setup_intent;
+  if (!stripe?.publishable_key || !call?.client_secret || call.stripe_js_call !== 'handle_next_action') return { invoked: false, error: { message: 'missing_client_action' } };
   let client: Stripe;
   try {
-    client = await stripeFor(action.publishable_key, action.account_id);
+    client = await stripeFor(stripe.publishable_key, stripe.account_id ?? undefined);
   } catch {
     return { invoked: false, error: { message: 'stripe_not_loaded' } };
   }

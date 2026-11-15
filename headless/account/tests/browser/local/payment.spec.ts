@@ -356,6 +356,96 @@ test.describe('invoice payment', () => {
     expect(log.filter((entry) => entry.path.endsWith('/submit'))).toHaveLength(0);
   });
 
+  test('a url action is a top-level redirect: the page leaves for the hosted page, never calls Stripe, and never resumes', async ({ page, request }) => {
+    await resetHarness(request, { scenario: 'url_action' });
+    await open(page, 'invoice');
+    await ready(page);
+    await enterCard(page);
+    await page.getByTestId('ac-pay-button').click();
+    // The fake hosted page sends the buyer straight back, unfinished, through the return route.
+    await expect(page.getByTestId('ac-payment')).toHaveAttribute('data-state', 'affirm_incomplete');
+    const log = await harnessLog(request);
+    expect(log.some((entry) => entry.path.startsWith('/flint-hosted/invoices/'))).toBe(true);
+    expect(log.filter((entry) => entry.path.endsWith('/resume'))).toHaveLength(0);
+    expect(log.filter((entry) => entry.path.endsWith('/submit'))).toHaveLength(1);
+    expect((await stubCalls(page)).nextActions).toEqual([]);
+  });
+
+  test('coming back from the hosted page unfinished shows Continue and Pay another way, and does not send the buyer away again', async ({ page, request }) => {
+    await resetHarness(request, { scenario: 'url_action' });
+    await open(page, 'invoice', 'url_incomplete');
+    const payment = page.getByTestId('ac-payment');
+    await expect(payment).toHaveAttribute('data-state', 'affirm_incomplete');
+    // A card payment, so the wording is generic and does not name Affirm.
+    await expect(page.getByTestId('ac-payment-banner')).toHaveText("Your payment isn't finished. Continue to finish it, or choose another way to pay.");
+    await expect(page.getByTestId('ac-affirm-continue')).toHaveText('Continue');
+    await expect(page.getByTestId('ac-pay-another-way')).toBeVisible();
+    await expect(page.getByTestId('ac-pay-button')).toBeHidden();
+    await expect(page.getByTestId('ac-invoice-pay-title')).toContainText('Finishing your payment');
+    const before = await harnessLog(request);
+    expect(before.some((entry) => entry.path.startsWith('/flint-hosted/'))).toBe(false);
+    expect(before.some((entry) => entry.path.endsWith('/resume'))).toBe(false);
+
+    // Continue is the buyer's choice: it opens the hosted page again.
+    await page.getByTestId('ac-affirm-continue').click();
+    await expect.poll(async () => (await harnessLog(request)).filter((entry) => entry.path.startsWith('/flint-hosted/')).length).toBe(1);
+    expect((await harnessLog(request)).filter((entry) => entry.path.endsWith('/resume'))).toHaveLength(0);
+  });
+
+  test('Pay another way after an unfinished hosted step cancels the attempt and returns to the form', async ({ page, request }) => {
+    await resetHarness(request, { scenario: 'url_action' });
+    await open(page, 'invoice', 'url_incomplete');
+    await expect(page.getByTestId('ac-payment')).toHaveAttribute('data-state', 'affirm_incomplete');
+    await page.getByTestId('ac-pay-another-way').click();
+    await expect(page.getByTestId('ac-payment')).toHaveAttribute('data-state', 'ready');
+    expect((await harnessLog(request)).filter((entry) => entry.path.endsWith('/cancel-attempt'))).toHaveLength(1);
+  });
+
+  test('an action past its expiry is not opened: the attempt is cancelled and the buyer can try again', async ({ page, request }) => {
+    await resetHarness(request, { scenario: 'url_action_expired' });
+    await open(page, 'invoice');
+    await ready(page);
+    await enterCard(page);
+    await page.getByTestId('ac-pay-button').click();
+    await expect(page.getByTestId('ac-payment')).toHaveAttribute('data-state', 'ready');
+    await expect(page.getByTestId('ac-payment-message')).toHaveText("Your payment wasn't completed. Try again.");
+    await expect(page.getByTestId('ac-pay-button')).toBeVisible();
+    const log = await harnessLog(request);
+    expect(log.some((entry) => entry.path.startsWith('/flint-hosted/'))).toBe(false);
+    expect(log.filter((entry) => entry.path.endsWith('/cancel-attempt'))).toHaveLength(1);
+    expect((await stubCalls(page)).nextActions).toEqual([]);
+  });
+
+  test('an unknown action type shows a generic error and does not crash or navigate', async ({ page, request, baseURL }) => {
+    const seen = watch(page, baseURL ?? '');
+    await resetHarness(request, { scenario: 'unknown_action' });
+    await open(page, 'invoice');
+    await ready(page);
+    await enterCard(page);
+    await page.getByTestId('ac-pay-button').click();
+    await expect(page.getByTestId('ac-payment-message')).toHaveText('Something went wrong on our side. Try again.');
+    await expect(page).toHaveURL(/\/invoices\/inv_example_001\/pay\?variant=default$/);
+    const log = await harnessLog(request);
+    expect(log.some((entry) => entry.path.startsWith('/flint-hosted/'))).toBe(false);
+    expect(log.filter((entry) => entry.path.endsWith('/resume'))).toHaveLength(0);
+    expect((await stubCalls(page)).nextActions).toEqual([]);
+    expect(seen.consoleErrors).toEqual([]);
+  });
+
+  test('a client secret never reaches the page text or markup', async ({ page, request }) => {
+    await resetHarness(request, { scenario: 'requires_action' });
+    await open(page, 'invoice');
+    await ready(page);
+    await enterCard(page);
+    await page.getByTestId('ac-pay-button').click();
+    await expect(page).toHaveURL(new RegExp(`${COMPLETE_INVOICE}$`));
+    await page.goBack();
+    await expect(page.getByTestId('ac-payment')).toBeVisible();
+    const html = await page.content();
+    expect(html).not.toContain('pi_example_client_value');
+    expect(html).not.toMatch(/client_secret|_secret_/);
+  });
+
   test('Pay another way cancels the open attempt and returns to the form', async ({ page, request }) => {
     await resetHarness(request, { scenario: 'affirm' });
     await open(page, 'invoice', 'affirm_incomplete');

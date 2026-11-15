@@ -6,7 +6,7 @@ import * as logic from '@/shared/checkout-logic.ts';
 import { copy, errorKey as copyErrorKey, hasMessage, message } from '@/shared/copy.ts';
 import { formatMoney, sameMoney, type Money } from '@/shared/money.ts';
 import type { CheckoutState, GiftChallengeView, SavedMethod } from '@/shared/types.ts';
-import { createStripePayment, runClientAction, type ClientAction, type Credential, type StripePayment } from '@/client/stripe-payment.ts';
+import { createStripePayment, isActionExpired, runClientAction, type ClientAction, type Credential, type StripePayment } from '@/client/stripe-payment.ts';
 import { mountChallengeFrame, type FrameEvent } from '@/client/gift-challenge.ts';
 import { checkoutRequest, type JobError, type JobResult } from './api.ts';
 
@@ -29,6 +29,10 @@ export type Snapshot = {
   paymentState: string;
   message: { text: string; tone: MessageTone; code?: string; focus: number } | null;
   checkAgain: boolean;
+  /** Wording for an unfinished action: Affirm keeps its own, any other Flint-hosted step is generic. */
+  incomplete: 'affirm' | 'action';
+  /** True once a url action started leaving this page. */
+  redirecting: boolean;
   locked: boolean;
   jobErrors: Partial<Record<JobTarget, string>>;
   queued: Partial<Record<JobKind, number>>;
@@ -107,7 +111,7 @@ export class CheckoutController {
     this.approved = logic.outstandingOf(init.state);
     this.excludeAffirm = logic.affirmShouldBeRemoved(logic.declineCode(init.state));
     this.snap = {
-      state: init.state, paymentState: 'loading', message: null, checkAgain: false, locked: false, jobErrors: {}, queued: {},
+      state: init.state, paymentState: 'loading', message: null, checkAgain: false, incomplete: 'affirm', redirecting: false, locked: false, jobErrors: {}, queued: {},
       contact: init.contact, emailInvalid: false, gift: { state: 'none', code: '' }, savedMethods: [], savedChoice: null,
       elementsComplete: false, elementsReady: false, selectedType: 'card', walletsAvailable: false, saveCard: false, savePhone: '',
       affirmCountry: '', affirmPostal: '', verificationSkipped: '', announcement: '', deliveryOpen: 0, giftCodeReset: 0,
@@ -1014,7 +1018,13 @@ export class CheckoutController {
     }
   }
 
-  private async authenticate(clientAction: ClientAction | undefined) {
+  /**
+   * Opens the pending action by its type. A `url` action is a top-level redirect to the Flint-hosted page, and
+   * the buyer comes back through `/checkout/:ref/return`, which only reads the payment. A `stripe` action runs
+   * Stripe.js `handleNextAction`. A page opened by that return (`onLoad`) never sends the buyer back on its own:
+   * a url action still waiting shows Continue and Pay another way.
+   */
+  private async authenticate(clientAction: ClientAction | undefined, options: { onLoad?: boolean } = {}) {
     this.setPaymentState('authenticating', { message: '' });
     let action = clientAction;
     if (!action) {
@@ -1042,15 +1052,56 @@ export class CheckoutController {
       }
       return;
     }
+    if (isActionExpired(action)) {
+      await this.abandonExpiredAction();
+      return;
+    }
+    if (options.onLoad && action?.type === 'url') {
+      await this.mountPayment();
+      this.set({ incomplete: logic.hasAffirmAction(this.state) ? 'affirm' : 'action' });
+      this.setPaymentState('affirm_incomplete', { message: this.msg(this.snap.incomplete === 'affirm' ? 'affirm_incomplete' : 'payment_action_incomplete'), focus: false });
+      return;
+    }
     // The card form's guidance is cleared while an action is pending, so Stripe runs it without Elements.
     const run = await runClientAction(action, { onInvoke: () => { if (dedupeKey) this.handledActions.set(dedupeKey, 1); } });
+    if (run.redirected) {
+      // The page is leaving for the Flint-hosted page. Nothing to resume or read: the return route does that.
+      this.set({ redirecting: true });
+      this.setPaymentState('authenticating', { message: '' });
+      return;
+    }
+    if (run.expired) {
+      await this.abandonExpiredAction();
+      return;
+    }
     if (!run.invoked) {
-      // Nothing ran, so the action is not marked as seen and a reload tries it again. No more requests.
+      // Nothing ran: an unknown type or an unusable action. The action is not marked as seen and a reload
+      // tries it again. No more requests.
       this.setPaymentState('unavailable', { message: this.msg('bug_checkout') });
       return;
     }
     // Resume whether or not the provider call returned an error: Flint decides the outcome.
     await this.recoverOutcome('resume');
+  }
+
+  /**
+   * An action past its expiry is not opened. The open attempt is cancelled and the buyer gets the card form
+   * back with the same "try again" message Flint gives for a lapsed action.
+   */
+  private async abandonExpiredAction() {
+    const text = this.msg(logic.declineKey('payment_action_expired'));
+    const result = await this.uiJobs.run(() => this.request('POST', '/cancel-attempt', {}));
+    if (result.ok) {
+      if (result.state) this.applyState(result.state);
+      await this.reload();
+      await this.mountPayment();
+      this.setPaymentState('declined', { message: text, code: 'payment_action_expired' });
+      return;
+    }
+    // The attempt could not be closed here. Keep following it until Flint reports the outcome.
+    this.set({ message: { text, tone: 'error', focus: Date.now() } });
+    this.focus('payment-message');
+    await this.recoverOutcome('read');
   }
 
   /**
@@ -1157,7 +1208,7 @@ export class CheckoutController {
         break;
       }
       case 'authenticating':
-        await this.authenticate(undefined);
+        await this.authenticate(undefined, { onLoad: true });
         break;
       case 'resuming':
         // The app holds an unresolved payment request, possibly with no attempt yet. No form work is needed.

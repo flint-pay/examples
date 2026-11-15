@@ -4,6 +4,8 @@ The [headless storefront](../storefront/) rebuilt with the Next.js App Router. I
 
 This example uses `@flintpay/node` 8.0.0-beta.3 and runs in test mode only.
 
+A payment that needs the buyer to do something more arrives as one pending action, a closed union on `type`: a `url` action is a top-level redirect to the Flint-hosted page, and a `stripe` action runs Stripe.js `handleNextAction`. The buyer returns through `/checkout/[ref]/return`, which only reads the payment. See the [storefront README](../storefront/README.md#credential-boundary).
+
 ## How it maps to Next.js
 
 | Where | What it does |

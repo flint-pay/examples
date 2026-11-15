@@ -70,8 +70,9 @@ The browser receives only what Stripe.js needs: the publishable key, the account
 1. The buyer opens `/invoices/:id/pay` or `/returns/:id/pay`. The app launches an embedded checkout session with a return path on this origin.
 2. The page mounts the Payment Element and an optional wallet button. Stripe returns a single-use credential.
 3. The page sends that credential and the amount the buyer saw to this app. If the order total changed, the app says so and waits for a new click.
-4. The app reads the order, starts the payment, and follows the attempt. A decline keeps the form. A bank authentication runs in the page and then the app resumes the same attempt. A response that never arrives is reconciled with Flint before any new payment can start.
-5. When the payment finishes, or when a provider sends the buyer back, the page goes to `/invoices/:id/pay/return` or `/returns/:id/pay/return`. Those routes read the real state, so reloading is safe.
+4. The app reads the order, starts the payment, and follows the attempt. A decline keeps the form. A response that never arrives is reconciled with Flint before any new payment can start.
+5. When a payment needs the buyer to do something more, the app hands the page one pending action, a closed union on `type`. A `url` action is opened as a top-level redirect to the Flint-hosted page. A `stripe` action keeps the Stripe.js `handleNextAction` flow, and the app resumes the same attempt after it. An unknown `type`, or an action past its `expiresAt`, is never opened: the page shows a generic error or the "try again" message. The page never logs the client secret or writes it to the markup.
+6. When the payment finishes, or when the buyer comes back from a Flint-hosted page, the page goes to `/invoices/:id/pay/return` or `/returns/:id/pay/return`. Those routes only read the real state, so reloading is safe. They never confirm or resume. A finished payment goes on to the invoice or return. A payment still processing waits and checks again. A payment the buyer left unfinished shows Continue and Pay another way, and the page does not send the buyer back on its own. A failed payment shows the form with a message to try another card.
 
 ### Gift cards on a payment
 

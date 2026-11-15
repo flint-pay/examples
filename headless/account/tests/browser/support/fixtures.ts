@@ -165,7 +165,7 @@ export function subscription(overrides: Partial<Subscription> = {}): Subscriptio
 }
 
 export function invoice(overrides: Partial<BuyerInvoice> = {}): BuyerInvoice {
-  return {
+  const invoice = {
     invoice_id: ids.invoice,
     invoice_number: 'INV-1001',
     status: 'open',
@@ -192,6 +192,18 @@ export function invoice(overrides: Partial<BuyerInvoice> = {}): BuyerInvoice {
     },
     ...overrides,
   } as BuyerInvoice;
+  // The invoice shape reports amounts under settlement_amounts and the due date as a date. The scenarios above
+  // set the flat amounts, so the nested shape follows whichever the scenario set.
+  const flat = invoice as unknown as Record<string, any>;
+  flat.due_date = String(flat.due_at ?? '').slice(0, 10) || undefined;
+  flat.settlement_amounts = {
+    credit_money: flat.credit_money,
+    currently_due_money: flat.currently_due_money,
+    outstanding_money: flat.outstanding_money,
+    paid_money: flat.paid_money,
+    refunded_money: flat.refunded_money,
+  };
+  return invoice;
 }
 
 export function returnResource(overrides: Partial<ReturnResource> = {}): ReturnResource {
@@ -395,7 +407,7 @@ export function paymentPage(
   const resourceId = surface === 'invoice' ? ids.invoice : ids.returnId;
   const summary =
     surface === 'invoice'
-      ? { invoice: { invoice_id: ids.invoice, invoice_number: 'INV-1001', due_at: '2026-10-15T15:00:00Z', status: 'open', is_overdue: false, currently_due_money: usd(12000), outstanding_money: usd(12000) } }
+      ? { invoice: { invoice_id: ids.invoice, invoice_number: 'INV-1001', due_date: '2026-10-15', status: 'open', is_overdue: false, settlement_amounts: { currently_due_money: usd(12000), outstanding_money: usd(12000) } } }
       : { return: { return_id: ids.returnId, return_number: 'R-1001', financial_summary: returnResource().financial_summary } };
   return context({
     surface,
@@ -601,6 +613,17 @@ function paymentPageVariant(surface: 'invoice' | 'return', variant: Variant) {
       return paymentPage(surface, paymentState({ next: 'authenticate', attempt: attempt('requires_action', { legs: [affirmLeg] }), pending_action_id: 'pa_example_aff', returned: true }), { returned: true });
     case 'pay_remaining':
       return paymentPage(surface, paymentState({ next: 'pay_remaining', attempt: attempt('partially_succeeded', { legs: [{ payment_intent_id: 'pi_1', status: 'succeeded', amount_money: usd(5000) }, { payment_intent_id: 'pi_2', status: 'failed', amount_money: usd(7000) }] }), approved_outstanding_money: usd(7000) }));
+    case 'url_incomplete':
+      // The buyer came back from a Flint-hosted page without finishing. The action is a url action on a card leg.
+      return paymentPage(
+        surface,
+        paymentState({ next: 'authenticate', attempt: attempt('requires_action', { legs: [{ payment_intent_id: 'pi_example_card', status: 'open' as const, amount_money: usd(12000), payment_option: 'card' }] }), pending_action_id: 'pa_example_url', returned: true }),
+        { returned: true },
+      );
+    case 'returned_declined':
+      return paymentPage(surface, paymentState({ attempt: attempt('failed', { failure_code: 'incorrect_cvc' }), decline: { code: 'incorrect_cvc' }, next: 'new_payment', returned: true }), { returned: true });
+    case 'returned_waiting':
+      return paymentPage(surface, paymentState({ next: 'wait', attempt: attempt('processing'), returned: true }), { returned: true });
     case 'bank_processing':
       return paymentPage(surface, paymentState({ next: 'bank_processing', attempt: attempt('processing') }));
     case 'with_affirm':

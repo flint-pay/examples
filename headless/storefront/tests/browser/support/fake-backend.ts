@@ -184,6 +184,16 @@ export class FakeCheckout {
     this.recalc();
   }
 
+  /** A pending Flint-hosted page. The buyer returns unfinished through /checkout/:ref/return. */
+  private urlPending(variant: 'url' | 'urlexpired' | 'urlunknown'): Json {
+    const origin = `http://localhost:${process.env.LOCAL_STATE_PORT ?? 4190}`;
+    const expires_at = variant === 'urlexpired' ? '2000-01-01T00:00:00Z' : '2099-01-01T00:00:00Z';
+    const client_action: Json = variant === 'urlunknown'
+      ? { type: 'future', url: 'javascript:alert(1)' }
+      : { type: 'url', url: `${origin}/flint-hosted/${this.ref}/pa_fixture_url`, stripe: { publishable_key: 'pk_test_fixture', account_id: 'acct_fixture', payment_intent: { client_secret: 'pi_fixture_secret_fixture', stripe_js_call: 'handle_next_action' } } };
+    return { expires_at, pending_action_id: `pa_fixture_${++this.seq}`, action_type: 'redirect', client_action };
+  }
+
   private initScenario() {
     const s = this.scenario;
     const stripePending = (kind: 'payment_intent' | 'setup_intent') => ({expires_at:'2099-01-01T00:00:00Z',
@@ -201,6 +211,16 @@ export class FakeCheckout {
     if (s === 'authenticating') {
       this.attempt = this.makeAttempt('requires_action', { is_resumable: true, pending_actions: [stripePending('payment_intent')] });
       this.pendingBehavior = '3ds';
+    }
+    if (s === 'urlreturn' || s === 'urlreturnaffirm') {
+      // The buyer came back from a Flint-hosted page without finishing. The return route left the notice.
+      this.attempt = this.makeAttempt('requires_action', { is_resumable: true, ...(s === 'urlreturnaffirm' ? { selected: 'affirm' } : {}), pending_actions: [this.urlPending('url')] });
+      this.notices.push(s === 'urlreturnaffirm' ? 'affirm_incomplete' : 'payment_action_incomplete');
+      this.pendingBehavior = 'url';
+    }
+    if (s === 'urlreturnexpired') {
+      this.attempt = this.makeAttempt('requires_action', { is_resumable: true, pending_actions: [this.urlPending('urlexpired')] });
+      this.pendingBehavior = 'url';
     }
     if (s === 'lostresume') this.journal = { remaining: 2, outcome: 'ok' };
     if (s === 'resumefail') this.journal = { remaining: 1, outcome: 'fail' };
@@ -404,7 +424,7 @@ export class FakeCheckout {
     const pending = attempt?.status === 'requires_action' ? attempt.pending_actions?.[0] : undefined;
     return {
       status: 200,
-      body: {expires_at:'2099-01-01T00:00:00Z', state: this.project(), next: this.nextStep(), client_action: pending?.client_action?.stripe, pending_action_id: pending?.pending_action_id, ...extra },
+      body: {expires_at:'2099-01-01T00:00:00Z', state: this.project(), next: this.nextStep(), client_action: pending ? browserAction(pending) : undefined, pending_action_id: pending?.pending_action_id, ...extra },
     };
   }
 
@@ -753,6 +773,12 @@ export class FakeCheckout {
           pending_actions: [{expires_at:'2099-01-01T00:00:00Z', pending_action_id: `pa_fixture_${++this.seq}`, action_type: 'handle_next_action', client_action: { type:'stripe',stripe: { publishable_key: 'pk_test_fixture', account_id: 'acct_fixture', ...(kind === 'setup' ? { setup_intent: { client_secret: 'seti_fixture_secret_fixture', stripe_js_call: 'handle_next_action' } } : { payment_intent: { client_secret: 'pi_fixture_secret_fixture', stripe_js_call: 'handle_next_action' } }) } } }],
         });
         return this.paymentReply();
+      case 'url':
+      case 'urlexpired':
+      case 'urlunknown':
+        this.pendingBehavior = 'url';
+        this.attempt = this.makeAttempt('requires_action', { is_resumable: true, pending_actions: [this.urlPending(behavior)] });
+        return this.paymentReply();
       case 'lostsend':
         // Several sends had unknown outcomes and Flint shows no attempt yet: the app answers resume.
         this.journal = { remaining: 2, outcome: 'ok' };
@@ -806,6 +832,15 @@ export class FakeCheckout {
     }
     return this.paymentReply();
   }
+}
+
+/** The pending action as the app hands it to the page: a closed union on type, with the action's expiry. */
+function browserAction(pending: Json): Json {
+  const action = pending.client_action ?? {};
+  const out: Json = { type: action.type, expiresAt: pending.expires_at };
+  if (action.type === 'url') out.url = action.url;
+  if (action.type === 'stripe') out.stripe = action.stripe;
+  return out;
 }
 
 function sanitizeBody(body: Json): unknown {

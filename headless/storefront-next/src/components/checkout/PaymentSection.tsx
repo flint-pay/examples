@@ -200,10 +200,10 @@ export function PaymentSection({ step }: { step?: number }) {
       }}>
         <form method="dialog" className="stack">
           <h3 id="affirm-dialog-title">{copy.checkout.dialogTitle}</h3>
-          <p>{copy.checkout.dialogBody}</p>
+          <p>{snap.incomplete === 'affirm' ? copy.checkout.dialogBody : copy.checkout.actionDialogBody}</p>
           <div className="actions">
-            <button className="button button-primary" type="submit" value="confirm" data-testid="sf-affirm-dialog-confirm" aria-busy={confirmingCancel}>{copy.checkout.dialogConfirm}</button>
-            <button className="button" type="submit" value="cancel">{copy.checkout.dialogCancel}</button>
+            <button className="button button-primary" type="submit" value="confirm" data-testid="sf-affirm-dialog-confirm" aria-busy={confirmingCancel}>{snap.incomplete === 'affirm' ? copy.checkout.dialogConfirm : copy.checkout.actionDialogConfirm}</button>
+            <button className="button" type="submit" value="cancel">{snap.incomplete === 'affirm' ? copy.checkout.dialogCancel : copy.checkout.actionDialogCancel}</button>
           </div>
         </form>
       </dialog>
@@ -315,16 +315,16 @@ function PaymentForm({ onPayAnotherWay, anotherRef }: { onPayAnotherWay: () => v
 
       {panel === 'affirm' ? (
         <div className="panel">
-          <p>{message('affirm_incomplete')}</p>
+          <p>{message(snap.incomplete === 'affirm' ? 'affirm_incomplete' : 'payment_action_incomplete')}</p>
           <div className="actions">
-            <button className="button button-primary" type="button" onClick={() => void controller.continueAffirm()} data-testid="sf-affirm-continue">{copy.checkout.continueAffirm}</button>
+            <button className="button button-primary" type="button" onClick={() => void controller.continueAffirm()} data-testid="sf-affirm-continue">{snap.incomplete === 'affirm' ? copy.checkout.continueAffirm : copy.checkout.continueAction}</button>
             <button className="button" type="button" ref={anotherRef} onClick={onPayAnotherWay} data-testid="sf-pay-another-way">{copy.checkout.payAnotherWay}</button>
           </div>
         </div>
       ) : null}
       {panel === 'waiting' ? (
         <div className="panel">
-          <div className="progress-line"><span className="spinner" aria-hidden="true" /><p role="status">{paymentState === 'resuming' ? copy.checkout.stateResuming : paymentState === 'authenticating' ? copy.checkout.stateAuthenticating : copy.checkout.stateWaiting}</p></div>
+          <div className="progress-line"><span className="spinner" aria-hidden="true" /><p role="status">{paymentState === 'resuming' ? copy.checkout.stateResuming : paymentState === 'authenticating' ? (snap.redirecting ? copy.checkout.stateRedirecting : copy.checkout.stateAuthenticating) : copy.checkout.stateWaiting}</p></div>
           {snap.checkAgain ? <button className="button" type="button" onClick={() => void controller.checkAgain()} data-testid="sf-check-again">{copy.checkout.checkAgain}</button> : null}
         </div>
       ) : null}

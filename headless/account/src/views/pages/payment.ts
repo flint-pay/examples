@@ -344,6 +344,27 @@ function giftSection(data: PaymentPageData, state: PaymentState, ctx: RenderCont
   </section>`;
 }
 
+/**
+ * What the page says to a buyer who just came back from the Flint-hosted page, by what the payment
+ * reports. A succeeded or bank-processing payment never reaches this page: the return route sends
+ * the buyer on to the invoice or return.
+ */
+function returnedHelp(phase: PaymentPhase | null): string {
+  switch (phase) {
+    case 'authenticating':
+    case 'affirm_incomplete':
+      return pay.returnedActionHelp;
+    case 'declined':
+      return pay.returnedDeclinedHelp;
+    case 'waiting':
+    case 'resuming':
+    case 'recovery':
+      return pay.returnedWaitingHelp;
+    default:
+      return pay.returnedHelp;
+  }
+}
+
 function payPage(ctx: RenderContext<PaymentPageData>): Html {
   const data = ctx.data;
   const isInvoice = data.surface === 'invoice';
@@ -366,7 +387,7 @@ function payPage(ctx: RenderContext<PaymentPageData>): Html {
       (data.state.gift_editable || (data.state.order.gift_cards?.length ?? 0) > 0 || data.state.gift_unconfirmed),
   );
   const testid = isInvoice ? 'ac-invoice-pay' : 'ac-return-pay';
-  const main = html`${pageHeader(title, { subtitle: data.returned ? pay.returnedHelp : undefined, testid: `${testid}-title` })}
+  const main = html`${pageHeader(title, { subtitle: data.returned ? returnedHelp(phase) : undefined, testid: `${testid}-title` })}
     <div class="pay-layout">
       <div class="pay-main">${gift}${paymentRegion(data, ctx)}</div>
       ${summaryPanel(data, ctx)}
