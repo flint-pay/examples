@@ -125,6 +125,44 @@ test('a cancel that keeps failing stops after three tries, keeps the expiry mess
   assert.match(snap.message.text, new RegExp(message('payment_action_expired', { store: 'Example Store' }).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.ok(snap.message.text.endsWith(message('generic_error', { store: 'Example Store' })));
   assert.equal(snap.message.tone, 'error');
+  // The action is past its expiry, so Continue could not help and is not offered; Pay another way is the retry.
+  assert.equal(snap.continueUsable, false);
+  assert.equal(snap.incomplete, 'action');
+});
+
+test('a url action waiting on load keeps Continue usable', async () => {
+  const { controller } = controllerFor(checkoutState(), () => ({ ok: true, status: 200 }));
+  await controller.authenticate(urlAction(), { onLoad: true });
+  assert.equal(controller.getSnapshot().continueUsable, true);
+});
+
+test('an expired action whose cancel finds the payment already finished goes to the confirmation, not to try again', async () => {
+  for (const next of ['done', 'bank_processing']) {
+    const { controller, page } = controllerFor(checkoutState(), ({ suffix }) => (suffix === '/cancel-attempt' ? { ok: true, status: 200, state: checkoutState(), next } : { ok: false, status: 500 }));
+    await controller.authenticate(urlAction(PAST), { onLoad: true });
+    const snap = controller.getSnapshot();
+    assert.equal(snap.paymentState, next === 'done' ? 'succeeded' : 'bank_processing', next);
+    assert.notEqual(snap.message?.text, message('payment_action_expired', { store: 'Example Store' }), next);
+    assert.equal(page.navigated.length, 1, next);
+    assert.match(page.navigated[0] ?? '', /\/complete$/, next);
+  }
+});
+
+test('Pay another way retries the cancel once and returns to the form', async () => {
+  const { controller, calls } = controllerFor(checkoutState(), ({ suffix }) => (suffix === '/cancel-attempt' ? { ok: true, status: 200, state: checkoutState(), next: 'new_payment' } : { ok: false, status: 500 }));
+  controller.set({ continueUsable: false });
+  await controller.payAnotherWay();
+  assert.equal(paths(calls, '/cancel-attempt').length, 1);
+  assert.equal(controller.getSnapshot().paymentState, 'ready');
+  assert.equal(controller.getSnapshot().continueUsable, true);
+});
+
+test('Pay another way that finds the payment already finished goes to the confirmation, not to the form', async () => {
+  const { controller, page } = controllerFor(checkoutState(), () => ({ ok: true, status: 200, state: checkoutState(), next: 'done' }));
+  await controller.payAnotherWay();
+  assert.equal(controller.getSnapshot().paymentState, 'succeeded');
+  assert.equal(page.navigated.length, 1);
+  assert.match(page.navigated[0] ?? '', /\/complete$/);
 });
 
 test('a page restored after the redirect reads the payment again and waits for the buyer', async () => {

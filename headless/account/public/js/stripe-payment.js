@@ -284,10 +284,32 @@ async function run(root, boot) {
     }
   }
 
+  /**
+   * A return opens as "Finishing your payment" with help that matches its controls. When the controls change
+   * (Continue cannot help, or the buyer is back at the form), the heading and help change with them.
+   */
+  function syncHeader() {
+    const formTitle = root.dataset.formTitle;
+    const lede = document.querySelector('.page-header .lede');
+    if (!formTitle || !(lede instanceof HTMLElement)) return;
+    const resting = restingPhase();
+    if (resting === 'affirm_incomplete') {
+      lede.textContent = continueUsable ? ui.returnedActionHelp : ui.returnedActionBlockedHelp;
+      lede.hidden = false;
+      return;
+    }
+    if (local !== 'idle' || !acceptsNewPayment(derivePhase(state))) return;
+    const title = document.getElementById('page-title');
+    if (title) title.textContent = formTitle;
+    lede.textContent = ui.returnedDeclinedHelp;
+    lede.hidden = resting !== 'declined';
+  }
+
   function render() {
     const phase = currentPhase();
     root.dataset.state = phase;
     root.dataset.phase = restingPhase();
+    syncHeader();
     if (phase === 'loading') root.setAttribute('aria-busy', 'true');
     else root.removeAttribute('aria-busy');
 
@@ -685,8 +707,10 @@ async function run(root, boot) {
   }
 
   /**
-   * Asks the server to close the attempt, a few times with a growing pause. Returns true once it is closed.
-   * It never loops without bound: the buyer decides what happens after the last try.
+   * Asks the server to close the attempt. Returns true once it is closed.
+   * `post` already retries a lost response or a 5xx with its own pauses, so this loop only goes again for an
+   * answer `post` does not retry, such as a 409 while the attempt is changing. With the three tries at most this
+   * stays near three cancels, not three tries of four.
    */
   async function closeAttempt() {
     for (let attempt = 0; attempt < CANCEL_TRIES; attempt += 1) {
@@ -694,8 +718,20 @@ async function run(root, boot) {
       const result = await post(endpoints.cancel_attempt, {}, undefined);
       if (result) readJob(result);
       if (result && state.next !== 'authenticate') return true;
+      // No answer or a server error after post's own tries: stop here, the buyer decides what happens next.
+      if (!result || result.status >= 500) return false;
     }
     return false;
+  }
+
+  /**
+   * True when the cancel found the payment already finished. The buyer paid before the cancel landed, so the
+   * page goes on to the invoice or return instead of offering another payment.
+   */
+  function finishedAfterCancel() {
+    if (state.next !== 'done' && state.next !== 'bank_processing') return false;
+    complete();
+    return true;
   }
 
   /** The attempt ended in a state that takes a new payment, but the form was never mounted. */
@@ -725,6 +761,7 @@ async function run(root, boot) {
       showMessage(`${text} ${copy.errors.generic_error}`);
       return;
     }
+    if (finishedAfterCancel()) return;
     await reopenForm();
     presentIdle();
     showMessage(text);
@@ -958,6 +995,7 @@ async function run(root, boot) {
         showMessage(copy.errors.generic_error);
         return;
       }
+      if (finishedAfterCancel()) return;
       actionIncomplete = false;
       continueUsable = true;
       openedBySubmit = false;

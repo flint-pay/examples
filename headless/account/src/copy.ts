@@ -697,6 +697,7 @@ export const pay = {
   retryHint: 'Check your details or use another payment method, then try again.',
   returnedHelp: 'Reading the state of your payment. This takes a moment.',
   returnedActionHelp: "Your payment isn't finished yet. Continue to finish it, or pay another way.",
+  returnedActionBlockedHelp: "Your payment isn't finished yet. You can pay another way.",
   returnedDeclinedHelp: "Your payment didn't go through. Try another card or payment method.",
   returnedWaitingHelp: "We're confirming your payment. Don't close this page.",
   nothingToPay: 'Nothing is due on this invoice.',

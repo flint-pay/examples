@@ -382,6 +382,7 @@ test.describe('invoice payment', () => {
     await expect(page.getByTestId('ac-pay-another-way')).toBeVisible();
     await expect(page.getByTestId('ac-pay-button')).toBeHidden();
     await expect(page.getByTestId('ac-invoice-pay-title')).toContainText('Finishing your payment');
+    await expect(page.locator('.page-header .lede')).toContainText('Continue to finish it, or pay another way');
     const before = await harnessLog(request);
     expect(before.some((entry) => entry.path.startsWith('/flint-hosted/'))).toBe(false);
     expect(before.some((entry) => entry.path.endsWith('/resume'))).toBe(false);
@@ -401,6 +402,25 @@ test.describe('invoice payment', () => {
     // The card form is mounted again, so the buyer can pay.
     await expect(page.getByTestId('stub-card')).toBeVisible();
     expect((await harnessLog(request)).filter((entry) => entry.path.endsWith('/cancel-attempt'))).toHaveLength(1);
+    // The form is back, so the heading no longer says the payment is being finished and the help is gone.
+    await expect(page.getByTestId('ac-invoice-pay-title')).toContainText('Pay invoice');
+    await expect(page.getByTestId('ac-invoice-pay-title')).not.toContainText('Finishing your payment');
+    await expect(page.locator('.page-header .lede')).toBeHidden();
+  });
+
+  test('Pay another way that finds the payment already finished goes on to the invoice, not to the form', async ({ page, request }) => {
+    await resetHarness(request, { scenario: 'url_action' });
+    await open(page, 'invoice', 'url_incomplete');
+    await expect(page.getByTestId('ac-payment')).toHaveAttribute('data-state', 'affirm_incomplete');
+    // The buyer paid on the hosted page before the cancel landed: the server answers with the finished attempt.
+    await page.route('**/cancel-attempt', async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      await route.fulfill({ response, json: { ...body, next: 'done' } });
+    });
+    await page.getByTestId('ac-pay-another-way').click();
+    await expect(page).toHaveURL(new RegExp(`${COMPLETE_INVOICE}$`));
+    await expect(page.getByTestId('harness-complete')).toBeVisible();
   });
 
   test('a load that is not a return never opens the hosted page by itself: Continue and Pay another way wait for the buyer', async ({ page, request }) => {
@@ -470,9 +490,50 @@ test.describe('invoice payment', () => {
     await expect(page.getByTestId('ac-payment-message')).toHaveText("Your payment wasn't completed. Try again.");
     await expect(page.getByTestId('ac-affirm-continue')).toBeHidden();
     await expect(page.getByTestId('ac-pay-button')).toBeVisible();
+    // The heading and help follow the controls: no "Continue" help while Continue is hidden.
+    await expect(page.getByTestId('ac-invoice-pay-title')).toContainText('Pay invoice');
+    await expect(page.locator('.page-header .lede')).toBeHidden();
     const log = await harnessLog(request);
     expect(log.some((entry) => entry.path.startsWith('/flint-hosted/'))).toBe(false);
     expect(log.filter((entry) => entry.path.endsWith('/cancel-attempt'))).toHaveLength(1);
+  });
+
+  test('a return whose action cannot be opened does not tell the buyer to continue', async ({ page, request }) => {
+    await resetHarness(request, { scenario: 'unknown_action' });
+    await open(page, 'invoice', 'url_incomplete');
+    await expect(page.getByTestId('ac-payment')).toHaveAttribute('data-state', 'affirm_incomplete');
+    await expect(page.getByTestId('ac-affirm-continue')).toBeHidden();
+    await expect(page.getByTestId('ac-pay-another-way')).toBeVisible();
+    await expect(page.locator('.page-header .lede')).toHaveText("Your payment isn't finished yet. You can pay another way.");
+  });
+
+  test('an expired action whose cancel finds the payment already finished goes on to the invoice', async ({ page, request }) => {
+    await resetHarness(request, { scenario: 'url_action_expired' });
+    // The buyer paid before the cancel landed: the cancel answers with the finished attempt.
+    await page.route('**/cancel-attempt', async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      await route.fulfill({ response, json: { ...body, next: 'done' } });
+    });
+    await open(page, 'invoice', 'url_incomplete');
+    await expect(page).toHaveURL(new RegExp(`${COMPLETE_INVOICE}$`));
+    await expect(page.getByTestId('harness-complete')).toBeVisible();
+  });
+
+  test('a cancel that fails with a server error is not stacked on the retries the request already makes', async ({ page, request }) => {
+    await resetHarness(request, { scenario: 'url_action_expired' });
+    let cancels = 0;
+    await page.route('**/cancel-attempt', (route) => {
+      cancels += 1;
+      return route.fulfill({ status: 503, json: { error: { kind: 'unavailable', code: 'UNAVAILABLE', message_key: 'unavailable' } } });
+    });
+    await open(page, 'invoice', 'url_incomplete');
+    // The request retries a 5xx three more times, so one try is four requests. The outer loop adds none.
+    await expect(page.getByTestId('ac-payment-message')).toContainText('Something went wrong on our side. Try again.', { timeout: 15000 });
+    await page.waitForTimeout(3000);
+    expect(cancels).toBe(4);
+    await expect(page.getByTestId('ac-affirm-continue')).toBeHidden();
+    await expect(page.getByTestId('ac-pay-another-way')).toBeVisible();
   });
 
   test('an expired action whose cancel keeps failing stops after three tries and leaves a manual retry', async ({ page, request }) => {

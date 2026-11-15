@@ -33,6 +33,8 @@ export type Snapshot = {
   checkAgain: boolean;
   /** Wording for an unfinished action: Affirm keeps its own, any other Flint-hosted step is generic. */
   incomplete: 'affirm' | 'action';
+  /** False when Continue could not help: an action past its expiry whose attempt could not be cancelled. */
+  continueUsable: boolean;
   /** True once a url action started leaving this page. */
   redirecting: boolean;
   locked: boolean;
@@ -113,7 +115,7 @@ export class CheckoutController {
     this.approved = logic.outstandingOf(init.state);
     this.excludeAffirm = logic.affirmShouldBeRemoved(logic.declineCode(init.state));
     this.snap = {
-      state: init.state, paymentState: 'loading', message: null, checkAgain: false, incomplete: 'affirm', redirecting: false, locked: false, jobErrors: {}, queued: {},
+      state: init.state, paymentState: 'loading', message: null, checkAgain: false, incomplete: 'affirm', continueUsable: true, redirecting: false, locked: false, jobErrors: {}, queued: {},
       contact: init.contact, emailInvalid: false, gift: { state: 'none', code: '' }, savedMethods: [], savedChoice: null,
       elementsComplete: false, elementsReady: false, selectedType: 'card', walletsAvailable: false, saveCard: false, savePhone: '',
       affirmCountry: '', affirmPostal: '', verificationSkipped: '', announcement: '', deliveryOpen: 0, giftCodeReset: 0,
@@ -1060,7 +1062,7 @@ export class CheckoutController {
     }
     if (options.onLoad && action?.type === 'url') {
       await this.mountPayment();
-      this.set({ incomplete: logic.hasAffirmAction(this.state) ? 'affirm' : 'action' });
+      this.set({ incomplete: logic.hasAffirmAction(this.state) ? 'affirm' : 'action', continueUsable: true });
       this.setPaymentState('affirm_incomplete', { message: this.msg(this.snap.incomplete === 'affirm' ? 'affirm_incomplete' : 'payment_action_incomplete'), focus: false });
       return;
     }
@@ -1100,14 +1102,19 @@ export class CheckoutController {
     }
     if (result?.ok) {
       if (result.state) this.applyState(result.state);
+      // The buyer paid before the cancel landed: go on to the confirmation, never offer to try again.
+      if (result.next === 'done' || result.next === 'bank_processing') {
+        await this.advance(result.next, undefined);
+        return;
+      }
       await this.reload();
       await this.mountPayment();
       this.setPaymentState('declined', { message: text, code: 'payment_action_expired' });
       return;
     }
     // The attempt could not be closed after a few tries. Stop instead of looping: the buyer sees why, and
-    // Pay another way (or Continue) tries again when they choose.
-    this.set({ incomplete: 'action' });
+    // Pay another way tries the cancel again when they choose. Continue is hidden: the action is past its expiry.
+    this.set({ incomplete: 'action', continueUsable: false });
     this.setPaymentState('affirm_incomplete', { message: `${text} ${this.msg('generic_error')}`, tone: 'error' });
   }
 
@@ -1187,8 +1194,14 @@ export class CheckoutController {
       this.focus('payment-message');
       return;
     }
-    this.excludeAffirm = false;
     if (result.state) this.applyState(result.state);
+    // The buyer paid before the cancel landed: go on to the confirmation, never back to the form.
+    if (result.next === 'done' || result.next === 'bank_processing') {
+      await this.advance(result.next, undefined);
+      return;
+    }
+    this.excludeAffirm = false;
+    this.set({ continueUsable: true });
     await this.reload();
     await this.mountPayment();
     this.setPaymentState('ready', { message: '', focus: false });

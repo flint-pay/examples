@@ -193,7 +193,8 @@ function conflictBlock(data: PaymentPageData): Html {
     </div></section>`;
 }
 
-function paymentRegion(data: PaymentPageData, ctx: RenderContext): Html {
+/** `returnedFormTitle` is the page's usual heading, set only on a return that opened as "Finishing your payment": the script switches back to it once the buyer is at the form again. */
+function paymentRegion(data: PaymentPageData, ctx: RenderContext, returnedFormTitle?: string): Html {
   const state = data.state;
   if (!state) return conflictBlock(data);
   const endpoints = paymentEndpoints(data.surface, data.resource_id);
@@ -214,7 +215,7 @@ function paymentRegion(data: PaymentPageData, ctx: RenderContext): Html {
   };
   return html`<section class="card" aria-labelledby="payment-heading">
     <h2 id="payment-heading">${pay.paymentHeading}</h2>
-    <div class="payment" id="payment" data-testid="ac-payment" data-state="${initial}" data-phase="${phase}" data-surface="${data.surface}" data-still-after-ms="60000" data-payment-root${attrs({ 'aria-busy': needsElements ? 'true' : undefined })}>
+    <div class="payment" id="payment" data-testid="ac-payment" data-state="${initial}" data-phase="${phase}" data-surface="${data.surface}" data-still-after-ms="60000" data-payment-root${attrs({ 'aria-busy': needsElements ? 'true' : undefined, 'data-form-title': returnedFormTitle })}>
       <noscript><p class="alert alert-warn">${pay.noscript}</p></noscript>
       <div class="payment-banner" data-payment-banner role="status" data-testid="ac-payment-banner" hidden></div>
       <div class="alert alert-error" data-payment-message role="alert" tabindex="-1" data-testid="ac-payment-message" hidden></div>
@@ -375,7 +376,8 @@ function payPage(ctx: RenderContext<PaymentPageData>): Html {
   // A buyer back after a decline is at the form again, so the page keeps its usual heading. Any other return
   // is still reading or finishing the payment.
   const finishing = data.returned && phase !== 'declined';
-  const title = finishing ? pay.returnedTitle : isInvoice ? fill(pay.invoiceTitle, { number }) : pay.returnTitle;
+  const formTitle = isInvoice ? fill(pay.invoiceTitle, { number }) : pay.returnTitle;
+  const title = finishing ? pay.returnedTitle : formTitle;
   const settlement = Boolean(data.state && isSettlement(data.state));
   const needsModule = Boolean(
     data.state && data.launch === 'ready' && phase && !['unavailable', 'expired', 'succeeded', 'bank_processing'].includes(phase) && (hasPaymentCollection(data.state) || data.state.next !== 'new_payment' || settlement),
@@ -392,7 +394,7 @@ function payPage(ctx: RenderContext<PaymentPageData>): Html {
   const testid = isInvoice ? 'ac-invoice-pay' : 'ac-return-pay';
   const main = html`${pageHeader(title, { subtitle: data.returned ? returnedHelp(phase) : undefined, testid: `${testid}-title` })}
     <div class="pay-layout">
-      <div class="pay-main">${gift}${paymentRegion(data, ctx)}</div>
+      <div class="pay-main">${gift}${paymentRegion(data, ctx, finishing ? formTitle : undefined)}</div>
       ${summaryPanel(data, ctx)}
     </div>
     <p class="back-link"><a href="${paymentEndpoints(data.surface, data.resource_id).detail}">${isInvoice ? pay.backToInvoice : pay.backToReturn}</a></p>`;

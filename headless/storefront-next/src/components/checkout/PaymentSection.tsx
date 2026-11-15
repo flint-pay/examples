@@ -317,7 +317,7 @@ function PaymentForm({ onPayAnotherWay, anotherRef }: { onPayAnotherWay: () => v
         <div className="panel">
           <p>{message(snap.incomplete === 'affirm' ? 'affirm_incomplete' : 'payment_action_incomplete')}</p>
           <div className="actions">
-            <button className="button button-primary" type="button" onClick={() => void controller.continueAffirm()} data-testid="sf-affirm-continue">{snap.incomplete === 'affirm' ? copy.checkout.continueAffirm : copy.checkout.continueAction}</button>
+            {snap.continueUsable ? <button className="button button-primary" type="button" onClick={() => void controller.continueAffirm()} data-testid="sf-affirm-continue">{snap.incomplete === 'affirm' ? copy.checkout.continueAffirm : copy.checkout.continueAction}</button> : null}
             <button className="button" type="button" ref={anotherRef} onClick={onPayAnotherWay} data-testid="sf-pay-another-way">{copy.checkout.payAnotherWay}</button>
           </div>
         </div>

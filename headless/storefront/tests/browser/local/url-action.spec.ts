@@ -160,10 +160,39 @@ test('an expired action whose cancel keeps failing stops after three tries and l
   expect(await paths(request, 'urlcancelfail', 'cancel-attempt')).toHaveLength(3);
   expect(seen.hosted).toHaveLength(0);
   expect(await paths(request, 'urlcancelfail', 'resume')).toHaveLength(0);
-  // Continue is the buyer's own retry: one more bounded round.
-  await page.getByTestId('sf-affirm-continue').click();
-  await expect.poll(async () => (await paths(request, 'urlcancelfail', 'cancel-attempt')).length).toBe(6);
+  // The action is past its expiry, so Continue could not help and is not offered.
+  await expect(page.getByTestId('sf-affirm-continue')).toBeHidden();
+  // The buyer's own retry is Pay another way: it asks for the cancel once more.
+  await page.getByTestId('sf-pay-another-way').click();
+  await page.getByTestId('sf-affirm-dialog-confirm').click();
+  await expect.poll(async () => (await paths(request, 'urlcancelfail', 'cancel-attempt')).length).toBe(4);
   await expect(page.getByTestId('sf-payment')).toHaveAttribute('data-state', 'affirm_incomplete');
+  await expect(page.getByTestId('sf-affirm-continue')).toBeHidden();
+  await expect(page.getByTestId('sf-pay-another-way')).toBeVisible();
+});
+
+/** The buyer paid before the cancel landed, so the cancel answers with a finished payment. */
+async function cancelReportsDone(page: Page) {
+  await page.route('**/cancel-attempt', async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({ response, json: { ...body, next: 'done' } });
+  });
+}
+
+test('an expired action whose cancel finds the payment already finished goes to the confirmation, not to try again', async ({ page }) => {
+  await cancelReportsDone(page);
+  await openCheckout(page, 'urlreturnexpired');
+  await expect(page).toHaveURL(/\/complete$/);
+});
+
+test('Pay another way that finds the payment already finished goes to the confirmation, not to the form', async ({ page }) => {
+  await openCheckout(page, 'urlreturn');
+  await waitForPayment(page, 'affirm_incomplete');
+  await cancelReportsDone(page);
+  await page.getByTestId('sf-pay-another-way').click();
+  await page.getByTestId('sf-affirm-dialog-confirm').click();
+  await expect(page).toHaveURL(/\/complete$/);
 });
 
 test('a page restored after the redirect stops saying it is leaving and offers Continue and Pay another way', async ({ page, request }) => {
