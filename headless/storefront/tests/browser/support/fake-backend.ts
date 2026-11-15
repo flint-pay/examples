@@ -212,13 +212,13 @@ export class FakeCheckout {
       this.attempt = this.makeAttempt('requires_action', { is_resumable: true, pending_actions: [stripePending('payment_intent')] });
       this.pendingBehavior = '3ds';
     }
-    if (s === 'urlreturn' || s === 'urlreturnaffirm') {
+    if (s === 'urlreturn' || s === 'urlreturnaffirm' || s === 'urlhold') {
       // The buyer came back from a Flint-hosted page without finishing. The return route left the notice.
       this.attempt = this.makeAttempt('requires_action', { is_resumable: true, ...(s === 'urlreturnaffirm' ? { selected: 'affirm' } : {}), pending_actions: [this.urlPending('url')] });
       this.notices.push(s === 'urlreturnaffirm' ? 'affirm_incomplete' : 'payment_action_incomplete');
       this.pendingBehavior = 'url';
     }
-    if (s === 'urlreturnexpired') {
+    if (s === 'urlreturnexpired' || s === 'urlcancelfail') {
       this.attempt = this.makeAttempt('requires_action', { is_resumable: true, pending_actions: [this.urlPending('urlexpired')] });
       this.pendingBehavior = 'url';
     }
@@ -479,6 +479,8 @@ export class FakeCheckout {
       case 'attempt':
         return this.readAttempt();
       case 'cancel-attempt':
+        // The cancel cannot be completed: the attempt stays open.
+        if (this.scenario === 'urlcancelfail') return fail(409, 'conflict', 'ATTEMPT_NOT_CANCELABLE', 'generic_error', this.project());
         this.attempt = this.makeAttempt('canceled', { is_resumable: false });
         this.notices = this.notices.filter((key) => key !== 'affirm_incomplete');
         return this.paymentReply();

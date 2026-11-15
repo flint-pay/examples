@@ -15,6 +15,8 @@ const POLL_MAX_MS = 5000;
 const POLL_LIMIT_MS = 60_000;
 /** Resume requests one recovery run may send. Each replays the same saved request. */
 const MAX_RESUME_POSTS = 3;
+/** How many times a cancel is tried for an action that can no longer open, before the buyer decides. */
+const CANCEL_TRIES = 3;
 const OPEN_STATES = new Set(['authenticating', 'resuming', 'waiting', 'bank_processing', 'affirm_incomplete', 'submitting']);
 const GIFT_ACTIVE = new Set(['loading', 'slow', 'checking', 'failed', 'expired']);
 
@@ -1085,23 +1087,28 @@ export class CheckoutController {
   }
 
   /**
-   * An action past its expiry is not opened. The open attempt is cancelled and the buyer gets the card form
-   * back with the same "try again" message Flint gives for a lapsed action.
+   * An action past its expiry is not opened. The open attempt is cancelled, with a few tries, and the buyer gets
+   * the card form back with the same "try again" message Flint gives for a lapsed action.
    */
   private async abandonExpiredAction() {
     const text = this.msg(logic.declineKey('payment_action_expired'));
-    const result = await this.uiJobs.run(() => this.request('POST', '/cancel-attempt', {}));
-    if (result.ok) {
+    let result: JobResult | undefined;
+    for (let attempt = 0; attempt < CANCEL_TRIES; attempt += 1) {
+      if (attempt > 0) await new Promise((resolve) => window.setTimeout(resolve, 500 * 2 ** (attempt - 1)));
+      result = await this.uiJobs.run(() => this.request('POST', '/cancel-attempt', {}));
+      if (result.ok) break;
+    }
+    if (result?.ok) {
       if (result.state) this.applyState(result.state);
       await this.reload();
       await this.mountPayment();
       this.setPaymentState('declined', { message: text, code: 'payment_action_expired' });
       return;
     }
-    // The attempt could not be closed here. Keep following it until Flint reports the outcome.
-    this.set({ message: { text, tone: 'error', focus: Date.now() } });
-    this.focus('payment-message');
-    await this.recoverOutcome('read');
+    // The attempt could not be closed after a few tries. Stop instead of looping: the buyer sees why, and
+    // Pay another way (or Continue) tries again when they choose.
+    this.set({ incomplete: 'action' });
+    this.setPaymentState('affirm_incomplete', { message: `${text} ${this.msg('generic_error')}`, tone: 'error' });
   }
 
   /**
@@ -1243,12 +1250,25 @@ export class CheckoutController {
   /** React may unmount and remount in development. The controller stops only if the page really goes away. */
   attach() {
     window.clearTimeout(this.detachTimer);
+    window.addEventListener('pageshow', this.onPageShow);
   }
+
+  /**
+   * A page restored from the back-forward cache after the redirect would still say it is taking the buyer away.
+   * Read the payment again as a fresh load does: a url action waits for Continue or Pay another way.
+   */
+  private onPageShow = (event: Event) => {
+    if (!(event as PageTransitionEvent).persisted || !this.snap.redirecting) return;
+    this.set({ redirecting: false });
+    this.handledActions.clear();
+    void this.authenticate(undefined, { onLoad: true });
+  };
   detach() {
     this.detachTimer = window.setTimeout(() => this.destroy(), 0);
   }
 
   destroy() {
+    window.removeEventListener('pageshow', this.onPageShow);
     this.generation += 1;
     this.leaveGift('none');
     this.flow?.destroy();

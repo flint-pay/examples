@@ -146,3 +146,38 @@ test('a client secret never reaches the page markup, for a stripe action or a ur
   expect(html).not.toContain('pi_fixture_secret');
   expect(html).not.toMatch(/client_secret|client_action/);
 });
+
+test('an expired action whose cancel keeps failing stops after three tries and leaves the buyer a way forward', async ({ page, request }) => {
+  const seen = await watch(page);
+  await openCheckout(page, 'urlcancelfail');
+  await waitForPayment(page, 'affirm_incomplete');
+  await expect.poll(async () => (await paths(request, 'urlcancelfail', 'cancel-attempt')).length).toBe(3);
+  // The expiry message stays, with the generic error beside it, and nothing loops.
+  await expect(page.getByTestId('sf-payment-message')).toContainText("Your payment wasn't completed. Try again.");
+  await expect(page.getByTestId('sf-payment-message')).toContainText('Something went wrong');
+  await expect(page.getByTestId('sf-pay-another-way')).toBeVisible();
+  await page.waitForTimeout(3000);
+  expect(await paths(request, 'urlcancelfail', 'cancel-attempt')).toHaveLength(3);
+  expect(seen.hosted).toHaveLength(0);
+  expect(await paths(request, 'urlcancelfail', 'resume')).toHaveLength(0);
+  // Continue is the buyer's own retry: one more bounded round.
+  await page.getByTestId('sf-affirm-continue').click();
+  await expect.poll(async () => (await paths(request, 'urlcancelfail', 'cancel-attempt')).length).toBe(6);
+  await expect(page.getByTestId('sf-payment')).toHaveAttribute('data-state', 'affirm_incomplete');
+});
+
+test('a page restored after the redirect stops saying it is leaving and offers Continue and Pay another way', async ({ page, request }) => {
+  await openCheckout(page, 'urlhold');
+  await waitForPayment(page, 'affirm_incomplete');
+  const hosted = page.waitForRequest((request) => new URL(request.url()).pathname.startsWith('/flint-hosted/'));
+  await page.getByTestId('sf-affirm-continue').click();
+  await hosted;
+  // The hosted page does not take over here, so this page is still on screen, as when it is restored.
+  await waitForPayment(page, 'authenticating');
+  await expect(page.getByTestId('sf-payment')).toContainText('Taking you to finish your payment');
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+  await waitForPayment(page, 'affirm_incomplete');
+  await expect(page.getByTestId('sf-affirm-continue')).toBeVisible();
+  await expect(page.getByTestId('sf-pay-another-way')).toBeVisible();
+  expect(await paths(request, 'urlhold', 'resume')).toHaveLength(0);
+});

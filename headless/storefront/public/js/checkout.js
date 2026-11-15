@@ -29,6 +29,8 @@ const POLL_MAX_MS = 5000;
 const POLL_LIMIT_MS = 60_000;
 /** Resume requests one recovery run may send. Each replays the same saved request. */
 const MAX_RESUME_POSTS = 3;
+/** How many times a cancel is tried for an action that can no longer open, before the buyer decides. */
+const CANCEL_TRIES = 3;
 const BILLING_FOCUS_KEY = 'sf-focus-billing-title';
 const SWAP_REGIONS = ['notices', 'summary', 'discount', 'delivery', 'billing', 'gift-cards', 'tip', 'contact-extra'];
 
@@ -1863,12 +1865,18 @@ function showIncomplete(kind) {
 }
 
 /**
- * An action past its expiry is not opened. The open attempt is cancelled and the buyer gets the card form
- * back with the same "try again" message Flint gives for a lapsed action.
+ * An action past its expiry is not opened. The open attempt is cancelled, with a few tries, and the buyer gets
+ * the card form back with the same "try again" message Flint gives for a lapsed action.
  */
 async function abandonExpiredAction() {
-  const result = await uiJobs.run(() => request('POST', '/cancel-attempt', {}));
-  if (result.ok) {
+  /** @type {JobResult | undefined} */
+  let result;
+  for (let attempt = 0; attempt < CANCEL_TRIES; attempt += 1) {
+    if (attempt > 0) await new Promise((resolve) => window.setTimeout(resolve, 500 * 2 ** (attempt - 1)));
+    result = await uiJobs.run(() => request('POST', '/cancel-attempt', {}));
+    if (result.ok) break;
+  }
+  if (result?.ok) {
     if (result.state) applyState(result.state);
     await refreshRegions();
     await mountPayment();
@@ -1876,9 +1884,10 @@ async function abandonExpiredAction() {
     setPaymentState('declined', { message: declineText('payment_action_expired') });
     return;
   }
-  // The attempt could not be closed here. Keep following it until Flint reports the outcome.
-  showMessage(declineText('payment_action_expired'), true);
-  await recoverOutcome('read');
+  // The attempt could not be closed after a few tries. Stop instead of looping: the buyer sees why, and
+  // Pay another way (or Continue) tries again when they choose.
+  showIncomplete('action');
+  showMessage(`${declineText('payment_action_expired')} ${msg('generic_error')}`, true);
 }
 
 /**
@@ -2015,6 +2024,14 @@ function wireStatic() {
     if (typed && !US_POSTAL_CODE.test(typed)) postal.setAttribute('aria-invalid', 'true');
   });
   document.addEventListener('submit', onJobSubmit);
+  // A page restored from the back-forward cache after the redirect would still say it is taking the buyer
+  // away. Read the payment again as a fresh load does: a url action waits for Continue or Pay another way.
+  window.addEventListener('pageshow', (event) => {
+    if (!event.persisted || !app.redirecting) return;
+    app.redirecting = false;
+    app.handledActions.clear();
+    void authenticate(undefined, { onLoad: true });
+  });
   wireGiftChallenge();
   const card = $('#save-card');
   card?.addEventListener('change', async () => {

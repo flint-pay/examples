@@ -125,7 +125,13 @@ app.get('/checkout/:ref', async (c) => {
   return response;
 });
 // The fake Flint-hosted page a url action opens. It sends the buyer straight back, unfinished, to the return route.
-app.get('/flint-hosted/:ref/:actionId', (c) => c.redirect(`/checkout/${c.req.param('ref')}/return`, 303));
+// The hold scenario answers with a download, so the navigation ends without leaving: the page that opened it stays on
+// screen, the way the browser's back-forward cache restores it.
+app.get('/flint-hosted/:ref/:actionId', (c) =>
+  c.req.param('ref') === 'chk_urlhold'
+    ? new Response('hosted', { headers: { 'content-disposition': 'attachment; filename="hosted.txt"', 'content-type': 'application/octet-stream' } })
+    : c.redirect(`/checkout/${c.req.param('ref')}/return`, 303),
+);
 app.get('/checkout/:ref/return', (c) => {
   const ref = c.req.param('ref');
   if (ref === 'chk_elsewhere') return page(c, 'return-elsewhere', {});

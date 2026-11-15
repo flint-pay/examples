@@ -620,6 +620,12 @@ function paymentPageVariant(surface: 'invoice' | 'return', variant: Variant) {
         paymentState({ next: 'authenticate', attempt: attempt('requires_action', { legs: [{ payment_intent_id: 'pi_example_card', status: 'open' as const, amount_money: usd(12000), payment_option: 'card' }] }), pending_action_id: 'pa_example_url', returned: true }),
         { returned: true },
       );
+    case 'url_pending':
+      // A load that is not a return (Back, a reload) while a url action waits on the card leg.
+      return paymentPage(
+        surface,
+        paymentState({ next: 'authenticate', attempt: attempt('requires_action', { legs: [{ payment_intent_id: 'pi_example_card', status: 'open' as const, amount_money: usd(12000), payment_option: 'card' }] }), pending_action_id: 'pa_example_url' }),
+      );
     case 'returned_declined':
       return paymentPage(surface, paymentState({ attempt: attempt('failed', { failure_code: 'incorrect_cvc' }), decline: { code: 'incorrect_cvc' }, next: 'new_payment', returned: true }), { returned: true });
     case 'returned_waiting':

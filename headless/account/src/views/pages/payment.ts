@@ -370,9 +370,12 @@ function payPage(ctx: RenderContext<PaymentPageData>): Html {
   const isInvoice = data.surface === 'invoice';
   const summary = data.summary;
   const number = isInvoice ? ((summary as InvoicePaySummary).invoice.invoice_number ?? data.resource_id) : (summary as ReturnPaySummary).return.return_number;
-  const title = data.returned ? pay.returnedTitle : isInvoice ? fill(pay.invoiceTitle, { number }) : pay.returnTitle;
   // Stripe.js is only loaded when the page can collect a payment or run a provider action.
   const phase = data.state ? derivePhase(data.state) : null;
+  // A buyer back after a decline is at the form again, so the page keeps its usual heading. Any other return
+  // is still reading or finishing the payment.
+  const finishing = data.returned && phase !== 'declined';
+  const title = finishing ? pay.returnedTitle : isInvoice ? fill(pay.invoiceTitle, { number }) : pay.returnTitle;
   const settlement = Boolean(data.state && isSettlement(data.state));
   const needsModule = Boolean(
     data.state && data.launch === 'ready' && phase && !['unavailable', 'expired', 'succeeded', 'bank_processing'].includes(phase) && (hasPaymentCollection(data.state) || data.state.next !== 'new_payment' || settlement),

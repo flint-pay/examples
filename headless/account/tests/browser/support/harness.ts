@@ -31,7 +31,9 @@ type Scenario =
   | 'decline_affirm'
   | 'affirm'
   | 'url_action'
+  | 'url_action_hold'
   | 'url_action_expired'
+  | 'url_action_expired_cancel_fails'
   | 'unknown_action'
   | 'recovery'
   | 'stuck_waiting';
@@ -214,7 +216,12 @@ for (const [root, kind, pageId] of [
 
   // The Flint-hosted page the url action opens. It sends the buyer back to this app's return route, which
   // shows the unfinished payment (the buyer did not finish on the hosted page).
-  app.get(`/flint-hosted/${root}/:actionId`, (c) => c.redirect(`/${root}/${kind === 'invoice' ? ids.invoice : ids.returnId}/pay?variant=url_incomplete`, 303));
+  // In the hold scenario the answer is a download, so the navigation ends without leaving: the page that opened it
+  // stays on screen, the way the browser's back-forward cache restores it.
+  app.get(`/flint-hosted/${root}/:actionId`, async (c) => {
+    if (harness.scenario === 'url_action_hold') return new Response('hosted', { headers: { 'content-disposition': 'attachment; filename="hosted.txt"', 'content-type': 'application/octet-stream' } });
+    return c.redirect(`/${root}/${kind === 'invoice' ? ids.invoice : ids.returnId}/pay?variant=url_incomplete`, 303);
+  });
 
   app.get(`${base}/return`, (c) => c.html('<!doctype html><title>Done</title><main data-testid="harness-complete">Payment return route reached</main>'));
 
@@ -347,8 +354,10 @@ for (const [root, kind, pageId] of [
       case 'requires_action':
         return c.json(job(paymentState({ next: 'authenticate', attempt: attempt('requires_action'), pending_action_id: 'pa_example_001' }), { client_action: clientAction }));
       case 'url_action':
+      case 'url_action_hold':
         return c.json(job(urlState(), { client_action: urlAction(c) }));
       case 'url_action_expired':
+      case 'url_action_expired_cancel_fails':
         return c.json(job(urlState(), { client_action: urlAction(c, PAST) }));
       case 'unknown_action':
         return c.json(job(urlState(), { client_action: { type: 'future', expiresAt: FUTURE, url: 'javascript:alert(1)', stripe: clientAction.stripe } }));
@@ -396,8 +405,10 @@ for (const [root, kind, pageId] of [
       case 'affirm':
         return c.json(job(paymentState({ next: 'authenticate', attempt: attempt('requires_action', { legs: [{ payment_intent_id: 'pi_example_aff', status: 'open', amount_money: usd(12000), payment_option: 'affirm' }] }), pending_action_id: 'pa_example_aff', returned: true }), { client_action: clientAction }));
       case 'url_action':
+      case 'url_action_hold':
         return c.json(job(urlState(), { client_action: urlAction(c) }));
       case 'url_action_expired':
+      case 'url_action_expired_cancel_fails':
         return c.json(job(urlState(), { client_action: urlAction(c, PAST) }));
       case 'unknown_action':
         return c.json(job(urlState(), { client_action: { type: 'future', expiresAt: FUTURE } }));
@@ -406,7 +417,11 @@ for (const [root, kind, pageId] of [
     }
   });
 
-  app.post(`${base}/cancel-attempt`, (c) => c.json(job(paymentState({ attempt: attempt('canceled'), next: 'new_payment' }))));
+  app.post(`${base}/cancel-attempt`, (c) => {
+    // The cancel cannot be completed: the attempt stays open on the server.
+    if (harness.scenario === 'url_action_expired_cancel_fails') return c.json({ error: { kind: 'conflict', code: 'ATTEMPT_NOT_CANCELABLE', message_key: 'generic_error' } }, 409);
+    return c.json(job(paymentState({ attempt: attempt('canceled'), next: 'new_payment' })));
+  });
 }
 
 // ---- Card setup ------------------------------------------------------------

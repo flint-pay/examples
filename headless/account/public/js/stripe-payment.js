@@ -12,8 +12,9 @@
 //
 // A pending action arrives as { type: 'url' | 'stripe', ... } (see client-action.js). A url action is
 // opened as a top-level redirect to the Flint-hosted page, and the buyer comes back through this
-// app's return route, which only reads the payment. A page opened by that return never sends the
-// buyer back on its own: it shows affirm_incomplete, and the buyer chooses Continue or Pay another way.
+// app's return route, which only reads the payment. A url action opens on its own only right after the
+// buyer submitted a payment on this page. Any other load (a return, Back, a reload) never sends the
+// buyer on again by itself: it shows affirm_incomplete, and the buyer chooses Continue or Pay another way.
 // A stripe action keeps the Stripe.js handleNextAction flow.
 //
 // When gift cards cover the whole amount (collection_kind settlement) there is no payment form and
@@ -98,10 +99,14 @@ async function run(root, boot) {
   /** @type {number | null} */
   let lastElementsAmount = null;
   const handledActions = new Set();
-  /** True when this page was opened by the provider return route. */
-  let returnedAtLoad = Boolean(boot.state?.returned);
-  /** The buyer came back without finishing: the action waits for their choice. */
+  /** True only after the buyer submitted a payment on this page: then a url action may open by itself. */
+  let openedBySubmit = false;
+  /** The action waits for the buyer's choice: they came back unfinished, or the action cannot be opened. */
   let actionIncomplete = false;
+  /** False when Continue could not change anything, such as an action of an unknown type. */
+  let continueUsable = true;
+  /** How many times a cancel is tried before the buyer is asked to try again themselves. */
+  const CANCEL_TRIES = 3;
   /** A url action is about to leave this page. */
   let redirecting = false;
 
@@ -296,7 +301,10 @@ async function run(root, boot) {
     if (walletsBox instanceof HTMLElement && (!showForm || isSettlement(state))) walletsBox.hidden = true;
     if (payActions instanceof HTMLElement) payActions.hidden = !showForm;
     if (affirmBox instanceof HTMLElement) affirmBox.hidden = phase !== 'affirm_incomplete';
-    if (affirmContinue instanceof HTMLButtonElement && phase === 'affirm_incomplete') affirmContinue.textContent = hasOpenAffirmLeg(state) ? ui.continueAffirm : ui.continueAction;
+    if (affirmContinue instanceof HTMLButtonElement && phase === 'affirm_incomplete') {
+      affirmContinue.textContent = hasOpenAffirmLeg(state) ? ui.continueAffirm : ui.continueAction;
+      affirmContinue.hidden = !continueUsable;
+    }
     if (affirmBilling instanceof HTMLElement) affirmBilling.hidden = !showForm || !affirmActive();
     for (const field of [affirmCountry, affirmPostal]) {
       if (field instanceof HTMLInputElement || field instanceof HTMLSelectElement) field.disabled = !accepting || !affirmActive();
@@ -564,11 +572,18 @@ async function run(root, boot) {
           render();
           return;
         }
-        if (derivePhase(state) === 'affirm_incomplete' || (returnedAtLoad && clientAction?.type === 'url')) {
-          // The buyer came back from the Flint-hosted page without finishing. Never send them back
-          // on their own: they choose to continue or to pay another way.
+        if (clientAction && isActionExpired(clientAction)) {
+          // Past its expiry the action is not worth offering: close the attempt and let the buyer try again.
+          await abandonAction(copy.declines.payment_action_expired ?? copy.errors.generic_error);
+          return;
+        }
+        if (derivePhase(state) === 'affirm_incomplete' || (!openedBySubmit && clientAction?.type === 'url')) {
+          // Only a payment submitted on this page sends the buyer to the hosted page by itself. A return,
+          // Back, or a reload never does: they choose to continue or to pay another way.
           local = 'idle';
           actionIncomplete = true;
+          continueUsable = true;
+          openedBySubmit = false;
           pendingAffirmAction = clientAction;
           presentIdle();
           return;
@@ -655,7 +670,12 @@ async function run(root, boot) {
     }
     if (outcome.status === 'unsupported' || outcome.status === 'unavailable') {
       // Nothing ran. Say so plainly and stop: no resume, no new request that could not change the outcome.
+      // The buyer keeps a way out: Pay another way closes the attempt. Continue stays only when trying
+      // again could help, which it cannot for an action of an unknown type.
       local = 'idle';
+      actionIncomplete = true;
+      continueUsable = outcome.status === 'unavailable';
+      openedBySubmit = false;
       render();
       showMessage(outcome.status === 'unavailable' ? copy.errors.stripe_unavailable : copy.errors.generic_error);
       return 'stopped';
@@ -665,7 +685,30 @@ async function run(root, boot) {
   }
 
   /**
+   * Asks the server to close the attempt, a few times with a growing pause. Returns true once it is closed.
+   * It never loops without bound: the buyer decides what happens after the last try.
+   */
+  async function closeAttempt() {
+    for (let attempt = 0; attempt < CANCEL_TRIES; attempt += 1) {
+      if (attempt > 0) await sleep(500 * 2 ** (attempt - 1));
+      const result = await post(endpoints.cancel_attempt, {}, undefined);
+      if (result) readJob(result);
+      if (result && state.next !== 'authenticate') return true;
+    }
+    return false;
+  }
+
+  /** The attempt ended in a state that takes a new payment, but the form was never mounted. */
+  async function reopenForm() {
+    if (acceptsNewPayment(derivePhase(state)) && !paymentElement && !isSettlement(state)) {
+      const mounted = await mountElements();
+      if (!mounted) state = { ...state, payment_collection: null };
+    }
+  }
+
+  /**
    * Gives up an action that can no longer be opened, and returns to the form with the reason.
+   * When the attempt cannot be closed, the buyer keeps the reason and a manual way to try again.
    * @param {string} text
    */
   async function abandonAction(text) {
@@ -673,19 +716,16 @@ async function run(root, boot) {
     actionIncomplete = false;
     pendingAffirmAction = null;
     render();
-    const result = await post(endpoints.cancel_attempt, {}, undefined);
-    if (result) readJob(result);
+    const closed = await closeAttempt();
     local = 'idle';
-    if (state.next === 'authenticate') {
-      // The attempt could not be closed here. Keep following it until the server reports the outcome.
-      local = 'waiting';
-      await waitLoop();
+    if (!closed) {
+      actionIncomplete = true;
+      continueUsable = false;
+      render();
+      showMessage(`${text} ${copy.errors.generic_error}`);
       return;
     }
-    if (acceptsNewPayment(derivePhase(state)) && !paymentElement && !isSettlement(state)) {
-      const mounted = await mountElements();
-      if (!mounted) state = { ...state, payment_collection: null };
-    }
+    await reopenForm();
     presentIdle();
     showMessage(text);
   }
@@ -760,7 +800,7 @@ async function run(root, boot) {
   async function pay(source) {
     if (local !== 'idle') return;
     if (source === 'card' && blockerMessage()) return;
-    returnedAtLoad = false;
+    openedBySubmit = true;
     local = 'submitting';
     clearMessage();
     showBanner('');
@@ -891,7 +931,8 @@ async function run(root, boot) {
       const action = pendingAffirmAction;
       pendingAffirmAction = null;
       actionIncomplete = false;
-      returnedAtLoad = false;
+      continueUsable = true;
+      openedBySubmit = true;
       local = 'authenticating';
       render();
       handledActions.clear();
@@ -906,17 +947,27 @@ async function run(root, boot) {
     affirmOther.addEventListener('click', async () => {
       local = 'resuming';
       render();
-      const result = await post(endpoints.cancel_attempt, {}, undefined);
-      if (result) readJob(result);
+      const closed = await closeAttempt();
       local = 'idle';
       pendingAffirmAction = null;
+      if (!closed) {
+        // Still open on the server. Keep the choice on screen so the buyer can try again.
+        actionIncomplete = true;
+        continueUsable = false;
+        render();
+        showMessage(copy.errors.generic_error);
+        return;
+      }
       actionIncomplete = false;
-      returnedAtLoad = false;
+      continueUsable = true;
+      openedBySubmit = false;
+      await reopenForm();
       presentIdle();
     });
   }
 
   // A page restored from the back-forward cache after a redirect would still say it is redirecting.
+  // Loading it again reads the attempt as a fresh page, which never opens the hosted page on its own.
   window.addEventListener('pageshow', (event) => {
     if (event.persisted && redirecting) window.location.reload();
   });

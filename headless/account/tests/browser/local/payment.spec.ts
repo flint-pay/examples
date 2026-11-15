@@ -398,7 +398,103 @@ test.describe('invoice payment', () => {
     await expect(page.getByTestId('ac-payment')).toHaveAttribute('data-state', 'affirm_incomplete');
     await page.getByTestId('ac-pay-another-way').click();
     await expect(page.getByTestId('ac-payment')).toHaveAttribute('data-state', 'ready');
+    // The card form is mounted again, so the buyer can pay.
+    await expect(page.getByTestId('stub-card')).toBeVisible();
     expect((await harnessLog(request)).filter((entry) => entry.path.endsWith('/cancel-attempt'))).toHaveLength(1);
+  });
+
+  test('a load that is not a return never opens the hosted page by itself: Continue and Pay another way wait for the buyer', async ({ page, request }) => {
+    await resetHarness(request, { scenario: 'url_action' });
+    await open(page, 'invoice', 'url_pending');
+    const payment = page.getByTestId('ac-payment');
+    await expect(payment).toHaveAttribute('data-state', 'affirm_incomplete');
+    await expect(page.getByTestId('ac-affirm-continue')).toBeVisible();
+    await expect(page.getByTestId('ac-pay-another-way')).toBeVisible();
+    await expect(page.getByTestId('ac-pay-button')).toBeHidden();
+    // A reload of the same page, as Back to it would do, parks again instead of leaving.
+    await page.reload();
+    await expect(payment).toHaveAttribute('data-state', 'affirm_incomplete');
+    await expect(page.getByTestId('ac-affirm-continue')).toBeVisible();
+    const log = await harnessLog(request);
+    expect(log.some((entry) => entry.path.startsWith('/flint-hosted/'))).toBe(false);
+    expect(log.filter((entry) => entry.path.endsWith('/resume'))).toHaveLength(0);
+    expect(log.filter((entry) => entry.path.endsWith('/submit'))).toHaveLength(0);
+  });
+
+  test('a page restored after the redirect loads again and waits for the buyer instead of leaving a second time', async ({ page, request }) => {
+    // The hosted page answers slowly, so this page stays on screen as the back-forward cache would restore it.
+    await resetHarness(request, { scenario: 'url_action_hold' });
+    const hostedOpens = () => harnessLog(request).then((log) => log.filter((entry) => entry.path.startsWith('/flint-hosted/')).length);
+    await open(page, 'invoice');
+    await ready(page);
+    await enterCard(page);
+    await page.getByTestId('ac-pay-button').click();
+    await expect(page.getByTestId('ac-payment').locator('[data-payment-progress]')).toContainText('Taking you to finish your payment.');
+    await expect.poll(hostedOpens).toBe(1);
+    // The server now reports the open action on a plain load of this page.
+    await page.evaluate(() => {
+      history.replaceState(null, '', location.pathname + '?variant=url_pending');
+      window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+    });
+    await expect(page.getByTestId('ac-payment')).toHaveAttribute('data-state', 'affirm_incomplete');
+    await expect(page.getByTestId('ac-affirm-continue')).toBeVisible();
+    await expect(page.getByTestId('ac-pay-another-way')).toBeVisible();
+    expect(await hostedOpens()).toBe(1);
+  });
+
+  test('a return after a decline is back at the form with its usual heading', async ({ page, request }) => {
+    await resetHarness(request, { scenario: 'success' });
+    await open(page, 'invoice', 'returned_declined');
+    await expect(page.getByTestId('ac-payment')).toHaveAttribute('data-state', 'declined');
+    await expect(page.getByTestId('ac-invoice-pay-title')).not.toContainText('Finishing your payment');
+    await expect(page.getByTestId('ac-invoice-pay-title')).toContainText('Pay invoice');
+    await expect(page.locator('.page-header .lede')).toContainText("Your payment didn't go through");
+    await expect(page.getByTestId('ac-payment-message')).toContainText('security code');
+    await expect(page.getByTestId('ac-pay-button')).toBeVisible();
+  });
+
+  test('a return that is still being confirmed says so and offers no new payment', async ({ page, request }) => {
+    await resetHarness(request, { scenario: 'stuck_waiting' });
+    await open(page, 'invoice', 'returned_waiting');
+    await expect(page.getByTestId('ac-payment')).toHaveAttribute('data-state', 'waiting');
+    await expect(page.getByTestId('ac-invoice-pay-title')).toContainText('Finishing your payment');
+    await expect(page.locator('.page-header .lede')).toContainText("We're confirming your payment");
+    await expect(page.getByTestId('ac-pay-button')).toBeHidden();
+    expect((await harnessLog(request)).filter((entry) => entry.path.endsWith('/submit'))).toHaveLength(0);
+  });
+
+  test('a return with an expired action goes straight to Try again and never offers Continue', async ({ page, request }) => {
+    await resetHarness(request, { scenario: 'url_action_expired' });
+    await open(page, 'invoice', 'url_incomplete');
+    await expect(page.getByTestId('ac-payment')).toHaveAttribute('data-state', 'ready');
+    await expect(page.getByTestId('ac-payment-message')).toHaveText("Your payment wasn't completed. Try again.");
+    await expect(page.getByTestId('ac-affirm-continue')).toBeHidden();
+    await expect(page.getByTestId('ac-pay-button')).toBeVisible();
+    const log = await harnessLog(request);
+    expect(log.some((entry) => entry.path.startsWith('/flint-hosted/'))).toBe(false);
+    expect(log.filter((entry) => entry.path.endsWith('/cancel-attempt'))).toHaveLength(1);
+  });
+
+  test('an expired action whose cancel keeps failing stops after three tries and leaves a manual retry', async ({ page, request }) => {
+    await resetHarness(request, { scenario: 'url_action_expired_cancel_fails' });
+    await open(page, 'invoice', 'url_incomplete');
+    const cancels = async () => (await harnessLog(request)).filter((entry) => entry.path.endsWith('/cancel-attempt')).length;
+    await expect.poll(cancels).toBe(3);
+    await expect(page.getByTestId('ac-payment')).toHaveAttribute('data-state', 'affirm_incomplete');
+    // The expiry message stays, with the generic error beside it.
+    await expect(page.getByTestId('ac-payment-message')).toContainText("Your payment wasn't completed. Try again.");
+    await expect(page.getByTestId('ac-payment-message')).toContainText('Something went wrong on our side. Try again.');
+    await expect(page.getByTestId('ac-pay-another-way')).toBeVisible();
+    await expect(page.getByTestId('ac-affirm-continue')).toBeHidden();
+    // No further tries on their own.
+    await page.waitForTimeout(3000);
+    expect(await cancels()).toBe(3);
+    // The buyer's own retry is one more bounded round, then the same choice is back.
+    await page.getByTestId('ac-pay-another-way').click();
+    await expect.poll(cancels).toBe(6);
+    await expect(page.getByTestId('ac-payment')).toHaveAttribute('data-state', 'affirm_incomplete');
+    await expect(page.getByTestId('ac-pay-another-way')).toBeVisible();
+    expect((await harnessLog(request)).some((entry) => entry.path.startsWith('/flint-hosted/'))).toBe(false);
   });
 
   test('an action past its expiry is not opened: the attempt is cancelled and the buyer can try again', async ({ page, request }) => {
@@ -425,11 +521,20 @@ test.describe('invoice payment', () => {
     await page.getByTestId('ac-pay-button').click();
     await expect(page.getByTestId('ac-payment-message')).toHaveText('Something went wrong on our side. Try again.');
     await expect(page).toHaveURL(/\/invoices\/inv_example_001\/pay\?variant=default$/);
+    // The buyer is not left on a spinner: they can pay another way, and Continue is not offered for an action that cannot open.
+    await expect(page.getByTestId('ac-payment')).toHaveAttribute('data-state', 'affirm_incomplete');
+    await expect(page.getByTestId('ac-payment').locator('[data-payment-progress]')).toBeHidden();
+    await expect(page.getByTestId('ac-pay-another-way')).toBeVisible();
+    await expect(page.getByTestId('ac-affirm-continue')).toBeHidden();
     const log = await harnessLog(request);
     expect(log.some((entry) => entry.path.startsWith('/flint-hosted/'))).toBe(false);
     expect(log.filter((entry) => entry.path.endsWith('/resume'))).toHaveLength(0);
     expect((await stubCalls(page)).nextActions).toEqual([]);
     expect(seen.consoleErrors).toEqual([]);
+    await page.getByTestId('ac-pay-another-way').click();
+    await expect(page.getByTestId('ac-payment')).toHaveAttribute('data-state', 'ready');
+    await expect(page.getByTestId('ac-pay-button')).toBeVisible();
+    expect((await harnessLog(request)).filter((entry) => entry.path.endsWith('/cancel-attempt'))).toHaveLength(1);
   });
 
   test('a client secret never reaches the page text or markup', async ({ page, request }) => {
